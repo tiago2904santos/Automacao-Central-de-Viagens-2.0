@@ -1,23 +1,53 @@
 {% extends 'base.html' %}
 
-{% block title %}Ofício — Step 1: Dados e viajantes — Central de Viagens{% endblock %}
-{% block page_title %}Wizard do Ofício — Step 1{% endblock %}
+{% block title %}Dados e viajantes — Central de Viagens{% endblock %}
+{% block page_title %}Dados e viajantes{% endblock %}
 
 {% block content %}
+<style>
+  .oficio-sticky-header {
+    position: sticky;
+    top: 1rem;
+    z-index: 1030;
+    background: var(--bs-body-bg, #fff);
+    padding-bottom: 1rem;
+  }
+
+  .oficio-sticky-panel {
+    position: sticky;
+    top: 7rem;
+  }
+
+  @media (max-width: 1199.98px) {
+    .oficio-sticky-panel {
+      position: static;
+      top: auto;
+    }
+  }
+</style>
 <div class="container-fluid py-4">
-  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
-    <h1 class="h4 mb-0">Ofício — Step 1: Dados e viajantes</h1>
-    <div class="d-flex gap-2">
-      {% if evento %}
-      <a href="{% url 'eventos:guiado-etapa-3' evento.pk %}" class="btn btn-outline-secondary btn-sm">Voltar para Ofícios do evento</a>
-      <a href="{% url 'eventos:guiado-painel' evento.pk %}" class="btn btn-outline-secondary btn-sm">Painel do evento</a>
-      {% else %}
-      <a href="{% url 'eventos:lista' %}" class="btn btn-outline-secondary btn-sm">Lista de eventos</a>
-      {% endif %}
+  <div class="oficio-sticky-header">
+    <div class="card shadow-sm border-0">
+      <div class="card-body py-3">
+        <div class="d-flex justify-content-between align-items-center gap-3 flex-wrap">
+          <div>
+            <h1 class="h4 mb-1">Dados e viajantes</h1>
+            <div class="text-muted small">Base do ofício, motivo e participantes.</div>
+          </div>
+          <div class="d-flex gap-2 flex-wrap">
+            <a href="{% url 'eventos:oficios-global' %}" class="btn btn-outline-secondary btn-sm">Lista de ofícios</a>
+            {% if evento %}
+            <a href="{% url 'eventos:guiado-etapa-5' evento.pk %}" class="btn btn-outline-secondary btn-sm">Ofícios do evento</a>
+            <a href="{% url 'eventos:guiado-painel' evento.pk %}" class="btn btn-outline-secondary btn-sm">Painel do evento</a>
+            {% endif %}
+            <a href="{% url 'eventos:oficio-excluir' oficio.pk %}" class="btn btn-outline-danger btn-sm">Excluir ofício</a>
+            <button type="submit" form="oficio-step1-form" name="salvar" value="1" class="btn btn-primary btn-sm">Salvar</button>
+            <button type="submit" form="oficio-step1-form" name="avancar" value="1" class="btn btn-success btn-sm">Salvar e continuar</button>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
-
-  {% include 'eventos/oficio/_wizard_stepper.html' with oficio=oficio step=1 %}
 
   <div class="row g-4 align-items-start">
     <div class="col-xl-8">
@@ -58,7 +88,7 @@
                 {% if form.modelo_motivo.errors %}<div class="invalid-feedback d-block">{{ form.modelo_motivo.errors.0 }}</div>{% endif %}
               </div>
               <div class="col-md-4">
-                <a href="{{ gerenciar_modelos_motivo_url }}" class="btn btn-outline-secondary w-100">Gerenciar modelos de motivo</a>
+                <a href="{{ gerenciar_modelos_motivo_url }}" class="btn btn-outline-secondary w-100" data-step1-draft-link="1">Gerenciar modelos de motivo</a>
               </div>
             </div>
 
@@ -92,7 +122,7 @@
             <div class="mt-4">
               <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
                 <label class="form-label mb-0" for="viajantes-autocomplete-input">Buscar viajante</label>
-                <a href="{{ cadastrar_viajante_url }}" class="btn btn-outline-secondary btn-sm">Cadastrar novo viajante</a>
+                <a href="{{ cadastrar_viajante_url }}" class="btn btn-outline-secondary btn-sm" data-step1-draft-link="1">Cadastrar novo viajante</a>
               </div>
               <div class="position-relative" id="viajantes-autocomplete-wrapper" data-search-url="{{ buscar_viajantes_url }}">
                 <input
@@ -138,19 +168,13 @@
               {% if form.viajantes.errors %}<div class="invalid-feedback d-block">{{ form.viajantes.errors.0 }}</div>{% endif %}
             </div>
 
-            <div class="form-actions mt-4 d-flex gap-2 flex-wrap">
-              <button type="submit" name="salvar" value="1" class="btn btn-primary">Salvar</button>
-              <button type="submit" name="avancar" value="1" class="btn btn-success">Salvar e continuar</button>
-              <a href="{% url 'eventos:oficio-excluir' oficio.pk %}" class="btn btn-outline-danger">Excluir ofício</a>
-              {% if evento %}<a href="{% url 'eventos:guiado-etapa-3' evento.pk %}" class="btn btn-outline-secondary">Cancelar</a>{% endif %}
-            </div>
           </form>
         </div>
       </div>
     </div>
 
     <div class="col-xl-4">
-      <div class="card position-sticky" style="top: 1rem;">
+      <div class="card oficio-sticky-panel">
         <div class="card-body">
           <h2 class="h6 mb-3">Relatório rápido</h2>
           <dl class="row mb-3">
@@ -220,6 +244,8 @@
   var activeIndex = -1;
   var fetchSequence = 0;
   var debounceTimer = null;
+  var autosaveKey = 'oficio-step1-draft-{{ oficio.pk }}';
+  var autosaveTimer = null;
 
   function parseSelectedData() {
     if (!selectedDataElement) {
@@ -469,6 +495,7 @@
     renderHiddenInputs();
     renderChips();
     renderPreview();
+    scheduleDraftPersist();
   }
 
   function addSelectedViajante(item) {
@@ -496,6 +523,64 @@
   function removeSelectedViajante(id) {
     selectedMap.delete(String(id));
     syncSelectedState();
+  }
+
+  function persistDraft() {
+    try {
+      window.localStorage.setItem(autosaveKey, JSON.stringify({
+        protocolo: protocoloInput ? protocoloInput.value : '',
+        modelo_motivo: modeloSelect ? modeloSelect.value : '',
+        motivo: motivoTextarea ? motivoTextarea.value : '',
+        custeio_tipo: custeioSelect ? custeioSelect.value : '',
+        nome_instituicao_custeio: instituicaoInput ? instituicaoInput.value : '',
+        viajantes: Array.from(selectedMap.values())
+      }));
+    } catch (error) {
+      // Storage indisponível não pode bloquear o formulário.
+    }
+  }
+
+  function scheduleDraftPersist() {
+    window.clearTimeout(autosaveTimer);
+    autosaveTimer = window.setTimeout(persistDraft, 120);
+  }
+
+  function restoreDraft() {
+    try {
+      var raw = window.localStorage.getItem(autosaveKey);
+      if (!raw) {
+        return;
+      }
+      var draft = JSON.parse(raw);
+      if (!draft || typeof draft !== 'object') {
+        return;
+      }
+      if (protocoloInput && draft.protocolo) {
+        protocoloInput.value = draft.protocolo;
+      }
+      if (modeloSelect && draft.modelo_motivo) {
+        modeloSelect.value = draft.modelo_motivo;
+      }
+      if (motivoTextarea && typeof draft.motivo === 'string') {
+        motivoTextarea.value = draft.motivo;
+      }
+      if (custeioSelect && draft.custeio_tipo) {
+        custeioSelect.value = draft.custeio_tipo;
+      }
+      if (instituicaoInput && typeof draft.nome_instituicao_custeio === 'string') {
+        instituicaoInput.value = draft.nome_instituicao_custeio;
+      }
+      if (Array.isArray(draft.viajantes)) {
+        selectedMap.clear();
+        draft.viajantes.forEach(function(item) {
+          if (item && item.id) {
+            selectedMap.set(String(item.id), item);
+          }
+        });
+      }
+    } catch (error) {
+      // Ignora rascunho inválido.
+    }
   }
 
   async function buscarSugestoes(term) {
@@ -540,19 +625,34 @@
   }
 
   if (custeioSelect) {
-    custeioSelect.addEventListener('change', toggleInstituicao);
+    custeioSelect.addEventListener('change', function() {
+      toggleInstituicao();
+      scheduleDraftPersist();
+    });
   }
   if (instituicaoInput) {
-    instituicaoInput.addEventListener('input', updateGeneralPreview);
+    instituicaoInput.addEventListener('input', function() {
+      updateGeneralPreview();
+      scheduleDraftPersist();
+    });
   }
   if (modeloSelect) {
-    modeloSelect.addEventListener('change', preencherMotivoPorModelo);
+    modeloSelect.addEventListener('change', async function() {
+      await preencherMotivoPorModelo();
+      scheduleDraftPersist();
+    });
   }
   if (motivoTextarea) {
-    motivoTextarea.addEventListener('input', updateGeneralPreview);
+    motivoTextarea.addEventListener('input', function() {
+      updateGeneralPreview();
+      scheduleDraftPersist();
+    });
   }
   if (protocoloInput) {
-    protocoloInput.addEventListener('input', updateGeneralPreview);
+    protocoloInput.addEventListener('input', function() {
+      updateGeneralPreview();
+      scheduleDraftPersist();
+    });
   }
 
   if (saveModeloBtn && novoModeloInput) {
@@ -606,6 +706,11 @@
     }
   });
 
+  Array.prototype.forEach.call(document.querySelectorAll('[data-step1-draft-link]'), function(link) {
+    link.addEventListener('click', persistDraft);
+  });
+
+  restoreDraft();
   toggleInstituicao();
   updateGeneralPreview();
   syncSelectedState();

@@ -3,7 +3,7 @@ from django.core.exceptions import ValidationError
 from django.db import IntegrityError, models, transaction
 from django.utils import timezone
 from django.utils.text import slugify
-from cadastros.models import Estado, Cidade
+from cadastros.models import Cargo, Estado, Cidade
 from core.utils.masks import EMPTY_MASK_DISPLAY, format_masked_display, format_placa
 from .utils import (
     format_protocolo as format_protocolo_visual,
@@ -182,6 +182,44 @@ class EventoParticipante(models.Model):
         return f'{self.evento_id} - {self.viajante}'
 
 
+class SolicitantePlanoTrabalho(models.Model):
+    """Gerenciador de solicitantes para o Plano de Trabalho (cadastro reutilizável)."""
+    nome = models.CharField('Nome', max_length=200)
+    ativo = models.BooleanField('Ativo', default=True)
+    ordem = models.PositiveIntegerField('Ordem', default=100)
+    is_padrao = models.BooleanField('Padrão', default=False)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['ordem', 'nome']
+        verbose_name = 'Solicitante (Plano de Trabalho)'
+        verbose_name_plural = 'Solicitantes (Plano de Trabalho)'
+
+    def __str__(self):
+        return self.nome
+
+
+class CoordenadorOperacional(models.Model):
+    """Banco de coordenadores operacionais para o Plano de Trabalho."""
+    nome = models.CharField('Nome', max_length=200)
+    cargo = models.CharField('Cargo', max_length=120, blank=True, default='')
+    cidade = models.CharField('Cidade', max_length=120, blank=True, default='')
+    unidade = models.CharField('Unidade', max_length=160, blank=True, default='')
+    ativo = models.BooleanField('Ativo', default=True)
+    ordem = models.PositiveIntegerField('Ordem', default=100)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['ordem', 'nome']
+        verbose_name = 'Coordenador operacional'
+        verbose_name_plural = 'Coordenadores operacionais'
+
+    def __str__(self):
+        return f'{self.cargo or "—"} {self.nome}'.strip()
+
+
 class EventoFundamentacao(models.Model):
     """
     Dados da Etapa 4 do evento: Fundamentação / PT-OS.
@@ -219,6 +257,56 @@ class EventoFundamentacao(models.Model):
         blank=True,
         default='',
     )
+    # Campos específicos do Plano de Trabalho
+    solicitante = models.ForeignKey(
+        'SolicitantePlanoTrabalho',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='fundamentacoes_pt',
+        verbose_name='Solicitante (PT)',
+    )
+    solicitante_outros = models.CharField(
+        'Solicitante (outros)',
+        max_length=200,
+        blank=True,
+        default='',
+    )
+    coordenador_operacional = models.ForeignKey(
+        'CoordenadorOperacional',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='fundamentacoes_pt',
+        verbose_name='Coordenador operacional',
+    )
+    coordenador_administrativo = models.ForeignKey(
+        'cadastros.Viajante',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='fundamentacoes_pt_coord_adm',
+        verbose_name='Coordenador administrativo',
+    )
+    atividades_codigos = models.CharField(
+        'Atividades (códigos)',
+        max_length=500,
+        blank=True,
+        default='',
+        help_text='Códigos separados por vírgula, ex: CIN,BO,NOC',
+    )
+    horario_atendimento = models.CharField(
+        'Horário de atendimento',
+        max_length=120,
+        blank=True,
+        default='',
+    )
+    recursos_texto = models.TextField(
+        'Recursos (texto)',
+        blank=True,
+        default='',
+        help_text='Estrutura para {{recursos_formatado}}; regra final pendente.',
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
@@ -242,6 +330,37 @@ class EventoFundamentacao(models.Model):
         return not self.concluido and (
             bool((self.tipo_documento or '').strip()) or bool((self.texto_fundamentacao or '').strip())
         )
+
+
+class EfetivoPlanoTrabalho(models.Model):
+    """Composição de efetivo do Plano de Trabalho por cargo e quantidade (por evento)."""
+    evento = models.ForeignKey(
+        Evento,
+        on_delete=models.CASCADE,
+        related_name='efetivo_plano_trabalho',
+        verbose_name='Evento',
+    )
+    cargo = models.ForeignKey(
+        Cargo,
+        on_delete=models.PROTECT,
+        related_name='efetivos_plano',
+        verbose_name='Cargo',
+    )
+    quantidade = models.PositiveIntegerField('Quantidade', default=1)
+
+    class Meta:
+        ordering = ['evento', 'cargo__nome']
+        verbose_name = 'Efetivo (Plano de Trabalho)'
+        verbose_name_plural = 'Efetivos (Plano de Trabalho)'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['evento', 'cargo'],
+                name='eventos_efetivoplano_evento_cargo_unique',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.evento_id}: {self.quantidade} x {self.cargo}'
 
 
 class EventoTermoParticipante(models.Model):
@@ -378,6 +497,126 @@ class EventoFinalizacao(models.Model):
         return self.finalizado_em is not None
 
 
+class DocumentoAvulso(models.Model):
+    """Documento criado sem vínculo obrigatório; pode ser vinculado posteriormente."""
+
+    TIPO_OFICIO = 'OFICIO'
+    TIPO_TERMO_AUTORIZACAO = 'TERMO_AUTORIZACAO'
+    TIPO_JUSTIFICATIVA = 'JUSTIFICATIVA'
+    TIPO_PLANO_TRABALHO = 'PLANO_TRABALHO'
+    TIPO_ORDEM_SERVICO = 'ORDEM_SERVICO'
+    TIPO_OUTRO = 'OUTRO'
+    TIPO_CHOICES = [
+        (TIPO_OFICIO, 'Ofício avulso'),
+        (TIPO_TERMO_AUTORIZACAO, 'Termo de autorização avulso'),
+        (TIPO_JUSTIFICATIVA, 'Justificativa avulsa'),
+        (TIPO_PLANO_TRABALHO, 'Plano de trabalho avulso'),
+        (TIPO_ORDEM_SERVICO, 'Ordem de serviço avulsa'),
+        (TIPO_OUTRO, 'Outros modelos avulsos'),
+    ]
+
+    CLASSIFICACAO_AVULSO = 'AVULSO'
+    CLASSIFICACAO_VINCULADO = 'VINCULADO'
+    CLASSIFICACAO_CHOICES = [
+        (CLASSIFICACAO_AVULSO, 'Avulso'),
+        (CLASSIFICACAO_VINCULADO, 'Vinculado'),
+    ]
+
+    TERMO_TEMPLATE_COMPLETO_COM_VIATURA = 'COMPLETO_COM_VIATURA'
+    TERMO_TEMPLATE_COMPLETO_SEM_VIATURA = 'COMPLETO_SEM_VIATURA'
+    TERMO_TEMPLATE_SEMIPREENCHIDO = 'SEMIPREENCHIDO'
+    TERMO_TEMPLATE_CHOICES = [
+        (TERMO_TEMPLATE_COMPLETO_COM_VIATURA, 'Termo completo com viatura'),
+        (TERMO_TEMPLATE_COMPLETO_SEM_VIATURA, 'Termo completo sem viatura'),
+        (TERMO_TEMPLATE_SEMIPREENCHIDO, 'Termo semipreenchido/manual'),
+    ]
+
+    titulo = models.CharField('Título', max_length=200)
+    tipo_documento = models.CharField('Tipo do documento', max_length=30, choices=TIPO_CHOICES)
+    conteudo_texto = models.TextField('Conteúdo livre', blank=True, default='')
+    placeholders = models.JSONField('Placeholders', blank=True, default=dict)
+    termo_template_variant = models.CharField(
+        'Variante do template de termo',
+        max_length=30,
+        choices=TERMO_TEMPLATE_CHOICES,
+        default=TERMO_TEMPLATE_SEMIPREENCHIDO,
+    )
+    classificacao = models.CharField(
+        'Classificação',
+        max_length=20,
+        choices=CLASSIFICACAO_CHOICES,
+        default=CLASSIFICACAO_AVULSO,
+        db_index=True,
+    )
+    evento = models.ForeignKey(
+        Evento,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='documentos_avulsos',
+        verbose_name='Evento vinculado',
+    )
+    roteiro = models.ForeignKey(
+        'RoteiroEvento',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='documentos_avulsos',
+        verbose_name='Roteiro vinculado',
+    )
+    plano_trabalho = models.ForeignKey(
+        'EventoFundamentacao',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='documentos_avulsos',
+        verbose_name='Plano de trabalho / OS vinculado',
+    )
+    oficio = models.ForeignKey(
+        'Oficio',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='documentos_avulsos',
+        verbose_name='Ofício vinculado',
+    )
+    criado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='documentos_avulsos_criados',
+        verbose_name='Criado por',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at', '-created_at']
+        verbose_name = 'Documento avulso'
+        verbose_name_plural = 'Documentos avulsos'
+
+    def __str__(self):
+        return f'{self.get_tipo_documento_display()} — {self.titulo}'
+
+    @property
+    def is_vinculado(self):
+        return bool(self.evento_id or self.roteiro_id or self.plano_trabalho_id or self.oficio_id)
+
+    def _sync_classificacao(self):
+        self.classificacao = (
+            self.CLASSIFICACAO_VINCULADO if self.is_vinculado else self.CLASSIFICACAO_AVULSO
+        )
+
+    def save(self, *args, **kwargs):
+        self.titulo = (self.titulo or '').strip()
+        self.conteudo_texto = (self.conteudo_texto or '').strip()
+        if not isinstance(self.placeholders, dict):
+            self.placeholders = {}
+        self._sync_classificacao()
+        super().save(*args, **kwargs)
+
+
 class ModeloMotivoViagem(models.Model):
     """
     Modelos reutilizáveis de motivo de viagem.
@@ -454,7 +693,7 @@ class ModeloJustificativa(models.Model):
 
 class Oficio(models.Model):
     """
-    Ofício vinculado a um evento.
+    Ofício, que pode ser avulso ou vinculado a um evento.
     Wizard: Step 1 (dados + viajantes), Step 2 (transporte + motorista),
     Step 3 (trechos) e Step 4 (resumo).
     """
@@ -463,6 +702,13 @@ class Oficio(models.Model):
     STATUS_CHOICES = [
         (STATUS_RASCUNHO, 'Rascunho'),
         (STATUS_FINALIZADO, 'Finalizado'),
+    ]
+
+    ORIGEM_AVULSO = 'AVULSO'
+    ORIGEM_EVENTO = 'EVENTO'
+    ORIGEM_CHOICES = [
+        (ORIGEM_AVULSO, 'Avulso'),
+        (ORIGEM_EVENTO, 'Vinculado a evento'),
     ]
 
     CUSTEIO_UNIDADE = 'UNIDADE'
@@ -498,8 +744,12 @@ class Oficio(models.Model):
 
     # Vínculos
     evento = models.ForeignKey(
-        Evento, on_delete=models.CASCADE, related_name='oficios',
-        verbose_name='Evento', null=True, blank=True
+        Evento,
+        on_delete=models.CASCADE,
+        related_name='oficios',
+        verbose_name='Evento',
+        null=True,
+        blank=True,
     )
     roteiro_evento = models.ForeignKey(
         'RoteiroEvento',
@@ -524,6 +774,13 @@ class Oficio(models.Model):
     carona_oficio_referencia = models.ForeignKey(
         'self', on_delete=models.SET_NULL, null=True, blank=True,
         related_name='oficios_que_usam_carona', verbose_name='Ofício referência (carona)'
+    )
+
+    tipo_origem = models.CharField(
+        'Origem',
+        max_length=20,
+        choices=ORIGEM_CHOICES,
+        default=ORIGEM_EVENTO,
     )
 
     # Dados gerais (Step 1)
@@ -958,7 +1215,10 @@ class RoteiroEventoTrecho(models.Model):
 
 
 class RoteiroEvento(models.Model):
-    """Roteiro vinculado a um evento (Etapa 2 do fluxo guiado). Sede (origem) + N destinos."""
+    """
+    Roteiro vinculado a um evento (Etapa 2 do fluxo guiado) ou avulso.
+    Sede (origem) + N destinos.
+    """
     STATUS_RASCUNHO = 'RASCUNHO'
     STATUS_FINALIZADO = 'FINALIZADO'
     STATUS_CHOICES = [
@@ -966,9 +1226,20 @@ class RoteiroEvento(models.Model):
         (STATUS_FINALIZADO, 'Finalizado'),
     ]
 
+    TIPO_EVENTO = 'EVENTO'
+    TIPO_AVULSO = 'AVULSO'
+    TIPO_CHOICES = [
+        (TIPO_EVENTO, 'Vinculado a evento'),
+        (TIPO_AVULSO, 'Avulso'),
+    ]
+
     evento = models.ForeignKey(
-        Evento, on_delete=models.CASCADE, related_name='roteiros',
-        verbose_name='Evento'
+        Evento,
+        on_delete=models.CASCADE,
+        related_name='roteiros',
+        verbose_name='Evento',
+        null=True,
+        blank=True,
     )
     origem_estado = models.ForeignKey(
         Estado, null=True, blank=True, on_delete=models.SET_NULL,
@@ -988,13 +1259,19 @@ class RoteiroEvento(models.Model):
     status = models.CharField(
         'Status', max_length=20, choices=STATUS_CHOICES, default=STATUS_RASCUNHO
     )
+    tipo = models.CharField(
+        'Tipo de roteiro',
+        max_length=20,
+        choices=TIPO_CHOICES,
+        default=TIPO_EVENTO,
+    )
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ['-created_at']
-        verbose_name = 'Roteiro do evento'
-        verbose_name_plural = 'Roteiros do evento'
+        verbose_name = 'Roteiro'
+        verbose_name_plural = 'Roteiros'
 
     def __str__(self):
         orig = self.origem_cidade or self.origem_estado or EMPTY_MASK_DISPLAY
@@ -1008,15 +1285,17 @@ class RoteiroEvento(models.Model):
     def esta_completo(self):
         """
         True se os dados obrigatórios para FINALIZADO estão preenchidos:
-        evento, sede (origem), ao menos um destino, saida_dt, chegada_dt.
+        - sede (origem), ao menos um destino, saida_dt, chegada_dt; e
+        - quando tipo = EVENTO, requer vínculo com evento.
         Duração é por trecho (cru + adicional); duracao_min do roteiro é legado.
         Retorno é opcional. Não usa self.destinos antes de ter pk.
         """
         if not self.pk:
             return False
+        if self.tipo == self.TIPO_EVENTO and not self.evento_id:
+            return False
         return bool(
-            self.evento_id
-            and self.origem_estado_id
+            self.origem_estado_id
             and self.origem_cidade_id
             and self.destinos.exists()
             and self.saida_dt is not None

@@ -13,6 +13,13 @@ urlpatterns = [
     path('documentos/ordens-servico/', login_required(views_global.ordens_servico_global), name='documentos-ordens-servico'),
     path('documentos/justificativas/', login_required(views_global.justificativas_global), name='documentos-justificativas'),
     path('documentos/termos/', login_required(views_global.termos_global), name='documentos-termos'),
+    path('documentos/avulsos/novo/', login_required(views_global.documento_avulso_novo), name='documentos-avulsos-novo'),
+    path('documentos/avulsos/<int:pk>/editar/', login_required(views_global.documento_avulso_editar), name='documentos-avulsos-editar'),
+    path(
+        'documentos/avulsos/<int:pk>/download/<str:formato>/',
+        login_required(views_global.documento_avulso_download),
+        name='documentos-avulsos-download',
+    ),
     path('simulacao-diarias/', login_required(views_global.simulacao_diarias_global), name='simulacao-diarias'),
     path('cadastrar/', login_required(views.evento_cadastrar), name='cadastrar'),
     path('<int:pk>/', login_required(views.evento_detalhe), name='detalhe'),
@@ -37,31 +44,45 @@ urlpatterns = [
     path('modelos-justificativa/<int:pk>/excluir/', login_required(views.modelos_justificativa_excluir), name='modelos-justificativa-excluir'),
     path('modelos-justificativa/<int:pk>/definir-padrao/', login_required(views.modelos_justificativa_definir_padrao), name='modelos-justificativa-definir-padrao'),
     path('modelos-justificativa/<int:pk>/texto/', login_required(views.modelo_justificativa_texto_api), name='modelos-justificativa-texto-api'),
-    # Fluxo guiado (ordem de negócio):
-    # 1 Dados do evento -> guiado-etapa-1
-    # 2 PT / OS -> guiado-etapa-4
-    # 3 Termos -> guiado-etapa-5
-    # 4 Roteiros -> guiado-etapa-2 (+ cadastrar/editar/excluir)
-    # 5 Ofícios -> guiado-etapa-3 (+ criar-oficio)
-    # 6 Finalização -> guiado-etapa-6
+    # Fluxo guiado — ordem funcional real (1 a 7):
+    # 1 Dados do evento   -> guiado-etapa-1
+    # 2 Roteiros          -> guiado-etapa-2
+    # 3 Termos            -> guiado-etapa-3
+    # 4 PT / OS           -> guiado-etapa-4
+    # 5 Ofícios           -> guiado-etapa-5
+    # 6 Justificativa     -> guiado-etapa-6
+    # 7 Finalização       -> guiado-etapa-7
     path('guiado/novo/', views.guiado_novo, name='guiado-novo'),
     path('<int:pk>/guiado/etapa-1/', login_required(views.guiado_etapa_1), name='guiado-etapa-1'),
     path('<int:pk>/guiado/painel/', login_required(views.guiado_painel), name='guiado-painel'),
-    # Etapa 5 (negócio): Ofícios do evento
-    path('<int:evento_id>/guiado/etapa-3/', login_required(views.guiado_etapa_3), name='guiado-etapa-3'),
-    path('<int:evento_id>/guiado/etapa-3/criar-oficio/', login_required(views.guiado_etapa_3_criar_oficio), name='guiado-etapa-3-criar-oficio'),
-    # Etapa 2 (negócio): PT / OS
-    path('<int:evento_id>/guiado/etapa-4/', login_required(views.guiado_etapa_4), name='guiado-etapa-4'),
-    # Etapa 3 (negócio): Termos
-    path('<int:evento_id>/guiado/etapa-5/', login_required(views.guiado_etapa_5), name='guiado-etapa-5'),
+    # Etapa 3: Termos
+    path('<int:evento_id>/guiado/etapa-3/', login_required(views.guiado_etapa_5), name='guiado-etapa-3'),
     path(
-        '<int:evento_id>/guiado/etapa-5/termo/<int:viajante_id>/<str:formato>/',
-        login_required(views.guiado_etapa_5_termo_download),
-        name='guiado-etapa-5-termo-download',
+        '<int:evento_id>/guiado/etapa-3/termo/padrao/<str:formato>/',
+        login_required(views.guiado_etapa_5_termo_padrao_download),
+        name='guiado-etapa-3-termo-padrao-download',
     ),
-    # Etapa 6: Finalização
-    path('<int:evento_id>/guiado/etapa-6/', login_required(views.guiado_etapa_6), name='guiado-etapa-6'),
+    path(
+        '<int:evento_id>/guiado/etapa-3/termo/viatura/<str:formato>/',
+        login_required(views.guiado_etapa_5_termo_viatura_lote_download),
+        name='guiado-etapa-3-termo-viatura-download',
+    ),
+    path(
+        '<int:evento_id>/guiado/etapa-3/termo/<int:viajante_id>/<str:formato>/',
+        login_required(views.guiado_etapa_5_termo_download),
+        name='guiado-etapa-3-termo-download',
+    ),
+    # Etapa 4: PT / OS
+    path('<int:evento_id>/guiado/etapa-4/', login_required(views.guiado_etapa_4), name='guiado-etapa-4'),
+    # Etapa 5: Ofícios
+    path('<int:evento_id>/guiado/etapa-5/', login_required(views.guiado_etapa_3), name='guiado-etapa-5'),
+    path('<int:evento_id>/guiado/etapa-5/criar-oficio/', login_required(views.guiado_etapa_3_criar_oficio), name='guiado-etapa-5-criar-oficio'),
+    # Etapa 6: Justificativa (evento; exigida quando prazo < 10 dias)
+    path('<int:evento_id>/guiado/etapa-6/', login_required(views.guiado_etapa_6_justificativa), name='guiado-etapa-6'),
+    # Etapa 7: Finalização
+    path('<int:evento_id>/guiado/etapa-7/', login_required(views.guiado_etapa_6), name='guiado-etapa-7'),
     # Wizard do Ofício (Steps 1–4)
+    path('oficio/novo/', login_required(views.oficio_novo), name='oficio-novo'),
     path('oficio/<int:pk>/editar/', login_required(views.oficio_editar), name='oficio-editar'),
     path('oficio/<int:pk>/excluir/', login_required(views.oficio_excluir), name='oficio-excluir'),
     path('oficio/<int:pk>/step1/', login_required(views.oficio_step1), name='oficio-step1'),
@@ -76,7 +97,7 @@ urlpatterns = [
     path('oficio/<int:pk>/documentos/', login_required(views.oficio_documentos), name='oficio-documentos'),
     path('oficio/<int:pk>/documentos/<str:tipo_documento>/<str:formato>/', login_required(views.oficio_documento_download), name='oficio-documento-download'),
     path('oficio/<int:pk>/step4/', login_required(views.oficio_step4), name='oficio-step4'),
-    # Etapa 4 (negócio): Roteiros
+    # Etapa 2 (negócio): Roteiros
     path('<int:evento_id>/guiado/etapa-2/', login_required(views.guiado_etapa_2_lista), name='guiado-etapa-2'),
     path('<int:evento_id>/guiado/etapa-2/cadastrar/', login_required(views.guiado_etapa_2_cadastrar), name='guiado-etapa-2-cadastrar'),
     path('<int:evento_id>/guiado/etapa-2/<int:pk>/editar/', login_required(views.guiado_etapa_2_editar), name='guiado-etapa-2-editar'),
@@ -85,4 +106,7 @@ urlpatterns = [
     path('trechos/<int:pk>/calcular-km/', login_required(views.trecho_calcular_km), name='trecho-calcular-km'),
     # Estimativa por cidades (trecho ainda não salvo; não depende de pk)
     path('trechos/estimar/', login_required(views.estimar_km_por_cidades), name='trechos-estimar'),
+    # Roteiros avulsos (sem vínculo com evento)
+    path('roteiros/avulso/novo/', login_required(views.roteiro_avulso_cadastrar), name='roteiro-avulso-cadastrar'),
+    path('roteiros/avulso/<int:pk>/editar/', login_required(views.roteiro_avulso_editar), name='roteiro-avulso-editar'),
 ]

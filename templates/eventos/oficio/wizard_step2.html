@@ -1,21 +1,54 @@
 {% extends 'base.html' %}
 
-{% block title %}Ofício — Step 2: Transporte — Central de Viagens{% endblock %}
-{% block page_title %}Wizard do Ofício — Step 2{% endblock %}
+{% block title %}Transporte — Central de Viagens{% endblock %}
+{% block page_title %}Transporte{% endblock %}
 
 {% block content %}
+<style>
+  .oficio-sticky-header {
+    position: sticky;
+    top: 1rem;
+    z-index: 1030;
+    background: var(--bs-body-bg, #fff);
+    padding-bottom: 1rem;
+  }
+
+  .oficio-sticky-panel {
+    position: sticky;
+    top: 7rem;
+  }
+
+  @media (max-width: 1199.98px) {
+    .oficio-sticky-panel {
+      position: static;
+      top: auto;
+    }
+  }
+</style>
 <div class="container-fluid py-4">
-  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
-    <h1 class="h4 mb-0">Ofício — Step 2: Transporte</h1>
-    <div class="d-flex gap-2">
-      {% if evento %}
-      <a href="{% url 'eventos:guiado-etapa-3' evento.pk %}" class="btn btn-outline-secondary btn-sm">Voltar para Ofícios do evento</a>
-      <a href="{% url 'eventos:guiado-painel' evento.pk %}" class="btn btn-outline-secondary btn-sm">Painel do evento</a>
-      {% endif %}
+  <div class="oficio-sticky-header">
+    <div class="card shadow-sm border-0">
+      <div class="card-body py-3">
+        <div class="d-flex justify-content-between align-items-center gap-3 flex-wrap">
+          <div>
+            <h1 class="h4 mb-1">Transporte</h1>
+            <div class="text-muted small">Viatura, motorista e dados de carona do ofício.</div>
+          </div>
+          <div class="d-flex gap-2 flex-wrap">
+            <a href="{% url 'eventos:oficios-global' %}" class="btn btn-outline-secondary btn-sm">Lista de ofícios</a>
+            {% if evento %}
+            <a href="{% url 'eventos:guiado-etapa-5' evento.pk %}" class="btn btn-outline-secondary btn-sm">Ofícios do evento</a>
+            <a href="{% url 'eventos:guiado-painel' evento.pk %}" class="btn btn-outline-secondary btn-sm">Painel do evento</a>
+            {% endif %}
+            <a href="{% url 'eventos:oficio-step1' oficio.pk %}" class="btn btn-outline-secondary btn-sm">Dados e viajantes</a>
+            <a href="{% url 'eventos:oficio-excluir' oficio.pk %}" class="btn btn-outline-danger btn-sm">Excluir ofício</a>
+            <button type="submit" form="oficio-step2-form" name="salvar" value="1" class="btn btn-primary btn-sm">Salvar</button>
+            <button type="submit" form="oficio-step2-form" name="avancar" value="1" class="btn btn-success btn-sm">Salvar e continuar</button>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
-
-  {% include 'eventos/oficio/_wizard_stepper.html' with oficio=oficio step=2 %}
 
   <div class="row g-4 align-items-start">
     <div class="col-xl-8">
@@ -102,7 +135,7 @@
                 </label>
                 <div class="d-flex gap-2 flex-wrap">
                   <a href="{{ cadastrar_viajante_url }}" class="btn btn-outline-secondary btn-sm">Adicionar servidor</a>
-                  <button type="button" class="btn btn-outline-primary btn-sm" id="btn-motorista-manual">Usar motorista manual</button>
+                  <button type="button" class="btn btn-outline-primary btn-sm" id="btn-toggle-motorista-mode">Usar motorista manual</button>
                 </div>
               </div>
 
@@ -152,14 +185,11 @@
             </div>
 
             <div class="row g-3 mt-1{% if not mostrar_motorista_manual %} d-none{% endif %}" id="motorista-manual-wrapper">
-              <div class="col-md-8">
+              <div class="col-12">
                 <label class="form-label" for="{{ form.motorista_nome.id_for_label }}">Motorista (nome manual)</label>
                 {{ form.motorista_nome }}
                 <div class="form-text">Use este modo apenas quando o motorista não estiver cadastrado como servidor.</div>
                 {% if form.motorista_nome.errors %}<div class="invalid-feedback d-block">{{ form.motorista_nome.errors.0 }}</div>{% endif %}
-              </div>
-              <div class="col-md-4 d-flex align-items-end">
-                <button type="button" class="btn btn-outline-secondary w-100" id="btn-motorista-servidor">Usar servidor cadastrado</button>
               </div>
             </div>
 
@@ -182,18 +212,13 @@
               </div>
             </div>
 
-            <div class="form-actions mt-4 d-flex gap-2 flex-wrap">
-              <button type="submit" name="salvar" value="1" class="btn btn-primary">Salvar</button>
-              <button type="submit" name="avancar" value="1" class="btn btn-success">Salvar e continuar</button>
-              <a href="{% url 'eventos:oficio-step1' oficio.pk %}" class="btn btn-outline-secondary">Voltar (Step 1)</a>
-            </div>
           </form>
         </div>
       </div>
     </div>
 
     <div class="col-xl-4">
-      <div class="card position-sticky" style="top: 1rem;">
+      <div class="card oficio-sticky-panel">
         <div class="card-body">
           <h2 class="h6 mb-3">Relatório rápido</h2>
           <dl class="row mb-3">
@@ -310,8 +335,7 @@
   var motoristaOficioNumeroInput = document.getElementById('{{ form.motorista_oficio_numero.id_for_label }}');
   var motoristaOficioAnoInput = document.getElementById('{{ form.motorista_oficio_ano.id_for_label }}');
   var motoristaProtocoloInput = document.getElementById('{{ form.motorista_protocolo.id_for_label }}');
-  var btnMotoristaManual = document.getElementById('btn-motorista-manual');
-  var btnMotoristaServidor = document.getElementById('btn-motorista-servidor');
+  var btnToggleMotoristaMode = document.getElementById('btn-toggle-motorista-mode');
   var motoristaPreviewBody = document.getElementById('motorista-preview-body');
   var motoristaSemCadastroValue = '{{ motorista_sem_cadastro_value }}';
   var placaSearchWrapper = document.getElementById('placa-search-wrapper');
@@ -385,6 +409,14 @@
     if (masks && input && typeof masks.applyMaskToInput === 'function') {
       masks.applyMaskToInput(input);
     }
+  }
+
+  function formatProtocolo(value) {
+    var digits = String(value || '').replace(/\D/g, '').slice(0, 9);
+    if (digits.length !== 9) {
+      return String(value || '').trim();
+    }
+    return digits.slice(0, 2) + '.' + digits.slice(2, 5) + '.' + digits.slice(5, 8) + '-' + digits.slice(8);
   }
 
   function isManualMotorista() {
@@ -508,21 +540,11 @@
       if (selectedMotorista.cpf) {
         details.push('<div id="preview-motorista-cpf-row">CPF: <span id="preview-motorista-cpf">' + escapeHtml(selectedMotorista.cpf) + '</span></div>');
       }
-      if (carona && false) {
-        var oficioMotorista = motoristaOficioCompleto();
-        var protocoloMotorista = String(motoristaProtocoloInput ? motoristaProtocoloInput.value : '').trim();
-        if (oficioMotorista) {
-          details.push('<div id="preview-motorista-oficio-row">Ofício: <span id="preview-motorista-oficio">' + escapeHtml(oficioMotorista) + '</span></div>');
-        }
-        if (protocoloMotorista) {
-          details.push('<div id="preview-motorista-protocolo-row">Protocolo: <span id="preview-motorista-protocolo">' + escapeHtml(protocoloMotorista) + '</span></div>');
-        }
-      }
     }
 
     if (carona) {
       var oficioMotoristaAtual = motoristaOficioCompleto();
-      var protocoloMotoristaAtual = String(motoristaProtocoloInput ? motoristaProtocoloInput.value : '').trim();
+      var protocoloMotoristaAtual = formatProtocolo(motoristaProtocoloInput ? motoristaProtocoloInput.value : '');
       if (oficioMotoristaAtual) {
         details.push('<div id="preview-motorista-oficio-row">Oficio motorista: <span id="preview-motorista-oficio">' + escapeHtml(oficioMotoristaAtual) + '</span></div>');
       }
@@ -537,6 +559,21 @@
 
     html += '</div>';
     motoristaPreviewBody.innerHTML = html;
+  }
+
+  function updateMotoristaToggleButton() {
+    if (!btnToggleMotoristaMode) {
+      return;
+    }
+    if (isManualMotorista()) {
+      btnToggleMotoristaMode.textContent = 'Usar servidor cadastrado';
+      btnToggleMotoristaMode.classList.remove('btn-outline-primary');
+      btnToggleMotoristaMode.classList.add('btn-outline-secondary');
+      return;
+    }
+    btnToggleMotoristaMode.textContent = 'Usar motorista manual';
+    btnToggleMotoristaMode.classList.remove('btn-outline-secondary');
+    btnToggleMotoristaMode.classList.add('btn-outline-primary');
   }
 
   function updateMotoristaState() {
@@ -563,6 +600,7 @@
 
     renderMotoristaChip();
     renderMotoristaPreview();
+    updateMotoristaToggleButton();
   }
 
   function clearMotoristaServidor() {
@@ -1029,11 +1067,14 @@
     });
   }
 
-  if (btnMotoristaManual) {
-    btnMotoristaManual.addEventListener('click', activateManualMode);
-  }
-  if (btnMotoristaServidor) {
-    btnMotoristaServidor.addEventListener('click', activateServidorMode);
+  if (btnToggleMotoristaMode) {
+    btnToggleMotoristaMode.addEventListener('click', function() {
+      if (isManualMotorista()) {
+        activateServidorMode();
+        return;
+      }
+      activateManualMode();
+    });
   }
   if (motoristaManualInput) {
     motoristaManualInput.addEventListener('input', function() {

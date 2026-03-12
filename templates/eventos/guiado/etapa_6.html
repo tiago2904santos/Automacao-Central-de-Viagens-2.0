@@ -1,12 +1,12 @@
 {% extends 'base.html' %}
 
-{% block title %}Etapa 6 — Finalização — {{ evento.titulo|default:"Evento" }} — Central de Viagens{% endblock %}
-{% block page_title %}Fluxo guiado — Etapa 6: Finalização{% endblock %}
+{% block title %}Etapa 7 — Finalização — {{ evento.titulo|default:"Evento" }} — Central de Viagens{% endblock %}
+{% block page_title %}Fluxo guiado — Etapa 7: Finalização{% endblock %}
 
 {% block content %}
 <div class="container-fluid py-4">
     <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
-        <h1 class="h4 mb-0">Etapa 6 — Finalização</h1>
+        <h1 class="h4 mb-0">Etapa 7 — Finalização</h1>
         <div class="d-flex gap-2">
             <a href="{% url 'eventos:guiado-painel' evento.pk %}" class="btn btn-outline-secondary btn-sm">Voltar ao painel</a>
             {% if evento.status != 'FINALIZADO' %}
@@ -46,12 +46,13 @@
                     {% endif %}
                 </li>
                 <li class="d-flex align-items-center mb-2">
-                    <span class="me-2">Etapa 2 (PT / OS):</span>
+                    <span class="me-2">Etapa 2 (Roteiros):</span>
                     {% if etapa2_ok %}
                     <span class="badge bg-success">OK</span>
                     {% else %}
                     <span class="badge bg-warning text-dark">Pendente</span>
                     {% endif %}
+                    <span class="badge bg-secondary ms-2">{{ roteiros_count }} roteiro(s)</span>
                 </li>
                 <li class="d-flex align-items-center mb-2">
                     <span class="me-2">Etapa 3 (Termos):</span>
@@ -63,13 +64,12 @@
                     <span class="badge bg-secondary ms-2">{{ participantes_count }} participante(s)</span>
                 </li>
                 <li class="d-flex align-items-center mb-2">
-                    <span class="me-2">Etapa 4 (Roteiros):</span>
+                    <span class="me-2">Etapa 4 (PT / OS):</span>
                     {% if etapa4_ok %}
                     <span class="badge bg-success">OK</span>
                     {% else %}
                     <span class="badge bg-warning text-dark">Pendente</span>
                     {% endif %}
-                    <span class="badge bg-secondary ms-2">{{ roteiros_count }} roteiro(s)</span>
                 </li>
                 <li class="d-flex align-items-center mb-2">
                     <span class="me-2">Etapa 5 (Ofícios):</span>
@@ -78,10 +78,15 @@
                     {% else %}
                     <span class="badge bg-warning text-dark">Pendente</span>
                     {% endif %}
+                    <span class="badge bg-secondary ms-2">{{ oficios_count }} ofício(s)</span>
                 </li>
-                <li class="d-flex align-items-center">
-                    <span class="me-2">Ofícios vinculados:</span>
-                    <span class="badge bg-secondary">{{ oficios_count }} ofício(s)</span>
+                <li class="d-flex align-items-center mb-2">
+                    <span class="me-2">Etapa 6 (Justificativa):</span>
+                    {% if etapa6_ok %}
+                    <span class="badge bg-success">OK</span>
+                    {% else %}
+                    <span class="badge bg-warning text-dark">Pendente</span>
+                    {% endif %}
                 </li>
             </ul>
         </div>

@@ -1,26 +1,20 @@
 {% extends 'base.html' %}
 
-{% block title %}Etapa 2 — PT / OS — {{ evento.titulo|default:"Evento" }} — Central de Viagens{% endblock %}
-{% block page_title %}Fluxo guiado — Etapa 2: PT / OS{% endblock %}
+{% block title %}Etapa 4 — PT / OS — {{ evento.titulo|default:"Evento" }} — Central de Viagens{% endblock %}
+{% block page_title %}Fluxo guiado — Etapa 4: PT / OS{% endblock %}
 
 {% block content %}
 <div class="container-fluid py-4">
     <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
-        <h1 class="h4 mb-0">Etapa 2 — PT / OS</h1>
+        <h1 class="h4 mb-0">Etapa 4 — PT / OS</h1>
         <div class="d-flex gap-2">
             <a href="{% url 'eventos:guiado-painel' evento.pk %}" class="btn btn-outline-secondary btn-sm">Voltar ao painel</a>
-            {% if not evento_apenas_consulta %}
             <form method="post" action="{% url 'eventos:excluir' evento.pk %}" class="d-inline" onsubmit="return confirm('Excluir este evento? Esta ação não pode ser desfeita.');">
                 {% csrf_token %}
                 <button type="submit" class="btn btn-outline-danger btn-sm">Excluir evento</button>
             </form>
-            {% endif %}
         </div>
     </div>
-
-    {% if evento_apenas_consulta %}
-    <div class="alert alert-info" role="alert">Evento finalizado. Apenas consulta. Não é possível alterar a fundamentação.</div>
-    {% endif %}
 
     <div class="card mb-4">
         <div class="card-body py-3">
@@ -95,7 +89,6 @@
         <div class="card-body">
             <form method="post" id="form-etapa4">
                 {% csrf_token %}
-                {% if evento_apenas_consulta %}<fieldset disabled>{% endif %}
                 <div class="mb-3">
                     <label for="id_tipo_documento" class="form-label">Tipo do documento</label>
                     <select name="tipo_documento" id="id_tipo_documento" class="form-select">
@@ -116,6 +109,61 @@
                     {% endif %}
                     <div class="form-text">Preencha para concluir a etapa. Pode salvar em rascunho (vazio) e completar depois.</div>
                 </div>
+
+                <div id="bloco-pt" class="mb-4" style="display: {% if fundamentacao.tipo_documento == 'PT' or form.tipo_documento.value == 'PT' %}block{% else %}none{% endif %};">
+                    <h4 class="h6 text-muted mb-3">Dados específicos do Plano de Trabalho</h4>
+                    <div class="mb-3">
+                        <label class="form-label">Solicitante</label>
+                        {{ form.solicitante }}
+                        {% if form.solicitante.errors %}<div class="invalid-feedback d-block">{{ form.solicitante.errors.0 }}</div>{% endif %}
+                        <div class="mt-2">
+                            <label for="id_solicitante_outros" class="form-label small">Se "Outros", informe o nome</label>
+                            <input type="text" name="solicitante_outros" id="id_solicitante_outros" class="form-control form-control-sm" value="{{ form.solicitante_outros.value|default:fundamentacao.solicitante_outros|default:'' }}" placeholder="Nome do solicitante">
+                            {% if form.solicitante_outros.errors %}<div class="invalid-feedback d-block">{{ form.solicitante_outros.errors.0 }}</div>{% endif %}
+                        </div>
+                    </div>
+                    <div class="row mb-3">
+                        <div class="col-md-6">
+                            <label class="form-label">Coordenador operacional</label>
+                            {{ form.coordenador_operacional }}
+                            {% if form.coordenador_operacional.errors %}<div class="invalid-feedback d-block">{{ form.coordenador_operacional.errors.0 }}</div>{% endif %}
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label">Coordenador administrativo</label>
+                            {{ form.coordenador_administrativo }}
+                            {% if form.coordenador_administrativo.errors %}<div class="invalid-feedback d-block">{{ form.coordenador_administrativo.errors.0 }}</div>{% endif %}
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Horário de atendimento</label>
+                        <div class="d-flex flex-wrap gap-2 align-items-start">
+                            <select name="horario_atendimento_sel" id="id_horario_atendimento_sel" class="form-select" style="max-width: 320px;">
+                                {% for val, lbl in form.fields.horario_atendimento_sel.choices %}
+                                <option value="{{ val }}" {% if form.horario_atendimento_sel.value == val or fundamentacao.horario_atendimento == val %}selected{% endif %}>{{ lbl }}</option>
+                                {% endfor %}
+                            </select>
+                            <input type="text" name="horario_atendimento" id="id_horario_atendimento" class="form-control" style="max-width: 220px;" value="{{ form.horario_atendimento.value|default:fundamentacao.horario_atendimento|default:'' }}" placeholder="Ou informe manualmente">
+                        </div>
+                        {% if form.horario_atendimento.errors %}<div class="invalid-feedback d-block">{{ form.horario_atendimento.errors.0 }}</div>{% endif %}
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Atividades (marque as que se aplicam)</label>
+                        <div class="d-flex flex-column gap-1">
+                            {% for code, nome in form.fields.atividades_codigos.choices %}
+                            <div class="form-check">
+                                <input type="checkbox" name="atividades_codigos" value="{{ code }}" id="atividade_{{ code }}" class="form-check-input" {% if form.atividades_codigos.value and code in form.atividades_codigos.value %}checked{% endif %}>
+                                <label class="form-check-label" for="atividade_{{ code }}">{{ nome }}</label>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label for="id_recursos_texto" class="form-label">Recursos (texto)</label>
+                        <textarea name="recursos_texto" id="id_recursos_texto" class="form-control" rows="2" placeholder="Estrutura para uso futuro.">{{ form.recursos_texto.value|default:fundamentacao.recursos_texto|default:'' }}</textarea>
+                        {% if form.recursos_texto.errors %}<div class="invalid-feedback d-block">{{ form.recursos_texto.errors.0 }}</div>{% endif %}
+                    </div>
+                </div>
+
                 <div class="mb-4">
                     <label for="id_observacoes_pt_os" class="form-label">Observações (PT-OS)</label>
                     <textarea name="observacoes_pt_os" id="id_observacoes_pt_os" class="form-control" rows="3" placeholder="Observações adicionais (opcional).">{{ form.observacoes_pt_os.value|default:fundamentacao.observacoes_pt_os|default:'' }}</textarea>
@@ -123,16 +171,25 @@
                     <div class="invalid-feedback d-block">{{ form.observacoes_pt_os.errors.0 }}</div>
                     {% endif %}
                 </div>
-                {% if evento_apenas_consulta %}</fieldset>{% endif %}
                 <div class="d-flex flex-wrap gap-2 mt-2">
-                    {% if not evento_apenas_consulta %}
                     <button type="submit" name="salvar" class="btn btn-primary">Salvar</button>
                     <button type="submit" name="voltar_painel" value="1" class="btn btn-outline-primary">Salvar e voltar ao painel</button>
-                    {% endif %}
+                    <a href="{% url 'eventos:guiado-etapa-3' evento.pk %}" class="btn btn-outline-secondary">Etapa 3 — Termos</a>
+                    <a href="{% url 'eventos:guiado-etapa-5' evento.pk %}" class="btn btn-outline-primary">Etapa 5 — Ofícios</a>
                     <a href="{% url 'eventos:guiado-painel' evento.pk %}" class="btn btn-outline-secondary">Cancelar</a>
                 </div>
             </form>
         </div>
     </div>
 </div>
+<script>
+(function() {
+    var sel = document.getElementById('id_tipo_documento');
+    var bloco = document.getElementById('bloco-pt');
+    if (!sel || !bloco) return;
+    function toggle() { bloco.style.display = (sel.value === 'PT') ? 'block' : 'none'; }
+    sel.addEventListener('change', toggle);
+    toggle();
+})();
+</script>
 {% endblock %}

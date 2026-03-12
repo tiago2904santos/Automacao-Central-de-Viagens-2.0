@@ -1,6 +1,13 @@
+from datetime import datetime
+
 from cadastros.models import AssinaturaConfiguracao, ConfiguracaoSistema
 
-from eventos.models import EventoFundamentacao
+from eventos.models import EventoFundamentacao, EfetivoPlanoTrabalho, OficioTrecho
+from eventos.services.diarias import (
+    PeriodMarker,
+    calculate_periodized_diarias,
+    valor_por_extenso_ptbr,
+)
 from eventos.services.oficio_schema import oficio_justificativa_schema_available
 from eventos.services.justificativa import (
     get_dias_antecedencia_oficio,
@@ -8,6 +15,11 @@ from eventos.services.justificativa import (
     get_primeira_saida_oficio,
     oficio_exige_justificativa,
     oficio_tem_justificativa,
+)
+from eventos.services.plano_trabalho_domain import (
+    build_atividades_formatada,
+    build_metas_formatada,
+    get_unidade_movel_text,
 )
 
 from .types import DocumentoOficioTipo
@@ -356,6 +368,10 @@ def _build_common_context(oficio):
             'sigla_orgao': _text_or_empty(config.sigla_orgao if config else ''),
             'divisao': _text_or_empty(config.divisao if config else ''),
             'unidade': _text_or_empty(config.unidade if config else ''),
+            'unidade_rodape': _text_or_empty(config.unidade if config else ''),
+            'sede': _text_or_empty(getattr(config, 'sede', '') if config else ''),
+            'nome_chefia': _text_or_empty(getattr(config, 'nome_chefia', '') if config else ''),
+            'cargo_chefia': _text_or_empty(getattr(config, 'cargo_chefia', '') if config else ''),
             'endereco': _build_endereco_configuracao(config),
             'telefone': _text_or_empty(getattr(config, 'telefone_formatado', '') if config else ''),
             'email': _text_or_empty(config.email if config else ''),
@@ -427,16 +443,203 @@ def _get_fundamentacao_texto_para_tipo(oficio, tipo_documento):
     return None
 
 
+def _get_plano_trabalho_markers_chegada(oficio):
+    """
+    Constrói lista de PeriodMarker e datetime de chegada à sede a partir dos trechos e retorno do ofício.
+    Retorna (markers, chegada_final_sede) ou ([], None) se dados insuficientes.
+    """
+    trechos = list(
+        oficio.trechos.select_related('destino_cidade', 'destino_estado').order_by('ordem', 'pk')
+    )
+    if not trechos:
+        return [], None
+    markers = []
+    for t in trechos:
+        if not t.saida_data or not t.saida_hora:
+            return [], None
+        cidade_nome = t.destino_cidade.nome if t.destino_cidade_id else ''
+        uf_sigla = t.destino_estado.sigla if t.destino_estado_id else ''
+        markers.append(
+            PeriodMarker(
+                saida=datetime.combine(t.saida_data, t.saida_hora),
+                destino_cidade=cidade_nome,
+                destino_uf=uf_sigla,
+            )
+        )
+    if not oficio.retorno_chegada_data or not oficio.retorno_chegada_hora:
+        return [], None
+    chegada_final = datetime.combine(
+        oficio.retorno_chegada_data,
+        oficio.retorno_chegada_hora,
+    )
+    return markers, chegada_final
+
+
+def _get_pt_total_servidores(evento):
+    """Total de servidores do plano a partir da composição de efetivo do evento; fallback para 1."""
+    return _pt_total_servidores_safe(evento)
+
+
+def _get_proximo_numero_plano_trabalho():
+    """Retorna o próximo número do PT no formato 'N/AAAA' (ex: 1/2026), sem persistir."""
+    from django.utils import timezone
+    config = _get_configuracao_sistema()
+    if not config:
+        return ''
+    ano_atual = timezone.now().year
+    ultimo = getattr(config, 'pt_ultimo_numero', 0) or 0
+    ano_pt = getattr(config, 'pt_ano', 0) or 0
+    proximo = ultimo + 1 if ano_pt == ano_atual else 1
+    return f'{proximo}/{ano_atual}'
+
+
+def _format_data_extenso(data_value):
+    """Data por extenso em português (ex: 12 de março de 2026)."""
+    if not data_value:
+        return ''
+    meses = (
+        '', 'janeiro', 'fevereiro', 'março', 'abril', 'maio', 'junho',
+        'julho', 'agosto', 'setembro', 'outubro', 'novembro', 'dezembro'
+    )
+    try:
+        d = data_value if hasattr(data_value, 'day') else data_value
+        dia = d.day
+        mes = meses[d.month] if 1 <= d.month <= 12 else ''
+        ano = d.year
+        return f'{dia} de {mes} de {ano}'
+    except Exception:
+        return ''
+
+
+def _build_coordenacao_formatada(fund):
+    """Monta o texto {{coordenacao_formatada}} a partir da fundamentação (coordenador operacional + administrativo)."""
+    from django.utils import timezone
+    partes = []
+    if fund and fund.coordenador_operacional_id:
+        co = fund.coordenador_operacional
+        cargo = _text_or_empty(co.cargo) or 'Delegado(a)'
+        partes.append(
+            f'Fica designado como Coordenador Operacional do Evento o {cargo} {co.nome}, '
+            'a quem competirá a supervisão geral das atividades desenvolvidas, coordenação das equipes '
+            'policiais, articulação institucional no âmbito local e deliberação sobre questões operacionais '
+            'durante a execução da ação.'
+        )
+    config = _get_configuracao_sistema()
+    coord_adm = fund.coordenador_administrativo if fund else None
+    if not coord_adm and config and getattr(config, 'coordenador_adm_plano_trabalho_id', None):
+        coord_adm = config.coordenador_adm_plano_trabalho
+    if coord_adm:
+        cargo_adm = _text_or_empty(coord_adm.cargo.nome if getattr(coord_adm, 'cargo', None) else '') or 'Servidor(a)'
+        partes.append(
+            f'Fica designada como Coordenadora Administrativa do Plano a {cargo_adm} {coord_adm.nome}, '
+            'a qual ficará responsável pelo acompanhamento da execução administrativa do presente Plano de '
+            'Trabalho, organização das escalas de servidores, controle de materiais e equipamentos, '
+            'consolidação de dados estatísticos, elaboração de relatório final e demais providências necessárias '
+            'ao regular cumprimento da ação.'
+        )
+    return '\n\n'.join(partes)
+
+
+def _pt_total_servidores_safe(evento):
+    """Total de servidores do plano (composição de efetivo); fallback 1."""
+    from django.db.models import Sum
+    if not evento:
+        return 1
+    total = EfetivoPlanoTrabalho.objects.filter(evento=evento).aggregate(
+        total=Sum('quantidade')
+    )['total']
+    return max(1, (total or 0))
+
+
 def build_plano_trabalho_document_context(oficio):
+    from django.utils import timezone
     context = _build_common_context(oficio)
     objetivo = _get_fundamentacao_texto_para_tipo(oficio, EventoFundamentacao.TIPO_PT)
     if objetivo is None:
         objetivo = context['conteudo']['motivo']
+
+    evento = oficio.evento
+    fund = getattr(evento, 'fundamentacao', None) if evento else None
+    if fund and (fund.tipo_documento or '').strip() != EventoFundamentacao.TIPO_PT:
+        fund = None
+
+    solicitante_texto = ''
+    if fund:
+        if fund.solicitante_id:
+            solicitante_texto = _text_or_empty(fund.solicitante.nome)
+        else:
+            solicitante_texto = _text_or_empty(fund.solicitante_outros)
+
+    atividades_codigos = (fund.atividades_codigos if fund else '') or ''
+    horario_atendimento = _text_or_empty(fund.horario_atendimento if fund else '')
+    recursos_formatado = _text_or_empty(fund.recursos_texto if fund else '')
+
+    total_servidores_pt = _pt_total_servidores_safe(evento)
+    markers, chegada_final = _get_plano_trabalho_markers_chegada(oficio)
+    diarias_pt = {}
+    if markers and chegada_final:
+        try:
+            diarias_pt = calculate_periodized_diarias(
+                markers,
+                chegada_final,
+                quantidade_servidores=total_servidores_pt,
+            )
+        except Exception:
+            pass
+
+    totais = (diarias_pt or {}).get('totais') or {}
+    total_valor_str = totais.get('total_valor', '') or context['diarias']['valor']
+    valor_extenso_pt = totais.get('valor_extenso', '') or context['diarias']['valor_extenso']
+    diarias_x = totais.get('total_diarias', '') or context['diarias']['quantidade']
+    valor_unitario_str = totais.get('valor_por_servidor', '')
+    if not valor_unitario_str and total_servidores_pt and diarias_pt:
+        from decimal import Decimal, InvalidOperation
+        try:
+            raw = (totais.get('total_valor') or '0').strip().replace('.', '').replace(',', '.')
+            total_decimal = Decimal(raw)
+            unit = (total_decimal / total_servidores_pt).quantize(Decimal('0.01'))
+            valor_unitario_str = f'{unit:.2f}'.replace('.', ',')
+        except (InvalidOperation, ZeroDivisionError):
+            valor_unitario_str = ''
+    valor_unitario_extenso = valor_por_extenso_ptbr(valor_unitario_str) if valor_unitario_str else ''
+
+    quantidade_de_servidores_texto = f'{total_servidores_pt} servidor(es)' if total_servidores_pt else ''
+
+    dias_evento_extenso = ''
+    if evento and evento.data_inicio:
+        if evento.data_fim and evento.data_fim != evento.data_inicio:
+            dias_evento_extenso = (
+                f'{_format_data_extenso(evento.data_inicio)} a {_format_data_extenso(evento.data_fim)}'
+            )
+        else:
+            dias_evento_extenso = _format_data_extenso(evento.data_inicio)
+
+    numero_pt = _get_proximo_numero_plano_trabalho()
+    data_extenso = _format_data_extenso(timezone.now().date())
+
     context.update(
         {
             'tipo_documento': DocumentoOficioTipo.PLANO_TRABALHO.value,
             'tipo_documento_label': 'Plano de trabalho',
             'assinaturas': get_assinaturas_documento(DocumentoOficioTipo.PLANO_TRABALHO.value),
+            'data_extenso': data_extenso,
+            'numero_plano_trabalho': numero_pt,
+            'destino': context['roteiro']['destinos_texto'] or context['roteiro']['sede'],
+            'solicitante': solicitante_texto,
+            'metas_formatada': build_metas_formatada(atividades_codigos),
+            'atividades_formatada': build_atividades_formatada(atividades_codigos),
+            'dias_evento_extenso': dias_evento_extenso,
+            'locais_formatado': context['roteiro']['destinos_texto'] or context['roteiro']['sede'],
+            'horario_atendimento': horario_atendimento,
+            'quantidade_de_servidores': quantidade_de_servidores_texto,
+            'unidade_movel': get_unidade_movel_text(atividades_codigos),
+            'valor_total': total_valor_str,
+            'valor_total_por_extenso': valor_extenso_pt,
+            'diarias_x': diarias_x,
+            'valor_unitario': valor_unitario_str,
+            'valor_unitario_por_extenso': valor_unitario_extenso,
+            'recursos_formatado': recursos_formatado,
+            'coordenacao_formatada': _build_coordenacao_formatada(fund) if fund else '',
             'plano_trabalho': {
                 'objetivo': objetivo,
                 'local_periodo': (

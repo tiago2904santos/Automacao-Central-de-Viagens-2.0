@@ -19,7 +19,7 @@
     </div>
 
     {% if evento_apenas_consulta %}
-    <div class="alert alert-info" role="alert">Evento finalizado. Apenas consulta. Não é possível alterar dados dos termos.</div>
+    <div class="alert alert-info" role="alert">Evento finalizado: edição de status/modalidade bloqueada. Downloads permanecem disponíveis.</div>
     {% endif %}
     {% if not termo_templates_available %}
     <div class="alert alert-warning" role="alert">
@@ -41,12 +41,78 @@
         </div>
     </div>
 
+    <div class="row g-3 mb-4">
+        <div class="col-12 col-lg-4">
+            <div class="card h-100">
+                <div class="card-header py-2">
+                    <h3 class="h6 mb-0">Modo 1 — Termo padrão em branco</h3>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted small mb-3">Gera o modelo padrão sem exigir servidor, viatura, chefia ou assinatura configurada.</p>
+                    <div class="d-flex flex-wrap gap-2">
+                        <a href="{{ termo_padrao_docx_url }}" class="btn btn-outline-primary btn-sm">Gerar DOCX</a>
+                        {% if pdf_backend_available %}
+                        <a href="{{ termo_padrao_pdf_url }}" class="btn btn-outline-secondary btn-sm">Gerar PDF</a>
+                        {% else %}
+                        <button type="button" class="btn btn-outline-secondary btn-sm" disabled>Gerar PDF</button>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <div class="col-12 col-lg-8">
+            <div class="card h-100">
+                <div class="card-header py-2">
+                    <h3 class="h6 mb-0">Modo 2 — Termo completo por viatura</h3>
+                </div>
+                <div class="card-body">
+                    <p class="text-muted small mb-3">Selecione 1 viatura e N servidores. O sistema gera N termos individuais e entrega em um único arquivo ZIP.</p>
+                    <form method="post" action="{{ termo_viatura_docx_url }}">
+                        {% csrf_token %}
+                        <div class="row g-2 align-items-end">
+                            <div class="col-12 col-md-6">
+                                <label class="form-label small">Viatura</label>
+                                <select name="veiculo_id" class="form-select form-select-sm">
+                                    <option value="">Selecione...</option>
+                                    {% for veiculo in veiculos %}
+                                    <option value="{{ veiculo.pk }}">{{ veiculo.placa_formatada|default:veiculo.placa }} — {{ veiculo.modelo|default:"(sem modelo)" }}</option>
+                                    {% endfor %}
+                                </select>
+                            </div>
+                            <div class="col-12 col-md-6">
+                                <div class="small text-muted mb-1">Servidores</div>
+                                <div class="border rounded p-2" style="max-height: 9rem; overflow: auto;">
+                                    {% for viajante in viajantes_disponiveis %}
+                                    <div class="form-check">
+                                        <input class="form-check-input" type="checkbox" name="viajantes" id="id_viajante_{{ viajante.pk }}" value="{{ viajante.pk }}">
+                                        <label class="form-check-label small" for="id_viajante_{{ viajante.pk }}">{{ viajante.nome }}</label>
+                                    </div>
+                                    {% empty %}
+                                    <div class="small text-muted">Nenhum servidor disponível.</div>
+                                    {% endfor %}
+                                </div>
+                            </div>
+                        </div>
+                        <div class="d-flex flex-wrap gap-2 mt-3">
+                            <button type="submit" class="btn btn-outline-primary btn-sm">Gerar ZIP (DOCX)</button>
+                            {% if pdf_backend_available %}
+                            <button type="submit" formaction="{{ termo_viatura_pdf_url }}" class="btn btn-outline-secondary btn-sm">Gerar ZIP (PDF)</button>
+                            {% else %}
+                            <button type="button" class="btn btn-outline-secondary btn-sm" disabled>Gerar ZIP (PDF)</button>
+                            {% endif %}
+                        </div>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="card form-card">
         <div class="card-header py-2">
-            <h3 class="h6 mb-0">Termos por servidor participante</h3>
+            <h3 class="h6 mb-0">Modo 3 — Termo individual sem viatura / gestão por participante</h3>
         </div>
         <div class="card-body">
-            {% if participantes %}
             <div class="row g-2 mb-3">
                 <div class="col-6 col-md-2"><div class="border rounded p-2 small"><strong>{{ total_participantes }}</strong><br>Participantes</div></div>
                 <div class="col-6 col-md-2"><div class="border rounded p-2 small"><strong>{{ termos_pendentes }}</strong><br>Pendentes</div></div>
@@ -54,11 +120,9 @@
                 <div class="col-6 col-md-3"><div class="border rounded p-2 small"><strong>{{ termos_dispensados }}</strong><br>Dispensados</div></div>
                 <div class="col-6 col-md-3"><div class="border rounded p-2 small"><strong>{{ termos_concluidos }}</strong><br>Concluídos</div></div>
             </div>
-            <p class="text-muted small mb-3">
-                Etapa de TERMOS no nível do evento. Selecione modalidade e status por servidor; gere DOCX/PDF sem dependência de chefia/assinatura.
-            </p>
 
-            <form method="post" id="form-etapa5">
+            {% if participantes %}
+            <form method="post" id="form-termos-participantes">
                 {% csrf_token %}
                 {% if evento_apenas_consulta %}<fieldset disabled>{% endif %}
                 <div class="table-responsive">
@@ -105,15 +169,10 @@
                                     </select>
                                 </td>
                                 <td class="text-end">
-                                    {% if termo_templates_available %}
                                     <a href="{{ row.download_docx_url }}" class="btn btn-outline-primary btn-sm">DOCX</a>
                                     {% if pdf_backend_available %}
                                     <a href="{{ row.download_pdf_url }}" class="btn btn-outline-secondary btn-sm">PDF</a>
                                     {% else %}
-                                    <button type="button" class="btn btn-outline-secondary btn-sm" disabled>PDF</button>
-                                    {% endif %}
-                                    {% else %}
-                                    <button type="button" class="btn btn-outline-primary btn-sm" disabled>DOCX</button>
                                     <button type="button" class="btn btn-outline-secondary btn-sm" disabled>PDF</button>
                                     {% endif %}
                                     <button type="submit" name="acao_participante" value="dispensar:{{ row.viajante.pk }}" class="btn btn-outline-dark btn-sm">Dispensar</button>
@@ -138,12 +197,15 @@
                 </div>
             </form>
             {% else %}
-            <p class="text-muted small mb-0">Nenhum participante no evento. Adicione viajantes aos ofícios da Etapa 5 para controlar os termos aqui.</p>
-            <div class="mt-3">
-                <a href="{% url 'eventos:guiado-painel' evento.pk %}" class="btn btn-outline-secondary btn-sm">Voltar ao painel</a>
-            </div>
+            <p class="text-muted small mb-0">Nenhum participante no evento. Use o modo 2 para selecionar viatura + servidores ou avance para etapa de Ofícios e retorne.</p>
             {% endif %}
         </div>
+    </div>
+
+    <div class="d-flex flex-wrap gap-2 mt-3">
+        <a href="{% url 'eventos:guiado-etapa-2' evento.pk %}" class="btn btn-outline-secondary">Etapa 2 — Roteiros</a>
+        <a href="{% url 'eventos:guiado-etapa-4' evento.pk %}" class="btn btn-outline-primary">Etapa 4 — PT / OS</a>
+        <a href="{% url 'eventos:guiado-painel' evento.pk %}" class="btn btn-outline-secondary">Voltar ao painel</a>
     </div>
 </div>
 {% endblock %}

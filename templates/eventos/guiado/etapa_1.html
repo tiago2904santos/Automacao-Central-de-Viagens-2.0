@@ -9,18 +9,12 @@
         <h1 class="h4 mb-0">Etapa 1 — Dados do evento</h1>
         <div class="d-flex gap-2">
             <a href="{% url 'eventos:guiado-painel' object.pk %}" class="btn btn-outline-secondary btn-sm">Ver painel</a>
-            {% if not evento_apenas_consulta %}
             <form method="post" action="{% url 'eventos:excluir' object.pk %}" class="d-inline" onsubmit="return confirm('Excluir este evento? Esta ação não pode ser desfeita.');">
                 {% csrf_token %}
                 <button type="submit" class="btn btn-outline-danger btn-sm">Excluir evento</button>
             </form>
-            {% endif %}
         </div>
     </div>
-
-    {% if evento_apenas_consulta %}
-    <div class="alert alert-info" role="alert">Evento finalizado. Apenas consulta. Não é possível alterar os dados.</div>
-    {% endif %}
 
     {% if form.non_field_errors %}
     <div class="alert alert-danger" role="alert">
@@ -115,10 +109,8 @@
                     </div>
                 </div>
                 <div class="form-actions mt-4 d-flex flex-wrap gap-2">
-                    {% if not evento_apenas_consulta %}
                     <button type="submit" class="btn btn-primary">Salvar</button>
                     <button type="submit" name="continuar" value="1" class="btn btn-success">Salvar e continuar</button>
-                    {% endif %}
                     <a href="{% url 'eventos:guiado-painel' object.pk %}" class="btn btn-outline-secondary">Cancelar</a>
                 </div>
             </form>

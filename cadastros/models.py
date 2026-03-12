@@ -337,6 +337,23 @@ class ConfiguracaoSistema(models.Model):
     telefone = models.CharField('Telefone', max_length=20, blank=True, default='')
     email = models.EmailField('E-mail', blank=True, default='')
 
+    # Sede e chefia (documentos institucionais)
+    sede = models.CharField('Sede', max_length=200, blank=True, default='')
+    nome_chefia = models.CharField('Nome da chefia', max_length=120, blank=True, default='')
+    cargo_chefia = models.CharField('Cargo da chefia', max_length=120, blank=True, default='')
+
+    # Plano de Trabalho: coordenador administrativo padrão
+    coordenador_adm_plano_trabalho = models.ForeignKey(
+        'Viajante', on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='+', verbose_name='Coordenador administrativo padrão (Plano de Trabalho)'
+    )
+
+    # Numeração do Plano de Trabalho (auto-increment por ano)
+    pt_ultimo_numero = models.PositiveIntegerField(
+        'Último número PT (ano vigente)', default=0
+    )
+    pt_ano = models.PositiveIntegerField('Ano vigente PT', default=0)
+
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

@@ -1,3 +1,4 @@
+from cadastros.models import ConfiguracaoSistema
 from eventos.services.justificativa import get_primeira_saida_oficio
 
 from .context import build_termo_autorizacao_document_context
@@ -110,6 +111,20 @@ def _build_viatura_data_from_evento(evento, oficios_relacionados):
     return _extract_viatura_data()
 
 
+def _build_viatura_data_from_veiculo(veiculo):
+    if veiculo is None:
+        return _extract_viatura_data()
+    combustivel = ''
+    combustivel_obj = getattr(veiculo, 'combustivel', None)
+    if combustivel_obj is not None:
+        combustivel = getattr(combustivel_obj, 'nome', '') or ''
+    return _extract_viatura_data(
+        placa=getattr(veiculo, 'placa_formatada', ''),
+        modelo=getattr(veiculo, 'modelo', ''),
+        combustivel=combustivel,
+    )
+
+
 def _normalize_termo_modalidade(modalidade):
     normalized = (modalidade or '').strip().upper()
     if normalized == TERMO_MODALIDADE_SEMIPREENCHIDO:
@@ -191,6 +206,42 @@ def _build_termo_placeholder_mapping(
     return mapping
 
 
+def _build_institucional_context():
+    config = ConfiguracaoSistema.objects.order_by('pk').first()
+    if not config:
+        return {}
+    endereco_partes = [
+        (getattr(config, 'logradouro', '') or '').strip(),
+        (getattr(config, 'numero', '') or '').strip(),
+        (getattr(config, 'bairro', '') or '').strip(),
+    ]
+    cidade_uf = ' / '.join(
+        [
+            part
+            for part in [
+                (getattr(config, 'cidade_endereco', '') or '').strip(),
+                (getattr(config, 'uf', '') or '').strip(),
+            ]
+            if part
+        ]
+    )
+    if cidade_uf:
+        endereco_partes.append(cidade_uf)
+    cep = (getattr(config, 'cep_formatado', '') or getattr(config, 'cep', '') or '').strip()
+    if cep:
+        endereco_partes.append(f'CEP {cep}')
+    endereco = ', '.join(part for part in endereco_partes if part)
+    return {
+        'orgao': (getattr(config, 'nome_orgao', '') or '').strip(),
+        'sigla_orgao': (getattr(config, 'sigla_orgao', '') or '').strip(),
+        'divisao': (getattr(config, 'divisao', '') or '').strip(),
+        'unidade': (getattr(config, 'unidade', '') or '').strip(),
+        'endereco': endereco,
+        'telefone': (getattr(config, 'telefone_formatado', '') or getattr(config, 'telefone', '') or '').strip(),
+        'email': (getattr(config, 'email', '') or '').strip(),
+    }
+
+
 def _normalize_assinatura_visual(document):
     for paragraph in iter_all_paragraphs(document):
         text = ''.join(run.text for run in paragraph.runs).strip()
@@ -268,6 +319,9 @@ def validate_evento_participante_termo_data(evento, viajante, modalidade):
     if not destinos_texto:
         errors.append('Defina ao menos um destino no evento para gerar o termo.')
     if modalidade == TERMO_MODALIDADE_COMPLETO:
+        if viajante is None:
+            errors.append('Selecione o servidor para gerar termo completo.')
+            return list(dict.fromkeys([e for e in errors if e]))
         nome = (getattr(viajante, 'nome', '') or '').strip()
         rg = (getattr(viajante, 'rg', '') or '').strip()
         cpf = (getattr(viajante, 'cpf', '') or '').strip()
@@ -287,12 +341,15 @@ def validate_evento_participante_termo_data(evento, viajante, modalidade):
     return list(dict.fromkeys([e for e in errors if e]))
 
 
-def render_evento_participante_termo_docx(evento, viajante, modalidade, oficios_relacionados):
+def render_evento_participante_termo_docx(evento, viajante, modalidade, oficios_relacionados, veiculo_override=None):
     modalidade = _normalize_termo_modalidade(modalidade)
     destino = _normalize_destinos_texto(evento.destinos.all())
     data_do_evento = _build_data_do_evento_from_dates(evento.data_inicio, evento.data_fim)
-    viatura_data = _build_viatura_data_from_evento(evento, oficios_relacionados)
-    institucional = (build_termo_autorizacao_document_context(oficios_relacionados[0]).get('institucional') if oficios_relacionados else {})
+    if veiculo_override is not None:
+        viatura_data = _build_viatura_data_from_veiculo(veiculo_override)
+    else:
+        viatura_data = _build_viatura_data_from_evento(evento, oficios_relacionados)
+    institucional = _build_institucional_context()
     mapping = _build_termo_placeholder_mapping(
         modalidade=modalidade,
         data_do_evento=data_do_evento,
@@ -309,3 +366,25 @@ def render_evento_participante_termo_docx(evento, viajante, modalidade, oficios_
         post_processor=lambda document: _post_process_termo(document, mapping, viatura_data),
     )
 
+
+def render_evento_termo_padrao_branco_docx(evento, veiculo_override=None):
+    destino = _normalize_destinos_texto(evento.destinos.all())
+    data_do_evento = _build_data_do_evento_from_dates(evento.data_inicio, evento.data_fim)
+    if veiculo_override is not None:
+        viatura_data = _build_viatura_data_from_veiculo(veiculo_override)
+    else:
+        viatura_data = _extract_viatura_data()
+    mapping = _build_termo_placeholder_mapping(
+        modalidade=TERMO_MODALIDADE_SEMIPREENCHIDO,
+        data_do_evento=data_do_evento,
+        destino=destino,
+        viatura_data=viatura_data,
+        viajante=None,
+        institucional=_build_institucional_context(),
+    )
+    template_path = get_termo_autorizacao_template_path('SEMIPREENCHIDO')
+    return render_docx_template_bytes(
+        template_path,
+        mapping,
+        post_processor=lambda document: _post_process_termo(document, mapping, viatura_data),
+    )

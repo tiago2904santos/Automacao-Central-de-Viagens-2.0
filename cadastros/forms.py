@@ -325,6 +325,8 @@ class ConfiguracaoSistemaForm(FormComErroInvalidMixin, forms.ModelForm):
         model = ConfiguracaoSistema
         fields = [
             'divisao', 'unidade', 'sigla_orgao',
+            'sede', 'nome_chefia', 'cargo_chefia',
+            'coordenador_adm_plano_trabalho',
             'cep', 'logradouro', 'bairro', 'cidade_endereco', 'uf', 'numero',
             'telefone', 'email',
         ]
@@ -332,6 +334,10 @@ class ConfiguracaoSistemaForm(FormComErroInvalidMixin, forms.ModelForm):
             'divisao': forms.TextInput(attrs={'class': 'form-control', 'id': 'id_divisao', 'maxlength': 120}),
             'unidade': forms.TextInput(attrs={'class': 'form-control', 'id': 'id_unidade', 'maxlength': 120}),
             'sigla_orgao': forms.TextInput(attrs={'class': 'form-control', 'id': 'id_sigla_orgao', 'maxlength': 20}),
+            'sede': forms.TextInput(attrs={'class': 'form-control', 'id': 'id_sede', 'maxlength': 200, 'placeholder': 'Ex.: Curitiba/PR'}),
+            'nome_chefia': forms.TextInput(attrs={'class': 'form-control', 'id': 'id_nome_chefia', 'maxlength': 120}),
+            'cargo_chefia': forms.TextInput(attrs={'class': 'form-control', 'id': 'id_cargo_chefia', 'maxlength': 120}),
+            'coordenador_adm_plano_trabalho': forms.Select(attrs={'class': 'form-select', 'id': 'id_coordenador_adm_plano_trabalho'}),
             'cep': forms.TextInput(attrs={'class': 'form-control', 'id': 'id_cep', 'maxlength': 9, 'placeholder': '00000-000', 'data-mask': 'cep', 'inputmode': 'numeric'}),
             'logradouro': forms.TextInput(attrs={'class': 'form-control', 'id': 'id_logradouro'}),
             'bairro': forms.TextInput(attrs={'class': 'form-control', 'id': 'id_bairro'}),
@@ -349,6 +355,8 @@ class ConfiguracaoSistemaForm(FormComErroInvalidMixin, forms.ModelForm):
         self.fields['assinatura_justificativas'].queryset = qs
         self.fields['assinatura_planos_trabalho'].queryset = qs
         self.fields['assinatura_ordens_servico'].queryset = qs
+        self.fields['coordenador_adm_plano_trabalho'].queryset = qs
+        self.fields['coordenador_adm_plano_trabalho'].empty_label = '---------'
         if self.instance and self.instance.pk:
             if self.instance.cep:
                 self.initial['cep'] = format_cep(self.instance.cep)

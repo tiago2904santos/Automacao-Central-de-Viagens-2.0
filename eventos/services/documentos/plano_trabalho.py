@@ -13,18 +13,35 @@ from .renderer import (
 
 def render_plano_trabalho_docx(oficio):
     context = build_plano_trabalho_document_context(oficio)
-    titulo = f"PLANO DE TRABALHO - OFÍCIO Nº {context['identificacao']['numero_formatado'] or 'RASCUNHO'}"
+    titulo = (
+        f"PLANO DE TRABALHO Nº {context.get('numero_plano_trabalho') or '—'} - "
+        f"OFÍCIO Nº {context['identificacao']['numero_formatado'] or 'RASCUNHO'}"
+    )
     subtitulo = context['institucional']['orgao'] or context['institucional']['sigla_orgao']
     document = create_base_document(titulo, subtitulo)
 
     add_section_heading(document, 'Identificação')
+    add_label_value(document, 'Número do plano', context.get('numero_plano_trabalho', ''))
     add_label_value(document, 'Evento', context['evento']['titulo'])
     add_label_value(document, 'Protocolo', context['identificacao']['protocolo_formatado'])
     add_label_value(document, 'Período da viagem', context['roteiro']['periodo_viagem']['resumo'])
-    add_label_value(document, 'Destino(s)', context['roteiro']['destinos_texto'])
+    add_label_value(document, 'Destino(s)', context.get('destino') or context['roteiro']['destinos_texto'])
+    add_label_value(document, 'Solicitante', context.get('solicitante', ''))
 
     add_multiline_value(document, 'Objetivo / finalidade', context['plano_trabalho']['objetivo'])
     add_label_value(document, 'Local e período', context['plano_trabalho']['local_periodo'])
+    add_label_value(document, 'Dias do evento (extenso)', context.get('dias_evento_extenso', ''))
+    add_label_value(document, 'Locais', context.get('locais_formatado', '') or context['roteiro']['destinos_texto'])
+    add_label_value(document, 'Horário de atendimento', context.get('horario_atendimento', ''))
+
+    if context.get('atividades_formatada'):
+        add_multiline_value(document, 'Atividades', context['atividades_formatada'])
+    if context.get('metas_formatada'):
+        add_multiline_value(document, 'Metas', context['metas_formatada'])
+    if context.get('unidade_movel'):
+        add_label_value(document, 'Unidade móvel', context['unidade_movel'])
+
+    add_label_value(document, 'Quantidade de servidores', context.get('quantidade_de_servidores', ''))
 
     participantes_rows = [
         [viajante['nome'], viajante['cargo'], viajante['rg'], viajante['cpf']]
@@ -41,21 +58,34 @@ def render_plano_trabalho_docx(oficio):
         empty_text='Roteiro ainda não informado.',
     )
 
+    if context.get('coordenacao_formatada'):
+        add_multiline_value(document, 'Coordenação', context['coordenacao_formatada'])
+
     add_section_heading(document, 'Transporte')
     add_label_value(document, 'Veículo', context['veiculo']['descricao'])
     add_label_value(document, 'Motorista', context['motorista']['descricao'])
     add_label_value(document, 'Sede', context['roteiro']['sede'])
 
     add_section_heading(document, 'Diárias e custeio')
-    add_label_value(document, 'Resumo das diárias', context['plano_trabalho']['diarias_resumo'])
-    add_label_value(document, 'Valor por extenso', context['diarias']['valor_extenso'])
+    add_label_value(document, 'Composição (diárias)', context.get('diarias_x') or context['plano_trabalho']['diarias_resumo'])
+    add_label_value(document, 'Valor unitário (1 servidor)', context.get('valor_unitario', ''))
+    add_label_value(document, 'Valor unitário por extenso', context.get('valor_unitario_por_extenso', ''))
+    add_label_value(document, 'Valor total', context.get('valor_total', '') or context['diarias']['valor'])
+    add_label_value(document, 'Valor total por extenso', context.get('valor_total_por_extenso') or context['diarias']['valor_extenso'])
     add_label_value(document, 'Custeio', context['plano_trabalho']['custeio_resumo'])
 
+    if context.get('recursos_formatado'):
+        add_multiline_value(document, 'Recursos', context['recursos_formatado'])
+
     add_section_heading(document, 'Informações institucionais')
+    add_label_value(document, 'Data (extenso)', context.get('data_extenso', ''))
     add_label_value(document, 'Órgão', context['institucional']['orgao'] or context['institucional']['sigla_orgao'])
     add_label_value(document, 'Unidade', context['institucional']['unidade'])
     add_label_value(document, 'Divisão', context['institucional']['divisao'])
+    add_label_value(document, 'Sede', context['institucional'].get('sede', ''))
     add_label_value(document, 'Endereço', context['institucional']['endereco'])
+    add_label_value(document, 'Nome da chefia', context['institucional'].get('nome_chefia', ''))
+    add_label_value(document, 'Cargo da chefia', context['institucional'].get('cargo_chefia', ''))
 
     if context['justificativa']['exigida'] and context['conteudo']['justificativa_texto']:
         add_multiline_value(document, 'Justificativa registrada', context['conteudo']['justificativa_texto'])

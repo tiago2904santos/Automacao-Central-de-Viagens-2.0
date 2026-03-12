@@ -1,5 +1,17 @@
 from django.contrib import admin
-from .models import Evento, EventoFinalizacao, EventoFundamentacao, EventoTermoParticipante, ModeloJustificativa, ModeloMotivoViagem, Oficio
+from .models import (
+    CoordenadorOperacional,
+    DocumentoAvulso,
+    EfetivoPlanoTrabalho,
+    Evento,
+    EventoFinalizacao,
+    EventoFundamentacao,
+    EventoTermoParticipante,
+    ModeloJustificativa,
+    ModeloMotivoViagem,
+    Oficio,
+    SolicitantePlanoTrabalho,
+)
 
 
 @admin.register(Evento)
@@ -10,12 +22,36 @@ class EventoAdmin(admin.ModelAdmin):
     ordering = ('-data_inicio', '-created_at')
 
 
+@admin.register(SolicitantePlanoTrabalho)
+class SolicitantePlanoTrabalhoAdmin(admin.ModelAdmin):
+    list_display = ('nome', 'ativo', 'ordem', 'is_padrao', 'updated_at')
+    list_filter = ('ativo', 'is_padrao')
+    search_fields = ('nome',)
+    ordering = ('ordem', 'nome')
+
+
+@admin.register(CoordenadorOperacional)
+class CoordenadorOperacionalAdmin(admin.ModelAdmin):
+    list_display = ('nome', 'cargo', 'cidade', 'unidade', 'ativo', 'ordem', 'updated_at')
+    list_filter = ('ativo',)
+    search_fields = ('nome', 'cargo', 'cidade')
+    ordering = ('ordem', 'nome')
+
+
+@admin.register(EfetivoPlanoTrabalho)
+class EfetivoPlanoTrabalhoAdmin(admin.ModelAdmin):
+    list_display = ('evento', 'cargo', 'quantidade')
+    list_filter = ('cargo',)
+    raw_id_fields = ('evento',)
+    ordering = ('evento', 'cargo__nome')
+
+
 @admin.register(EventoFundamentacao)
 class EventoFundamentacaoAdmin(admin.ModelAdmin):
-    list_display = ('evento', 'concluido', 'updated_at')
-    list_filter = ('updated_at',)
-    search_fields = ('texto_fundamentacao', 'observacoes_pt_os')
-    raw_id_fields = ('evento',)
+    list_display = ('evento', 'tipo_documento', 'concluido', 'solicitante', 'updated_at')
+    list_filter = ('tipo_documento', 'updated_at')
+    search_fields = ('texto_fundamentacao', 'observacoes_pt_os', 'solicitante_outros')
+    raw_id_fields = ('evento', 'solicitante', 'coordenador_operacional', 'coordenador_administrativo')
 
 
 @admin.register(EventoTermoParticipante)
@@ -32,6 +68,24 @@ class EventoFinalizacaoAdmin(admin.ModelAdmin):
     list_filter = ('finalizado_em',)
     search_fields = ('observacoes_finais',)
     raw_id_fields = ('evento', 'finalizado_por')
+
+
+@admin.register(DocumentoAvulso)
+class DocumentoAvulsoAdmin(admin.ModelAdmin):
+    list_display = (
+        'id',
+        'titulo',
+        'tipo_documento',
+        'classificacao',
+        'evento',
+        'oficio',
+        'criado_por',
+        'updated_at',
+    )
+    list_filter = ('tipo_documento', 'classificacao')
+    search_fields = ('titulo',)
+    raw_id_fields = ('evento', 'roteiro', 'plano_trabalho', 'oficio', 'criado_por')
+    ordering = ('-updated_at',)
 
 
 @admin.register(Oficio)

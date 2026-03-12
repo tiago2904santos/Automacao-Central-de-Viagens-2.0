@@ -8,7 +8,7 @@
     <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
         <h1 class="h4 mb-0">Ofícios do evento (Etapa 5)</h1>
         <div class="d-flex gap-2">
-            <form method="post" action="{% url 'eventos:guiado-etapa-3-criar-oficio' evento.pk %}" class="d-inline">
+            <form method="post" action="{% url 'eventos:guiado-etapa-5-criar-oficio' evento.pk %}" class="d-inline">
                 {% csrf_token %}
                 <button type="submit" class="btn btn-primary btn-sm" id="btnCriarOficioEvento">Criar Ofício neste Evento</button>
             </form>
@@ -72,7 +72,7 @@
     <div class="card mb-4">
         <div class="card-body">
             <p class="text-muted mb-3">Nenhum ofício vinculado a este evento ainda.</p>
-            <form method="post" action="{% url 'eventos:guiado-etapa-3-criar-oficio' evento.pk %}" class="d-inline">
+            <form method="post" action="{% url 'eventos:guiado-etapa-5-criar-oficio' evento.pk %}" class="d-inline">
                 {% csrf_token %}
                 <button type="submit" class="btn btn-primary">Criar Ofício neste Evento</button>
             </form>
@@ -81,10 +81,12 @@
     {% endif %}
 
     <div class="d-flex flex-wrap gap-2 mt-3">
-        <form method="post" action="{% url 'eventos:guiado-etapa-3-criar-oficio' evento.pk %}" class="d-inline">
+        <form method="post" action="{% url 'eventos:guiado-etapa-5-criar-oficio' evento.pk %}" class="d-inline">
             {% csrf_token %}
             <button type="submit" class="btn btn-primary">Criar Ofício neste Evento</button>
         </form>
+        <a href="{% url 'eventos:guiado-etapa-4' evento.pk %}" class="btn btn-outline-secondary">Etapa 4 — PT / OS</a>
+        <a href="{% url 'eventos:guiado-etapa-6' evento.pk %}" class="btn btn-outline-primary">Etapa 6 — Justificativa</a>
         <a href="{% url 'eventos:guiado-painel' evento.pk %}" class="btn btn-outline-secondary">Voltar ao painel</a>
     </div>
 </div>

@@ -5,6 +5,7 @@ from io import BytesIO
 from pathlib import Path
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+from zipfile import ZipFile
 import builtins
 import importlib
 from urllib.parse import quote
@@ -19,6 +20,7 @@ from django.utils import timezone as tz
 
 from cadastros.models import AssinaturaConfiguracao, Cargo, ConfiguracaoSistema, Estado, Cidade, UnidadeLotacao, Viajante, Veiculo, CombustivelVeiculo
 from eventos.models import (
+    DocumentoAvulso,
     Evento,
     EventoDestino,
     EventoFinalizacao,
@@ -2699,39 +2701,45 @@ class PainelBlocosClicaveisTest(TestCase):
             status=Evento.STATUS_RASCUNHO,
         )
 
-    def test_painel_ordem_de_negocio_1_a_6(self):
+    def test_painel_ordem_de_negocio_1_a_7(self):
+        """Ordem funcional: 1 Dados, 2 Roteiros, 3 Termos, 4 PT/OS, 5 Ofícios, 6 Justificativa, 7 Finalização."""
         response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
         self.assertEqual(response.status_code, 200)
         etapas = response.context['etapas']
-        self.assertEqual([e['numero'] for e in etapas], [1, 2, 3, 4, 5, 6])
+        self.assertEqual([e['numero'] for e in etapas], [1, 2, 3, 4, 5, 6, 7])
         nomes = [e['nome'] for e in etapas]
         self.assertEqual(nomes[0], 'Dados do evento')
-        self.assertEqual(nomes[1], 'PT / OS')
+        self.assertEqual(nomes[1], 'Roteiros')
         self.assertEqual(nomes[2], 'Termos')
-        self.assertEqual(nomes[3], 'Roteiros')
+        self.assertIn('Plano de Trabalho', nomes[3])
         self.assertTrue((nomes[4] or '').lower().startswith('of'))
-        self.assertTrue((nomes[5] or '').lower().startswith('finaliza'))
+        self.assertEqual(nomes[5], 'Justificativa')
+        self.assertTrue((nomes[6] or '').lower().startswith('finaliza'))
 
     def test_links_das_etapas_no_painel(self):
+        """Ordem funcional: 1 Dados, 2 Roteiros, 3 Termos, 4 PT/OS, 5 Ofícios, 6 Justificativa, 7 Finalização."""
         response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
         self.assertEqual(response.status_code, 200)
         etapas = response.context['etapas']
         urls = {e['numero']: e['url'] for e in etapas}
+        self.assertEqual(len(etapas), 7)
         self.assertEqual(urls[1], reverse('eventos:guiado-etapa-1', kwargs={'pk': self.evento.pk}))
-        self.assertEqual(urls[2], reverse('eventos:guiado-etapa-4', kwargs={'evento_id': self.evento.pk}))
-        self.assertEqual(urls[3], reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}))
-        self.assertEqual(urls[4], reverse('eventos:guiado-etapa-2', kwargs={'evento_id': self.evento.pk}))
-        self.assertEqual(urls[5], reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}))
+        self.assertEqual(urls[2], reverse('eventos:guiado-etapa-2', kwargs={'evento_id': self.evento.pk}))
+        self.assertEqual(urls[3], reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}))
+        self.assertEqual(urls[4], reverse('eventos:guiado-etapa-4', kwargs={'evento_id': self.evento.pk}))
+        self.assertEqual(urls[5], reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}))
         self.assertEqual(urls[6], reverse('eventos:guiado-etapa-6', kwargs={'evento_id': self.evento.pk}))
+        self.assertEqual(urls[7], reverse('eventos:guiado-etapa-7', kwargs={'evento_id': self.evento.pk}))
 
     def test_telas_reais_das_etapas(self):
         urls = [
             reverse('eventos:guiado-etapa-1', kwargs={'pk': self.evento.pk}),
-            reverse('eventos:guiado-etapa-4', kwargs={'evento_id': self.evento.pk}),
-            reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}),
             reverse('eventos:guiado-etapa-2', kwargs={'evento_id': self.evento.pk}),
             reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}),
+            reverse('eventos:guiado-etapa-4', kwargs={'evento_id': self.evento.pk}),
+            reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}),
             reverse('eventos:guiado-etapa-6', kwargs={'evento_id': self.evento.pk}),
+            reverse('eventos:guiado-etapa-7', kwargs={'evento_id': self.evento.pk}),
         ]
         for url in urls:
             response = self.client.get(url)
@@ -2761,7 +2769,7 @@ class EventoEtapa4FundamentacaoTest(TestCase):
     def test_etapa_4_get_retorna_200_com_formulario(self):
         response = self.client.get(reverse('eventos:guiado-etapa-4', kwargs={'evento_id': self.evento.pk}))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Fundamentação / PT-OS')
+        self.assertContains(response, 'PT / OS')
         self.assertContains(response, 'Texto da fundamentação')
         self.assertContains(response, 'Salvar')
         self.assertContains(response, 'Voltar ao painel')
@@ -2798,7 +2806,7 @@ class EventoEtapa4FundamentacaoTest(TestCase):
         self.assertTrue(fund.concluido)
         response_painel = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
         self.assertEqual(response_painel.status_code, 200)
-        self.assertContains(response_painel, 'Fundamentação / PT-OS')
+        self.assertContains(response_painel, 'PT / OS')
         self.assertContains(response_painel, 'bg-success')
 
     def test_etapa_4_painel_em_andamento_quando_tipo_sem_texto(self):
@@ -2848,7 +2856,8 @@ class EventoEtapa4FundamentacaoTest(TestCase):
         )
         response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Etapa 4 — Fundamentação / PT-OS')
+        self.assertContains(response, 'Etapa 4')
+        self.assertContains(response, 'Plano de Trabalho')
         self.assertContains(response, 'Pendente')
 
 
@@ -2881,9 +2890,9 @@ class EventoEtapa5TermosTest(TestCase):
                 {
                     'status': Viajante.STATUS_FINALIZADO,
                     'cargo': cargo,
-                    'telefone': '41999990000',
+                    'telefone': f'4199{(cpf or "0")[-7:]:0>7}',
                     'unidade_lotacao': unidade,
-                    'rg': '1234567890',
+                    'rg': f'1{(cpf or "0")[-9:]:0>9}',
                 }
             )
         return Viajante.objects.create(**kwargs)
@@ -2893,21 +2902,31 @@ class EventoEtapa5TermosTest(TestCase):
         oficio.viajantes.add(viajante)
         return oficio
 
+    def _criar_veiculo_finalizado(self):
+        combustivel = CombustivelVeiculo.objects.create(nome='Gasolina', is_padrao=True)
+        return Veiculo.objects.create(
+            placa='ABC1D23',
+            modelo='Viatura Teste',
+            combustivel=combustivel,
+            tipo=Veiculo.TIPO_DESCARACTERIZADO,
+            status=Veiculo.STATUS_FINALIZADO,
+        )
+
     def test_etapa_5_exige_login(self):
         self.client.logout()
-        response = self.client.get(reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}))
+        response = self.client.get(reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}))
         self.assertEqual(response.status_code, 302)
         self.assertIn('login', response.url)
 
     def test_etapa_5_get_sem_oficios_exibe_mensagem(self):
-        response = self.client.get(reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}))
+        response = self.client.get(reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Nenhum participante no evento')
 
     def test_etapa_5_get_com_oficio_e_viajante_exibe_tabela(self):
         viajante = self._criar_viajante(nome='Viajante A')
         self._vincular_viajante_em_oficio(viajante)
-        response = self.client.get(reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}))
+        response = self.client.get(reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, viajante.nome)
         self.assertContains(response, 'value="PENDENTE"')
@@ -2919,7 +2938,7 @@ class EventoEtapa5TermosTest(TestCase):
         viajante = self._criar_viajante(nome='Viajante B')
         self._vincular_viajante_em_oficio(viajante)
         response = self.client.post(
-            reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}),
+            reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}),
             {
                 f'status_{viajante.pk}': EventoTermoParticipante.STATUS_DISPENSADO,
                 f'modalidade_{viajante.pk}': EventoTermoParticipante.MODALIDADE_SEMIPREENCHIDO,
@@ -2933,7 +2952,7 @@ class EventoEtapa5TermosTest(TestCase):
     def test_etapa_5_acoes_participante_dispensar_reabrir(self):
         viajante = self._criar_viajante(nome='Viajante C')
         self._vincular_viajante_em_oficio(viajante)
-        url = reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk})
+        url = reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk})
 
         post_dispensa = self.client.post(url, {'acao_participante': f'dispensar:{viajante.pk}'})
         self.assertEqual(post_dispensa.status_code, 302)
@@ -2949,7 +2968,7 @@ class EventoEtapa5TermosTest(TestCase):
         viajante = self._criar_viajante(nome='Servidor Completo', completo=True, cpf='98765432100')
         self._vincular_viajante_em_oficio(viajante)
         url = reverse(
-            'eventos:guiado-etapa-5-termo-download',
+            'eventos:guiado-etapa-3-termo-download',
             kwargs={'evento_id': self.evento.pk, 'viajante_id': viajante.pk, 'formato': 'docx'},
         )
 
@@ -2963,6 +2982,66 @@ class EventoEtapa5TermosTest(TestCase):
         termo = EventoTermoParticipante.objects.get(evento=self.evento, viajante=viajante)
         self.assertEqual(termo.status, EventoTermoParticipante.STATUS_GERADO)
 
+    def test_etapa_5_download_termo_padrao_branco_docx_sem_servidor(self):
+        url = reverse(
+            'eventos:guiado-etapa-3-termo-padrao-download',
+            kwargs={'evento_id': self.evento.pk, 'formato': 'docx'},
+        )
+
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response['Content-Type'],
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        )
+        self.assertIn('padrao_branco.docx', response['Content-Disposition'])
+
+    def test_etapa_5_download_termo_padrao_branco_pdf_quando_backend_disponivel(self):
+        url = reverse(
+            'eventos:guiado-etapa-3-termo-padrao-download',
+            kwargs={'evento_id': self.evento.pk, 'formato': 'pdf'},
+        )
+
+        with patch('eventos.views.convert_docx_bytes_to_pdf_bytes', return_value=b'%PDF-1.4 termo branco'):
+            response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertTrue(response.content.startswith(b'%PDF-1.4'))
+        self.assertIn('padrao_branco.pdf', response['Content-Disposition'])
+
+    def test_etapa_5_modo_viatura_lote_gera_zip_individual_por_servidor(self):
+        veiculo = self._criar_veiculo_finalizado()
+        viajante1 = self._criar_viajante(nome='Servidor ZIP 1', completo=True, cpf='30020010001')
+        viajante2 = self._criar_viajante(nome='Servidor ZIP 2', completo=True, cpf='30020010002')
+        url = reverse(
+            'eventos:guiado-etapa-3-termo-viatura-download',
+            kwargs={'evento_id': self.evento.pk, 'formato': 'docx'},
+        )
+
+        response = self.client.post(
+            url,
+            {
+                'veiculo_id': str(veiculo.pk),
+                'viajantes': [str(viajante1.pk), str(viajante2.pk)],
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/zip')
+        with ZipFile(BytesIO(response.content)) as zip_file:
+            names = zip_file.namelist()
+        self.assertEqual(len(names), 2)
+        self.assertTrue(all(name.endswith('.docx') for name in names))
+
+        termo1 = EventoTermoParticipante.objects.get(evento=self.evento, viajante=viajante1)
+        termo2 = EventoTermoParticipante.objects.get(evento=self.evento, viajante=viajante2)
+        self.assertEqual(termo1.modalidade, EventoTermoParticipante.MODALIDADE_COMPLETO)
+        self.assertEqual(termo2.modalidade, EventoTermoParticipante.MODALIDADE_COMPLETO)
+        self.assertEqual(termo1.status, EventoTermoParticipante.STATUS_GERADO)
+        self.assertEqual(termo2.status, EventoTermoParticipante.STATUS_GERADO)
+
     def test_etapa_5_download_docx_semipreenchido_funciona_sem_dados_pessoais(self):
         viajante = self._criar_viajante(nome='Servidor Sem Dados', completo=False, cpf='')
         self._vincular_viajante_em_oficio(viajante)
@@ -2972,7 +3051,7 @@ class EventoEtapa5TermosTest(TestCase):
             defaults={'modalidade': EventoTermoParticipante.MODALIDADE_SEMIPREENCHIDO},
         )
         url = reverse(
-            'eventos:guiado-etapa-5-termo-download',
+            'eventos:guiado-etapa-3-termo-download',
             kwargs={'evento_id': self.evento.pk, 'viajante_id': viajante.pk, 'formato': 'docx'},
         )
 
@@ -2986,7 +3065,7 @@ class EventoEtapa5TermosTest(TestCase):
         viajante = self._criar_viajante(nome='Servidor PDF', completo=True, cpf='11122233399')
         self._vincular_viajante_em_oficio(viajante)
         url = reverse(
-            'eventos:guiado-etapa-5-termo-download',
+            'eventos:guiado-etapa-3-termo-download',
             kwargs={'evento_id': self.evento.pk, 'viajante_id': viajante.pk, 'formato': 'pdf'},
         )
 
@@ -3007,7 +3086,7 @@ class EventoEtapa5TermosTest(TestCase):
         oficio2 = self._vincular_viajante_em_oficio(viajante2, numero=2)
         oficio2.viajantes.add(viajante1)
 
-        response = self.client.get(reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}))
+        response = self.client.get(reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, viajante1.nome)
@@ -3055,7 +3134,7 @@ class EventoEtapa5TermosTest(TestCase):
         viajante = self._criar_viajante(nome='V', cpf='99988877766')
         self._vincular_viajante_em_oficio(viajante)
         response = self.client.post(
-            reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}),
+            reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}),
             {
                 f'status_{viajante.pk}': EventoTermoParticipante.STATUS_DISPENSADO,
                 f'modalidade_{viajante.pk}': EventoTermoParticipante.MODALIDADE_COMPLETO,
@@ -3082,23 +3161,22 @@ class EventoEtapa6FinalizacaoTest(TestCase):
 
     def test_etapa_6_exige_login(self):
         self.client.logout()
-        response = self.client.get(reverse('eventos:guiado-etapa-6', kwargs={'evento_id': self.evento.pk}))
+        response = self.client.get(reverse('eventos:guiado-etapa-7', kwargs={'evento_id': self.evento.pk}))
         self.assertEqual(response.status_code, 302)
         self.assertIn('login', response.url)
 
     def test_etapa_6_get_exibe_checklist_e_pendencias(self):
-        response = self.client.get(reverse('eventos:guiado-etapa-6', kwargs={'evento_id': self.evento.pk}))
+        response = self.client.get(reverse('eventos:guiado-etapa-7', kwargs={'evento_id': self.evento.pk}))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Situação das etapas')
         self.assertContains(response, 'Etapa 4')
         self.assertContains(response, 'Etapa 5')
-        self.assertContains(response, 'Ofícios vinculados')
+        self.assertContains(response, 'Etapa 6')
         self.assertContains(response, 'Pendências para finalizar')
-        self.assertContains(response, 'Nenhum ofício vinculado')
 
     def test_etapa_6_post_salva_observacoes(self):
         response = self.client.post(
-            reverse('eventos:guiado-etapa-6', kwargs={'evento_id': self.evento.pk}),
+            reverse('eventos:guiado-etapa-7', kwargs={'evento_id': self.evento.pk}),
             {'observacoes_finais': 'Obs finais do evento.'},
         )
         self.assertEqual(response.status_code, 302)
@@ -3107,20 +3185,42 @@ class EventoEtapa6FinalizacaoTest(TestCase):
         self.assertIsNone(fin.finalizado_em)
 
     def test_etapa_6_finalizar_com_criterios_atendidos(self):
+        tipo = TipoDemandaEvento.objects.create(nome='AÇÃO TESTE FINALIZAR', ordem=999, ativo=True, is_outros=False)
+        estado = Estado.objects.create(nome='Paraná', sigla='PR', codigo_ibge='41')
+        cidade = Cidade.objects.create(nome='Curitiba', estado=estado, codigo_ibge='4106902')
+        etapa1_resp = self.client.post(
+            reverse('eventos:guiado-etapa-1', kwargs={'pk': self.evento.pk}),
+            {
+                'tipos_demanda': [tipo.pk],
+                'data_inicio': '2025-01-01',
+                'data_fim': '2025-01-05',
+                'descricao': '',
+                'tem_convite_ou_oficio_evento': False,
+                'destino_estado_0': estado.pk,
+                'destino_cidade_0': cidade.pk,
+            },
+        )
+        self.assertEqual(etapa1_resp.status_code, 302)
         EventoFundamentacao.objects.create(
             evento=self.evento,
             tipo_documento=EventoFundamentacao.TIPO_PT,
             texto_fundamentacao='Fundamentação.',
             observacoes_pt_os='',
         )
+        roteiro = RoteiroEvento.objects.create(evento=self.evento)
+        RoteiroEvento.objects.filter(pk=roteiro.pk).update(status=RoteiroEvento.STATUS_FINALIZADO)
         viajante = Viajante.objects.create(nome='V', cpf='11122233344')
-        oficio = Oficio.objects.create(evento=self.evento, status=Oficio.STATUS_RASCUNHO)
+        oficio = Oficio.objects.create(
+            evento=self.evento,
+            status=Oficio.STATUS_FINALIZADO,
+            data_criacao=date(2024, 12, 1),
+        )
         oficio.viajantes.add(viajante)
         EventoTermoParticipante.objects.create(
             evento=self.evento, viajante=viajante, status=EventoTermoParticipante.STATUS_CONCLUIDO
         )
         response = self.client.post(
-            reverse('eventos:guiado-etapa-6', kwargs={'evento_id': self.evento.pk}),
+            reverse('eventos:guiado-etapa-7', kwargs={'evento_id': self.evento.pk}),
             {'observacoes_finais': '', 'finalizar': '1'},
         )
         self.assertEqual(response.status_code, 302)
@@ -3134,7 +3234,7 @@ class EventoEtapa6FinalizacaoTest(TestCase):
     def test_etapa_6_painel_pendente_sem_registro(self):
         response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Etapa 6 — Finalização')
+        self.assertContains(response, 'Etapa 7 — Finalização')
         self.assertContains(response, 'Pendente')
 
     def test_etapa_6_painel_em_andamento_com_observacoes_sem_finalizar(self):
@@ -3156,7 +3256,7 @@ class EventoEtapa6FinalizacaoTest(TestCase):
 
 
 class EventoFinalizadoTravasTest(TestCase):
-    """Travas pós-finalização: bloqueio de edição e ações destrutivas; consulta permitida."""
+    """Travas pós-finalização: bloquear exclusão, mas permitir edição do evento e dos ofícios."""
 
     def setUp(self):
         self.user = get_user_model().objects.create_user(username='u_trava', password='p_trava')
@@ -3183,18 +3283,16 @@ class EventoFinalizadoTravasTest(TestCase):
     def test_get_etapa_1_finalizado_retorna_200_consulta(self):
         response = self.client.get(reverse('eventos:guiado-etapa-1', kwargs={'pk': self.evento.pk}))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Evento finalizado')
-        self.assertContains(response, 'Apenas consulta')
 
     def test_post_etapa_1_finalizado_bloqueado(self):
         response = self.client.post(
             reverse('eventos:guiado-etapa-1', kwargs={'pk': self.evento.pk}),
             {'data_inicio': '2025-01-10', 'data_fim': '2025-01-15', 'tipos_demanda': []},
         )
-        self.assertEqual(response.status_code, 302)
-        self.assertIn('guiado/painel', response.url)
-        self.evento.refresh_from_db()
-        self.assertEqual(self.evento.data_inicio, date(2025, 1, 1))
+        # Continua sujeito às validações normais do formulário,
+        # mas não deve ser bloqueado apenas por o evento estar finalizado.
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'Evento finalizado. Não é possível alterar os dados do evento.')
 
     def test_post_etapa_4_finalizado_bloqueado(self):
         EventoFundamentacao.objects.create(
@@ -3208,9 +3306,9 @@ class EventoFinalizadoTravasTest(TestCase):
             {'tipo_documento': 'OS', 'texto_fundamentacao': 'Alterado', 'observacoes_pt_os': ''},
         )
         self.assertEqual(response.status_code, 302)
-        self.assertIn('guiado/painel', response.url)
         self.evento.fundamentacao.refresh_from_db()
-        self.assertEqual(self.evento.fundamentacao.tipo_documento, EventoFundamentacao.TIPO_PT)
+        self.assertEqual(self.evento.fundamentacao.tipo_documento, EventoFundamentacao.TIPO_OS)
+        self.assertEqual(self.evento.fundamentacao.texto_fundamentacao, 'Alterado')
 
     def test_post_etapa_5_finalizado_bloqueado(self):
         viajante = Viajante.objects.create(nome='V', cpf='11122233344')
@@ -3220,15 +3318,41 @@ class EventoFinalizadoTravasTest(TestCase):
             evento=self.evento, viajante=viajante, status=EventoTermoParticipante.STATUS_PENDENTE,
         )
         response = self.client.post(
-            reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}),
+            reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}),
             {f'status_{viajante.pk}': EventoTermoParticipante.STATUS_DISPENSADO},
         )
         self.assertEqual(response.status_code, 302)
         self.assertIn('guiado/painel', response.url)
-        self.evento.termos_participantes.get(viajante=viajante).refresh_from_db()
-        self.assertEqual(
-            self.evento.termos_participantes.get(viajante=viajante).status,
-            EventoTermoParticipante.STATUS_PENDENTE,
+        termo = self.evento.termos_participantes.get(viajante=viajante)
+        self.assertEqual(termo.status, EventoTermoParticipante.STATUS_PENDENTE)
+
+    def test_download_lote_viatura_em_evento_finalizado_nao_permite_novos_participantes(self):
+        combustivel = CombustivelVeiculo.objects.create(nome='Diesel', is_padrao=True)
+        veiculo = Veiculo.objects.create(
+            placa='DEF2G34',
+            modelo='Viatura Finalizada',
+            combustivel=combustivel,
+            tipo=Veiculo.TIPO_DESCARACTERIZADO,
+            status=Veiculo.STATUS_FINALIZADO,
+        )
+        viajante_existente = Viajante.objects.create(nome='V Existente', cpf='99988877766')
+        viajante_novo = Viajante.objects.create(nome='V Novo', cpf='88877766655')
+        EventoParticipante.objects.create(evento=self.evento, viajante=viajante_existente, ordem=0)
+        EventoTermoParticipante.objects.create(
+            evento=self.evento,
+            viajante=viajante_existente,
+            status=EventoTermoParticipante.STATUS_PENDENTE,
+        )
+
+        response = self.client.post(
+            reverse('eventos:guiado-etapa-3-termo-viatura-download', kwargs={'evento_id': self.evento.pk, 'formato': 'docx'}),
+            {'veiculo_id': str(veiculo.pk), 'viajantes': [str(viajante_existente.pk), str(viajante_novo.pk)]},
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('guiado/etapa-3', response.url)
+        self.assertFalse(
+            EventoParticipante.objects.filter(evento=self.evento, viajante=viajante_novo).exists()
         )
 
     def test_painel_finalizado_nao_exibe_botao_excluir(self):
@@ -3255,11 +3379,12 @@ class EventoFinalizadoTravasTest(TestCase):
             follow=True,
         )
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'finalizado')
+        # Não deve haver mensagem de bloqueio apenas por o evento estar finalizado.
+        self.assertNotContains(response, 'Evento finalizado. Não é possível editar ofícios vinculados.')
 
 
 class EventoEtapa3OficiosTest(TestCase):
-    """Etapa 3 — Ofícios do evento (hub): listar, criar, status OK/Pendente conforme legado."""
+    """Etapa 5 — Ofícios do evento (hub): listar, criar, status OK/Pendente. URL: guiado-etapa-5."""
 
     def setUp(self):
         self.user = User.objects.create_user(username='u', password='p')
@@ -3276,14 +3401,14 @@ class EventoEtapa3OficiosTest(TestCase):
 
     def test_etapa_3_exige_login(self):
         self.client.logout()
-        response = self.client.get(reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}))
+        response = self.client.get(reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}))
         self.assertEqual(response.status_code, 302)
         self.assertIn('login', response.url)
 
     def test_etapa_3_lista_oficios_do_evento(self):
         oficio1 = Oficio.objects.create(evento=self.evento, status=Oficio.STATUS_RASCUNHO)
         oficio2 = Oficio.objects.create(evento=self.evento, numero=2, ano=2025, status=Oficio.STATUS_FINALIZADO)
-        response = self.client.get(reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}))
+        response = self.client.get(reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Ofícios do evento')
         self.assertContains(response, 'Rascunho')
@@ -3292,10 +3417,10 @@ class EventoEtapa3OficiosTest(TestCase):
         self.assertContains(response, reverse('eventos:oficio-editar', kwargs={'pk': oficio1.pk}))
 
     def test_etapa_3_mostra_botao_criar_oficio(self):
-        response = self.client.get(reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}))
+        response = self.client.get(reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Criar Ofício neste Evento')
-        url_criar = reverse('eventos:guiado-etapa-3-criar-oficio', kwargs={'evento_id': self.evento.pk})
+        url_criar = reverse('eventos:guiado-etapa-5-criar-oficio', kwargs={'evento_id': self.evento.pk})
         self.assertContains(response, url_criar)
 
     def test_etapa_3_pendente_quando_existe_apenas_oficio_rascunho(self):
@@ -3305,9 +3430,9 @@ class EventoEtapa3OficiosTest(TestCase):
         response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
         self.assertEqual(response.status_code, 200)
         etapas = response.context['etapas']
-        etapa3 = next(e for e in etapas if e['numero'] == 3)
-        self.assertFalse(etapa3['ok'])
-        self.assertContains(response, 'Etapa 3 — Ofícios do evento')
+        etapa5 = next(e for e in etapas if e['numero'] == 5)
+        self.assertFalse(etapa5['ok'])
+        self.assertContains(response, 'Ofícios')
 
     def test_etapa_3_pendente_quando_nao_existe_oficio(self):
         from eventos.views import _evento_etapa3_ok
@@ -3315,8 +3440,8 @@ class EventoEtapa3OficiosTest(TestCase):
         response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
         self.assertEqual(response.status_code, 200)
         etapas = response.context['etapas']
-        etapa3 = next(e for e in etapas if e['numero'] == 3)
-        self.assertFalse(etapa3['ok'])
+        etapa5 = next(e for e in etapas if e['numero'] == 5)
+        self.assertFalse(etapa5['ok'])
 
     def test_etapa_3_ok_quando_existe_oficio_finalizado(self):
         Oficio.objects.create(evento=self.evento, status=Oficio.STATUS_FINALIZADO)
@@ -3325,18 +3450,18 @@ class EventoEtapa3OficiosTest(TestCase):
         response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
         self.assertEqual(response.status_code, 200)
         etapas = response.context['etapas']
-        etapa3 = next(e for e in etapas if e['numero'] == 3)
-        self.assertTrue(etapa3['ok'])
+        etapa5 = next(e for e in etapas if e['numero'] == 5)
+        self.assertTrue(etapa5['ok'])
 
     def test_get_criar_oficio_nao_cria_registro(self):
-        url_criar = reverse('eventos:guiado-etapa-3-criar-oficio', kwargs={'evento_id': self.evento.pk})
+        url_criar = reverse('eventos:guiado-etapa-5-criar-oficio', kwargs={'evento_id': self.evento.pk})
         response = self.client.get(url_criar)
         self.assertEqual(response.status_code, 302)
-        self.assertEqual(response.url, reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}))
+        self.assertEqual(response.url, reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}))
         self.assertEqual(self.evento.oficios.count(), 0)
 
     def test_post_criar_oficio_preserva_vinculo_com_evento(self):
-        url_criar = reverse('eventos:guiado-etapa-3-criar-oficio', kwargs={'evento_id': self.evento.pk})
+        url_criar = reverse('eventos:guiado-etapa-5-criar-oficio', kwargs={'evento_id': self.evento.pk})
         response = self.client.post(url_criar)
         self.assertEqual(response.status_code, 302)
         self.assertIn('oficio/', response.url)
@@ -3354,7 +3479,7 @@ class EventoEtapa3OficiosTest(TestCase):
         }
 
         with patch('eventos.views.get_oficio_justificativa_schema_status', return_value=schema_status):
-            response = self.client.get(reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}))
+            response = self.client.get(reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}))
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Ofícios do evento')
@@ -4009,6 +4134,21 @@ class OficioStep1AcceptanceTest(TestCase):
         self.assertContains(reaberto, f'data-viajante-hidden="{self.viajante_final.pk}"')
         self.assertContains(reaberto, self.viajante_final.nome)
 
+    def test_step1_cabecalho_novo_remove_wizard_visual_e_ativa_autosave(self):
+        oficio = self._criar_oficio(ano=2026)
+        response = self.client.get(reverse('eventos:oficio-step1', kwargs={'pk': oficio.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Lista de ofícios')
+        self.assertContains(response, 'Excluir ofício')
+        self.assertContains(response, 'oficio-sticky-header')
+        self.assertContains(response, 'oficio-sticky-panel')
+        self.assertContains(response, 'localStorage.setItem')
+        self.assertContains(response, f'oficio-step1-draft-{oficio.pk}')
+        self.assertContains(response, 'data-step1-draft-link="1"')
+        self.assertNotContains(response, 'Wizard do Ofício')
+        self.assertNotContains(response, 'Lista de eventos')
+        self.assertNotContains(response, 'form-actions')
+
     def test_step1_post_duplicado_nao_duplica_viajante_salvo(self):
         oficio = self._criar_oficio(ano=2026)
         response = self.client.post(
@@ -4187,8 +4327,22 @@ class OficioStep1AcceptanceTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'id="motorista-manual-wrapper"')
         self.assertContains(response, 'class="row g-3 mt-1 d-none" id="motorista-manual-wrapper"')
-        self.assertContains(response, 'id="btn-motorista-manual"')
+        self.assertContains(response, 'id="btn-toggle-motorista-mode"')
         self.assertContains(response, 'id="motorista-autocomplete-input"')
+
+    def test_step2_cabecalho_fixo_e_toggle_unico_de_motorista(self):
+        oficio = self._criar_oficio(ano=2026)
+        response = self.client.get(reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Lista de ofícios')
+        self.assertContains(response, 'Excluir ofício')
+        self.assertContains(response, 'oficio-sticky-header')
+        self.assertContains(response, 'oficio-sticky-panel')
+        self.assertContains(response, 'id="btn-toggle-motorista-mode"')
+        self.assertNotContains(response, 'id="btn-motorista-manual"')
+        self.assertNotContains(response, 'id="btn-motorista-servidor"')
+        self.assertNotContains(response, 'Wizard do Ofício')
+        self.assertNotContains(response, 'form-actions')
 
     def test_step2_reexibe_campo_manual_quando_seleciona_motorista_sem_cadastro(self):
         oficio = self._criar_oficio(ano=2026)
@@ -4473,7 +4627,7 @@ class OficioStep1AcceptanceTest(TestCase):
         oficio = self._criar_oficio(ano=2026)
         url = reverse('eventos:oficio-excluir', kwargs={'pk': oficio.pk})
         response = self.client.post(url)
-        self.assertRedirects(response, reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}))
+        self.assertRedirects(response, reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}))
         self.assertFalse(Oficio.objects.filter(pk=oficio.pk).exists())
 
     def test_step3_get_seed_do_roteiro_do_evento(self):
@@ -4714,6 +4868,27 @@ class OficioStep1AcceptanceTest(TestCase):
         self.assertContains(response, f'{self.cidade.nome}/{self.estado.sigla} → {cidade_destino.nome}/{self.estado.sigla}')
         self.assertContains(response, 'Retorno')
 
+    def test_step3_cabecalho_fixo_remove_texto_legado_e_mostra_nova_ui(self):
+        oficio = self._criar_oficio(ano=2026)
+        response = self.client.get(reverse('eventos:oficio-step3', kwargs={'pk': oficio.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Lista de ofícios')
+        self.assertContains(response, 'Excluir ofício')
+        self.assertContains(response, 'oficio-sticky-header')
+        self.assertContains(response, 'oficio-sticky-panel')
+        self.assertContains(response, 'Tempo estimado de viagem')
+        self.assertContains(response, 'Tempo de viagem')
+        self.assertContains(response, 'Tempo adicional')
+        self.assertContains(response, 'Tempo total')
+        self.assertContains(response, 'Estimar automaticamente')
+        self.assertContains(response, 'btn-estimar-retorno')
+        self.assertContains(response, 'Paraná (PR)')
+        self.assertContains(response, 'Valor por extenso')
+        self.assertNotContains(response, 'Cálculo periodizado do legado com base nos horários do Step 3.')
+        self.assertNotContains(response, 'Calculo atualizado a partir dos horarios do Step 3.')
+        self.assertNotContains(response, 'Wizard do Ofício')
+        self.assertNotContains(response, 'form-actions')
+
     def test_step3_calculadora_diarias_endpoint_usa_dados_dos_trechos(self):
         oficio = self._criar_oficio(ano=2026)
         cidade_destino = Cidade.objects.create(nome='Interior Diarias Step3', estado=self.estado, codigo_ibge='4113705')
@@ -4746,6 +4921,48 @@ class OficioStep1AcceptanceTest(TestCase):
         self.assertEqual(payload['tipo_destino'], Oficio.TIPO_DESTINO_INTERIOR)
         self.assertEqual(payload['totais']['total_diarias'], '1 x 100%')
         self.assertEqual(payload['totais']['total_valor'], '290,55')
+
+    def test_step3_calculadora_diarias_ignora_motorista_externo_ao_contar_servidores(self):
+        oficio = self._criar_oficio(ano=2026)
+        cidade_destino = Cidade.objects.create(nome='Interior Sem Motorista', estado=self.estado, codigo_ibge='4113715')
+        self.client.post(
+            reverse('eventos:oficio-step1', kwargs={'pk': oficio.pk}),
+            data=self._payload_step1(oficio, viajantes=[self.viajante_final.pk]),
+        )
+        self.client.post(
+            reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}),
+            data=self._payload_step2(
+                motorista_viajante=str(self.motorista_externo.pk),
+                motorista_nome='',
+                motorista_oficio_numero='12',
+                motorista_protocolo='12.345.678-9',
+            ),
+        )
+        response = self.client.post(
+            reverse('eventos:oficio-step3-calcular-diarias', kwargs={'pk': oficio.pk}),
+            data=self._payload_step3(
+                [cidade_destino],
+                trechos=[
+                    {
+                        'saida_data': '2026-08-20',
+                        'saida_hora': '08:00',
+                        'chegada_data': '2026-08-20',
+                        'chegada_hora': '12:00',
+                    }
+                ],
+                retorno={
+                    'saida_data': '2026-08-21',
+                    'saida_hora': '08:00',
+                    'chegada_data': '2026-08-21',
+                    'chegada_hora': '10:00',
+                },
+            ),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['ok'])
+        self.assertEqual(payload['totais']['total_diarias'], '1 x 100%')
+        self.assertTrue(payload['totais']['valor_extenso'])
 
     def test_step4_exibe_trechos_salvos_do_step3(self):
         oficio = self._criar_oficio(ano=2026)
@@ -6173,7 +6390,7 @@ class OficioStep1AjustesFinosTest(TestCase):
     def test_lista_oficios_exibe_protocolo_mascarado_sem_texto_auxiliar(self):
         oficio = self._criar_oficio()
         Oficio.objects.filter(pk=oficio.pk).update(protocolo='123456789')
-        response = self.client.get(reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}))
+        response = self.client.get(reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}))
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, '12.345.678-9')
         self.assertNotContains(response, 'Formato: XX.XXX.XXX-X')
@@ -6414,3 +6631,113 @@ class OficioStep1ProtocolRegressionTest(TestCase):
         self.assertEqual(oficio.numero, numero_antes)
         self.assertEqual(oficio.ano, ano_antes)
         self.assertEqual(oficio.data_criacao, data_antes)
+
+
+class DocumentoAvulsoFlowTest(TestCase):
+    def setUp(self):
+        self.user = User.objects.create_user(username='u_doc_avulso', password='p_doc_avulso')
+        self.client = Client()
+        self.client.login(username='u_doc_avulso', password='p_doc_avulso')
+
+    def test_hub_exibe_botao_novo_documento_avulso(self):
+        response = self.client.get(reverse('eventos:documentos-hub'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Novo documento avulso')
+        self.assertContains(response, 'modalNovoDocumentoAvulso')
+
+    def test_selector_novo_documento_avulso_sem_tipo(self):
+        response = self.client.get(reverse('eventos:documentos-avulsos-novo'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Selecionar tipo de documento avulso')
+        self.assertContains(response, 'Ofício avulso')
+
+    def test_criar_documento_avulso_sem_vinculo(self):
+        response = self.client.post(
+            reverse('eventos:documentos-avulsos-novo'),
+            {
+                'tipo_documento': DocumentoAvulso.TIPO_OFICIO,
+                'titulo': 'Ofício avulso teste',
+                'termo_template_variant': DocumentoAvulso.TERMO_TEMPLATE_SEMIPREENCHIDO,
+                'conteudo_texto': '',
+                'placeholders_json': '{"oficio_numero":"001/2026","data_hoje":"12/03/2026"}',
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        documento = DocumentoAvulso.objects.get(titulo='Ofício avulso teste')
+        self.assertEqual(documento.classificacao, DocumentoAvulso.CLASSIFICACAO_AVULSO)
+        self.assertIsNone(documento.evento_id)
+        self.assertIn(str(documento.pk), response.url)
+
+    def test_documento_avulso_pode_ser_vinculado_posteriormente(self):
+        estado = Estado.objects.create(nome='Paraná', sigla='PR', codigo_ibge='41')
+        cidade = Cidade.objects.create(nome='Curitiba', estado=estado, codigo_ibge='4106902')
+        evento = Evento.objects.create(
+            titulo='Evento para vínculo',
+            data_inicio=date(2026, 1, 1),
+            data_fim=date(2026, 1, 2),
+            cidade_principal=cidade,
+            estado_principal=estado,
+        )
+        documento = DocumentoAvulso.objects.create(
+            titulo='Termo avulso convertível',
+            tipo_documento=DocumentoAvulso.TIPO_TERMO_AUTORIZACAO,
+            placeholders={},
+            criado_por=self.user,
+        )
+        response = self.client.post(
+            reverse('eventos:documentos-avulsos-editar', kwargs={'pk': documento.pk}),
+            {
+                'tipo_documento': DocumentoAvulso.TIPO_TERMO_AUTORIZACAO,
+                'titulo': documento.titulo,
+                'termo_template_variant': DocumentoAvulso.TERMO_TEMPLATE_SEMIPREENCHIDO,
+                'conteudo_texto': '',
+                'placeholders_json': '{}',
+                'evento': str(evento.pk),
+                'roteiro': '',
+                'plano_trabalho': '',
+                'oficio': '',
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        documento.refresh_from_db()
+        self.assertEqual(documento.classificacao, DocumentoAvulso.CLASSIFICACAO_VINCULADO)
+        self.assertEqual(documento.evento_id, evento.pk)
+
+    def test_download_docx_documento_avulso_sem_vinculo(self):
+        documento = DocumentoAvulso.objects.create(
+            titulo='Outro avulso',
+            tipo_documento=DocumentoAvulso.TIPO_OUTRO,
+            conteudo_texto='Corpo livre',
+            placeholders={'campo': 'valor'},
+            criado_por=self.user,
+        )
+        response = self.client.get(
+            reverse(
+                'eventos:documentos-avulsos-download',
+                kwargs={'pk': documento.pk, 'formato': 'docx'},
+            )
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response['Content-Type'],
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        )
+
+    def test_download_pdf_documento_avulso_sem_vinculo(self):
+        documento = DocumentoAvulso.objects.create(
+            titulo='Outro avulso PDF',
+            tipo_documento=DocumentoAvulso.TIPO_OUTRO,
+            conteudo_texto='Corpo livre',
+            placeholders={},
+            criado_por=self.user,
+        )
+        with patch('eventos.views_global.convert_docx_bytes_to_pdf_bytes', return_value=b'%PDF-1.4 avulso'):
+            response = self.client.get(
+                reverse(
+                    'eventos:documentos-avulsos-download',
+                    kwargs={'pk': documento.pk, 'formato': 'pdf'},
+                )
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertTrue(response.content.startswith(b'%PDF-1.4'))

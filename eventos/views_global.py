@@ -3,18 +3,40 @@ from __future__ import annotations
 from datetime import datetime
 from urllib.parse import urlencode
 
+from django.contrib import messages
 from django.core.paginator import Paginator
 from django.db.models import Count, Prefetch, Q
-from django.shortcuts import render
+from django.http import Http404, HttpResponse
+from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.utils.text import slugify
+from django.views.decorators.http import require_http_methods
 
-from .models import Evento, EventoFundamentacao, EventoTermoParticipante, Oficio, RoteiroEvento
+from .forms import DocumentoAvulsoForm
+from .models import (
+    DocumentoAvulso,
+    Evento,
+    EventoFundamentacao,
+    EventoTermoParticipante,
+    Oficio,
+    RoteiroEvento,
+)
 from .services.diarias import PeriodMarker, TABELA_DIARIAS, calculate_periodized_diarias, formatar_valor_diarias
 from .services.documentos import (
     DocumentoFormato,
     DocumentoOficioTipo,
+    DocumentGenerationError,
+    DocumentRendererUnavailable,
     get_document_generation_status,
     get_document_type_meta,
+)
+from .services.documentos.renderer import (
+    convert_docx_bytes_to_pdf_bytes,
+    create_base_document,
+    document_to_bytes,
+    get_document_template_path,
+    get_termo_autorizacao_template_path,
+    render_docx_template_bytes,
 )
 from .views import _build_oficio_justificativa_info
 
@@ -65,6 +87,51 @@ def _append_next(url, next_url):
         return url
     separator = '&' if '?' in url else '?'
     return f'{url}{separator}{urlencode({"next": next_url})}'
+
+
+def _normalize_documento_avulso_tipo(value):
+    normalized = _clean(value).upper()
+    allowed = {choice[0] for choice in DocumentoAvulso.TIPO_CHOICES}
+    return normalized if normalized in allowed else ''
+
+
+def _documento_avulso_tipo_to_oficio_tipo(tipo_documento):
+    mapping = {
+        DocumentoAvulso.TIPO_OFICIO: DocumentoOficioTipo.OFICIO,
+        DocumentoAvulso.TIPO_TERMO_AUTORIZACAO: DocumentoOficioTipo.TERMO_AUTORIZACAO,
+        DocumentoAvulso.TIPO_JUSTIFICATIVA: DocumentoOficioTipo.JUSTIFICATIVA,
+        DocumentoAvulso.TIPO_PLANO_TRABALHO: DocumentoOficioTipo.PLANO_TRABALHO,
+        DocumentoAvulso.TIPO_ORDEM_SERVICO: DocumentoOficioTipo.ORDEM_SERVICO,
+    }
+    return mapping.get((tipo_documento or '').strip().upper())
+
+
+def _build_documento_avulso_filename(documento, formato):
+    ext = 'docx' if (formato or '').lower() == DocumentoFormato.DOCX.value else 'pdf'
+    nome_slug = slugify(documento.titulo or '') or f'documento-avulso-{documento.pk}'
+    return f'{nome_slug}_{documento.pk}.{ext}'
+
+
+def _render_documento_avulso_docx_bytes(documento):
+    placeholders = documento.placeholders if isinstance(documento.placeholders, dict) else {}
+    tipo_documento_oficio = _documento_avulso_tipo_to_oficio_tipo(documento.tipo_documento)
+    if tipo_documento_oficio is None:
+        document = create_base_document(documento.titulo or 'Documento avulso', subtitle='Modelo avulso')
+        if documento.conteudo_texto:
+            document.add_paragraph(documento.conteudo_texto)
+        if placeholders:
+            document.add_paragraph('')
+            document.add_paragraph('Dados preenchidos (placeholders):')
+            for key, value in placeholders.items():
+                document.add_paragraph(f'{key}: {value or ""}')
+        return document_to_bytes(document)
+
+    if tipo_documento_oficio == DocumentoOficioTipo.TERMO_AUTORIZACAO:
+        template_path = get_termo_autorizacao_template_path(documento.termo_template_variant)
+    else:
+        template_path = get_document_template_path(tipo_documento_oficio)
+    mapping = {str(key): '' if value is None else str(value) for key, value in placeholders.items()}
+    return render_docx_template_bytes(template_path, mapping)
 
 
 def _label_local(cidade, estado):
@@ -255,6 +322,7 @@ def roteiro_global_lista(request):
         'q': _clean(request.GET.get('q')),
         'status': _clean(request.GET.get('status')),
         'evento_id': _clean(request.GET.get('evento_id')),
+        'tipo': _clean(request.GET.get('tipo')).upper(),
     }
     queryset = (
         RoteiroEvento.objects.select_related('evento', 'origem_estado', 'origem_cidade')
@@ -271,6 +339,10 @@ def roteiro_global_lista(request):
         )
     if filters['status']:
         queryset = queryset.filter(status=filters['status'])
+    if filters['tipo'] == RoteiroEvento.TIPO_AVULSO:
+        queryset = queryset.filter(tipo=RoteiroEvento.TIPO_AVULSO)
+    elif filters['tipo'] == RoteiroEvento.TIPO_EVENTO:
+        queryset = queryset.filter(tipo=RoteiroEvento.TIPO_EVENTO)
     if filters['evento_id'].isdigit():
         queryset = queryset.filter(evento_id=int(filters['evento_id']))
 
@@ -281,13 +353,20 @@ def roteiro_global_lista(request):
     object_list = list(page_obj.object_list)
     for roteiro in object_list:
         roteiro.destinos_display = _roteiro_destinos_display(roteiro)
-        roteiro.editar_url = reverse(
-            'eventos:guiado-etapa-2-editar',
-            kwargs={'evento_id': roteiro.evento_id, 'pk': roteiro.pk},
-        )
-        roteiro.evento_url = reverse('eventos:guiado-painel', kwargs={'pk': roteiro.evento_id})
-        roteiro.etapa_url = reverse('eventos:guiado-etapa-2', kwargs={'evento_id': roteiro.evento_id})
-        roteiro.oficios_url = reverse('eventos:guiado-etapa-3', kwargs={'evento_id': roteiro.evento_id})
+        roteiro.is_avulso = roteiro.tipo == RoteiroEvento.TIPO_AVULSO or not roteiro.evento_id
+        if roteiro.is_avulso:
+            roteiro.editar_url = reverse('eventos:roteiro-avulso-editar', kwargs={'pk': roteiro.pk})
+            roteiro.evento_url = ''
+            roteiro.etapa_url = ''
+            roteiro.oficios_url = ''
+        else:
+            roteiro.editar_url = reverse(
+                'eventos:guiado-etapa-2-editar',
+                kwargs={'evento_id': roteiro.evento_id, 'pk': roteiro.pk},
+            )
+            roteiro.evento_url = reverse('eventos:guiado-painel', kwargs={'pk': roteiro.evento_id})
+            roteiro.etapa_url = reverse('eventos:guiado-etapa-2', kwargs={'evento_id': roteiro.evento_id})
+            roteiro.oficios_url = reverse('eventos:guiado-etapa-5', kwargs={'evento_id': roteiro.evento_id})
 
     selected_event = None
     if filters['evento_id'].isdigit():
@@ -303,11 +382,17 @@ def roteiro_global_lista(request):
             'filters': filters,
             'eventos_choices': _eventos_choices(),
             'status_choices': RoteiroEvento.STATUS_CHOICES,
+            'tipo_choices': [
+                ('', 'Todos'),
+                (RoteiroEvento.TIPO_AVULSO, 'Avulsos'),
+                (RoteiroEvento.TIPO_EVENTO, 'Vinculados a evento'),
+            ],
             'novo_roteiro_url': (
                 reverse('eventos:guiado-etapa-2-cadastrar', kwargs={'evento_id': selected_event.pk})
                 if selected_event
                 else ''
             ),
+            'novo_roteiro_avulso_url': reverse('eventos:roteiro-avulso-cadastrar'),
             'selected_event': selected_event,
         },
     )
@@ -350,6 +435,31 @@ def documentos_hub(request):
             'url': reverse('eventos:documentos-termos'),
         },
     ]
+    documentos_avulsos_qs = (
+        DocumentoAvulso.objects.select_related('evento', 'roteiro', 'plano_trabalho', 'oficio', 'criado_por')
+        .order_by('-updated_at', '-created_at')
+    )
+    documentos_avulsos = list(documentos_avulsos_qs[:20])
+    for documento in documentos_avulsos:
+        documento.editar_url = reverse('eventos:documentos-avulsos-editar', kwargs={'pk': documento.pk})
+        documento.download_docx_url = reverse(
+            'eventos:documentos-avulsos-download',
+            kwargs={'pk': documento.pk, 'formato': DocumentoFormato.DOCX.value},
+        )
+        documento.download_pdf_url = reverse(
+            'eventos:documentos-avulsos-download',
+            kwargs={'pk': documento.pk, 'formato': DocumentoFormato.PDF.value},
+        )
+        documento.vinculos = [
+            label
+            for label, enabled in [
+                ('Evento', bool(documento.evento_id)),
+                ('Roteiro', bool(documento.roteiro_id)),
+                ('PT/OS', bool(documento.plano_trabalho_id)),
+                ('Ofício', bool(documento.oficio_id)),
+            ]
+            if enabled
+        ]
     return render(
         request,
         'eventos/global/documentos_hub.html',
@@ -364,8 +474,98 @@ def documentos_hub(request):
             ).count(),
             'justificativas_pendentes': justificativas_pendentes,
             'justificativas_preenchidas': justificativas_preenchidas,
+            'documentos_avulsos': documentos_avulsos,
+            'documentos_avulsos_total': documentos_avulsos_qs.count(),
+            'documentos_avulsos_count': documentos_avulsos_qs.filter(
+                classificacao=DocumentoAvulso.CLASSIFICACAO_AVULSO
+            ).count(),
+            'documentos_vinculados_count': documentos_avulsos_qs.filter(
+                classificacao=DocumentoAvulso.CLASSIFICACAO_VINCULADO
+            ).count(),
+            'tipos_documento_avulso': DocumentoAvulso.TIPO_CHOICES,
         },
     )
+
+
+@require_http_methods(['GET', 'POST'])
+def documento_avulso_novo(request):
+    tipo = _normalize_documento_avulso_tipo(
+        request.GET.get('tipo') if request.method == 'GET' else request.POST.get('tipo_documento')
+    )
+    if request.method == 'GET' and not tipo:
+        return render(
+            request,
+            'eventos/global/documento_avulso_selector.html',
+            {'tipos_documento_avulso': DocumentoAvulso.TIPO_CHOICES},
+        )
+
+    form = DocumentoAvulsoForm(
+        request.POST or None,
+        tipo_predefinido=tipo,
+    )
+    if request.method == 'POST' and form.is_valid():
+        documento = form.save(commit=False)
+        documento.criado_por = request.user
+        documento.save()
+        messages.success(request, 'Documento avulso criado com sucesso.')
+        return redirect('eventos:documentos-avulsos-editar', pk=documento.pk)
+
+    return render(
+        request,
+        'eventos/global/documento_avulso_form.html',
+        {
+            'form': form,
+            'object': None,
+            'tipo_documento': tipo,
+            'titulo_pagina': 'Novo documento avulso',
+        },
+    )
+
+
+@require_http_methods(['GET', 'POST'])
+def documento_avulso_editar(request, pk):
+    documento = get_object_or_404(
+        DocumentoAvulso.objects.select_related('evento', 'roteiro', 'plano_trabalho', 'oficio', 'criado_por'),
+        pk=pk,
+    )
+    form = DocumentoAvulsoForm(request.POST or None, instance=documento)
+    if request.method == 'POST' and form.is_valid():
+        form.save()
+        messages.success(request, 'Documento avulso atualizado.')
+        return redirect('eventos:documentos-avulsos-editar', pk=documento.pk)
+    return render(
+        request,
+        'eventos/global/documento_avulso_form.html',
+        {
+            'form': form,
+            'object': documento,
+            'tipo_documento': documento.tipo_documento,
+            'titulo_pagina': 'Editar documento avulso',
+        },
+    )
+
+
+@require_http_methods(['GET'])
+def documento_avulso_download(request, pk, formato):
+    documento = get_object_or_404(DocumentoAvulso, pk=pk)
+    formato = _clean(formato).lower()
+    if formato not in {DocumentoFormato.DOCX.value, DocumentoFormato.PDF.value}:
+        raise Http404('Formato inválido.')
+    try:
+        docx_bytes = _render_documento_avulso_docx_bytes(documento)
+        payload = docx_bytes
+        content_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        if formato == DocumentoFormato.PDF.value:
+            payload = convert_docx_bytes_to_pdf_bytes(docx_bytes)
+            content_type = 'application/pdf'
+    except (DocumentGenerationError, DocumentRendererUnavailable) as exc:
+        messages.error(request, str(exc))
+        return redirect('eventos:documentos-avulsos-editar', pk=documento.pk)
+    response = HttpResponse(payload, content_type=content_type)
+    response['Content-Disposition'] = (
+        f'attachment; filename="{_build_documento_avulso_filename(documento, formato)}"'
+    )
+    return response
 
 
 def _build_documento_derivado_rows(queryset, *, request, tipo_documento, fundamentacao_tipo, situacao):
@@ -575,8 +775,8 @@ def termos_global(request):
                 oficios_relacionados.append(oficio)
         termo.oficios_relacionados = oficios_relacionados
         termo.oficios_display = ', '.join(oficio.numero_formatado for oficio in oficios_relacionados) if oficios_relacionados else '—'
-        termo.termos_url = reverse('eventos:guiado-etapa-5', kwargs={'evento_id': termo.evento_id})
-        termo.oficios_url = reverse('eventos:guiado-etapa-3', kwargs={'evento_id': termo.evento_id})
+        termo.termos_url = reverse('eventos:guiado-etapa-3', kwargs={'evento_id': termo.evento_id})
+        termo.oficios_url = reverse('eventos:guiado-etapa-5', kwargs={'evento_id': termo.evento_id})
         termo.evento_url = reverse('eventos:guiado-painel', kwargs={'pk': termo.evento_id})
         termo.documentos_url = (
             reverse('eventos:oficio-documentos', kwargs={'pk': oficios_relacionados[0].pk})

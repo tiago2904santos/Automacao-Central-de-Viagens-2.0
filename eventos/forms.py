@@ -1,3 +1,5 @@
+import json
+
 from django import forms
 from django.db.models import Q
 from django.utils import timezone
@@ -6,6 +8,7 @@ from cadastros.models import Viajante, Veiculo
 from eventos.services.oficio_schema import oficio_justificativa_schema_available
 from .models import (
     Evento,
+    DocumentoAvulso,
     EventoFundamentacao,
     EventoFinalizacao,
     EventoParticipante,
@@ -13,8 +16,11 @@ from .models import (
     ModeloMotivoViagem,
     Oficio,
     RoteiroEvento,
+    SolicitantePlanoTrabalho,
+    CoordenadorOperacional,
     TipoDemandaEvento,
 )
+from .services.plano_trabalho_domain import ATIVIDADES_CATALOGO
 from core.utils.masks import format_placa, format_protocolo, normalize_placa
 from .utils import buscar_veiculo_finalizado_por_placa, mapear_tipo_viatura_para_oficio, normalize_protocolo
 
@@ -123,15 +129,40 @@ class EventoEtapa1Form(FormComErroInvalidMixin, forms.ModelForm):
         return data
 
 
+HORARIO_ATENDIMENTO_OPCOES = [
+    ('', '---------'),
+    ('08:00 às 12:00 e 13:00 às 17:00', '08:00 às 12:00 e 13:00 às 17:00'),
+    ('08:00 às 17:00', '08:00 às 17:00'),
+    ('09:00 às 17:00', '09:00 às 17:00'),
+    ('MANUAL', 'Outro (informar abaixo)'),
+]
+
+
 class EventoFundamentacaoForm(FormComErroInvalidMixin, forms.ModelForm):
-    """Formulário da Etapa 4 do evento: Fundamentação / PT-OS (tipo PT ou OS, texto, observações)."""
+    """Formulário da Etapa 4 do evento: Fundamentação / PT-OS (tipo PT ou OS, texto, observações e campos PT)."""
+    atividades_codigos = forms.MultipleChoiceField(
+        label='Atividades (PT)',
+        choices=[(item['codigo'], item['nome']) for item in ATIVIDADES_CATALOGO],
+        required=False,
+        widget=forms.CheckboxSelectMultiple(attrs={'class': 'form-check-input'}),
+    )
+    horario_atendimento_sel = forms.ChoiceField(
+        label='Horário de atendimento',
+        choices=HORARIO_ATENDIMENTO_OPCOES,
+        required=False,
+        widget=forms.Select(attrs={'class': 'form-select'}),
+    )
+
     class Meta:
         model = EventoFundamentacao
-        fields = ['tipo_documento', 'texto_fundamentacao', 'observacoes_pt_os']
+        fields = [
+            'tipo_documento', 'texto_fundamentacao', 'observacoes_pt_os',
+            'solicitante', 'solicitante_outros',
+            'coordenador_operacional', 'coordenador_administrativo',
+            'horario_atendimento', 'recursos_texto',
+        ]
         widgets = {
-            'tipo_documento': forms.Select(attrs={
-                'class': 'form-select',
-            }),
+            'tipo_documento': forms.Select(attrs={'class': 'form-select'}),
             'texto_fundamentacao': forms.Textarea(attrs={
                 'class': 'form-control',
                 'rows': 6,
@@ -142,14 +173,69 @@ class EventoFundamentacaoForm(FormComErroInvalidMixin, forms.ModelForm):
                 'rows': 3,
                 'placeholder': 'Observações adicionais (opcional).',
             }),
+            'solicitante': forms.Select(attrs={'class': 'form-select'}),
+            'solicitante_outros': forms.TextInput(attrs={
+                'class': 'form-control',
+                'placeholder': 'Quando "Outros" for selecionado, informe aqui.',
+            }),
+            'coordenador_operacional': forms.Select(attrs={'class': 'form-select'}),
+            'coordenador_administrativo': forms.Select(attrs={'class': 'form-select'}),
+            'horario_atendimento': forms.TextInput(attrs={
+                'class': 'form-control',
+                'placeholder': 'Ex.: 08:00 às 17:00',
+            }),
+            'recursos_texto': forms.Textarea(attrs={
+                'class': 'form-control',
+                'rows': 3,
+                'placeholder': 'Recursos (estrutura para uso futuro).',
+            }),
         }
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fields['tipo_documento'].required = False  # pode salvar em andamento sem tipo
+        self.fields['tipo_documento'].required = False
         self.fields['tipo_documento'].choices = [('', '---------')] + list(EventoFundamentacao.TIPO_CHOICES)
         self.fields['texto_fundamentacao'].required = False
         self.fields['observacoes_pt_os'].required = False
+        self.fields['solicitante'].required = False
+        self.fields['solicitante'].queryset = SolicitantePlanoTrabalho.objects.filter(ativo=True).order_by('ordem', 'nome')
+        self.fields['solicitante'].empty_label = 'Outros (informar no campo abaixo)'
+        self.fields['coordenador_operacional'].required = False
+        self.fields['coordenador_operacional'].queryset = CoordenadorOperacional.objects.filter(ativo=True).order_by('ordem', 'nome')
+        self.fields['coordenador_operacional'].empty_label = '---------'
+        self.fields['coordenador_administrativo'].required = False
+        self.fields['coordenador_administrativo'].queryset = Viajante.objects.filter(status='ATIVO').order_by('nome')
+        self.fields['coordenador_administrativo'].empty_label = '---------'
+        self.fields['horario_atendimento'].required = False
+        self.fields['recursos_texto'].required = False
+        if self.instance and self.instance.pk and self.instance.atividades_codigos:
+            self.initial['atividades_codigos'] = [
+                c.strip() for c in self.instance.atividades_codigos.split(',') if c.strip()
+            ]
+        if self.instance and self.instance.pk and self.instance.horario_atendimento:
+            sel = self.instance.horario_atendimento
+            if sel in dict(HORARIO_ATENDIMENTO_OPCOES[1:]):
+                self.initial['horario_atendimento_sel'] = sel
+            else:
+                self.initial['horario_atendimento_sel'] = 'MANUAL'
+
+    def clean(self):
+        data = super().clean()
+        sel = data.get('horario_atendimento_sel')
+        manual = data.get('horario_atendimento', '')
+        if sel == 'MANUAL':
+            data['horario_atendimento'] = manual
+        elif sel:
+            data['horario_atendimento'] = sel
+        return data
+
+    def save(self, commit=True):
+        instance = super().save(commit=False)
+        codigos = self.cleaned_data.get('atividades_codigos', [])
+        instance.atividades_codigos = ','.join(codigos) if codigos else ''
+        if commit:
+            instance.save()
+        return instance
 
 
 class EventoFinalizacaoForm(FormComErroInvalidMixin, forms.ModelForm):
@@ -168,6 +254,119 @@ class EventoFinalizacaoForm(FormComErroInvalidMixin, forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields['observacoes_finais'].required = False
+
+
+class DocumentoAvulsoForm(FormComErroInvalidMixin, forms.ModelForm):
+    """Formulário de documento avulso com placeholders em JSON e vínculos opcionais."""
+
+    placeholders_json = forms.CharField(
+        required=False,
+        label='Placeholders (JSON)',
+        widget=forms.Textarea(
+            attrs={
+                'class': 'form-control',
+                'rows': 8,
+                'placeholder': '{\n  "chave_placeholder": "valor"\n}',
+            }
+        ),
+        help_text='Informe um objeto JSON com os placeholders e valores para preencher o template.',
+    )
+
+    class Meta:
+        model = DocumentoAvulso
+        fields = [
+            'tipo_documento',
+            'titulo',
+            'termo_template_variant',
+            'conteudo_texto',
+            'evento',
+            'roteiro',
+            'plano_trabalho',
+            'oficio',
+        ]
+        widgets = {
+            'tipo_documento': forms.Select(attrs={'class': 'form-select'}),
+            'titulo': forms.TextInput(attrs={'class': 'form-control'}),
+            'termo_template_variant': forms.Select(attrs={'class': 'form-select'}),
+            'conteudo_texto': forms.Textarea(
+                attrs={
+                    'class': 'form-control',
+                    'rows': 5,
+                    'placeholder': 'Conteúdo livre (usado principalmente para "Outros modelos avulsos").',
+                }
+            ),
+            'evento': forms.Select(attrs={'class': 'form-select'}),
+            'roteiro': forms.Select(attrs={'class': 'form-select'}),
+            'plano_trabalho': forms.Select(attrs={'class': 'form-select'}),
+            'oficio': forms.Select(attrs={'class': 'form-select'}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        self.tipo_predefinido = (kwargs.pop('tipo_predefinido', '') or '').strip().upper()
+        super().__init__(*args, **kwargs)
+        self.fields['evento'].required = False
+        self.fields['roteiro'].required = False
+        self.fields['plano_trabalho'].required = False
+        self.fields['oficio'].required = False
+
+        self.fields['evento'].queryset = Evento.objects.order_by('-data_inicio', 'titulo')
+        self.fields['roteiro'].queryset = RoteiroEvento.objects.select_related('evento').order_by('-updated_at')
+        self.fields['plano_trabalho'].queryset = (
+            EventoFundamentacao.objects.select_related('evento').order_by('-updated_at')
+        )
+        self.fields['oficio'].queryset = Oficio.objects.select_related('evento').order_by('-updated_at')
+
+        self.fields['termo_template_variant'].required = False
+        self.fields['termo_template_variant'].help_text = (
+            'Aplicável quando o tipo do documento for Termo de autorização.'
+        )
+
+        if self.instance and self.instance.pk:
+            placeholders = self.instance.placeholders if isinstance(self.instance.placeholders, dict) else {}
+            self.initial['placeholders_json'] = json.dumps(placeholders, ensure_ascii=False, indent=2)
+        else:
+            self.initial.setdefault('placeholders_json', '{}')
+
+        if self.tipo_predefinido and self.tipo_predefinido in dict(DocumentoAvulso.TIPO_CHOICES):
+            self.fields['tipo_documento'].initial = self.tipo_predefinido
+            self.fields['tipo_documento'].disabled = True
+
+    def clean_placeholders_json(self):
+        raw = (self.cleaned_data.get('placeholders_json') or '').strip()
+        if not raw:
+            return {}
+        try:
+            payload = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise forms.ValidationError(f'JSON inválido em placeholders: {exc.msg}.')
+        if not isinstance(payload, dict):
+            raise forms.ValidationError('Os placeholders devem ser um objeto JSON (chave/valor).')
+        normalized = {}
+        for key, value in payload.items():
+            k = str(key or '').strip()
+            if not k:
+                continue
+            normalized[k] = '' if value is None else str(value)
+        return normalized
+
+    def clean(self):
+        data = super().clean()
+        if self.tipo_predefinido:
+            data['tipo_documento'] = self.tipo_predefinido
+            self.instance.tipo_documento = self.tipo_predefinido
+        tipo = (data.get('tipo_documento') or '').strip().upper()
+        if tipo != DocumentoAvulso.TIPO_TERMO_AUTORIZACAO:
+            data['termo_template_variant'] = DocumentoAvulso.TERMO_TEMPLATE_SEMIPREENCHIDO
+        return data
+
+    def save(self, commit=True):
+        instance = super().save(commit=False)
+        instance.placeholders = self.cleaned_data.get('placeholders_json') or {}
+        if instance.tipo_documento != DocumentoAvulso.TIPO_TERMO_AUTORIZACAO:
+            instance.termo_template_variant = DocumentoAvulso.TERMO_TEMPLATE_SEMIPREENCHIDO
+        if commit:
+            instance.save()
+        return instance
 
 
 class TipoDemandaEventoForm(FormComErroInvalidMixin, forms.ModelForm):
