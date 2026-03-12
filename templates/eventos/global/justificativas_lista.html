@@ -1,0 +1,116 @@
+{% extends 'base.html' %}
+
+{% block title %}Justificativas - Central de Viagens{% endblock %}
+{% block page_title %}Justificativas{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+    <div class="page-header-cadastro">
+        <div>
+            <h1 class="mb-1">Lista global de justificativas</h1>
+            <p class="text-muted mb-0">Acompanhamento honesto das justificativas vinculadas aos oficios.</p>
+        </div>
+        <div class="d-flex gap-2 flex-wrap">
+            <a href="{% url 'eventos:documentos-hub' %}" class="btn btn-outline-secondary">Documentos</a>
+            <a href="{% url 'eventos:oficios-global' %}" class="btn btn-outline-secondary">Oficios</a>
+        </div>
+    </div>
+
+    <div class="card filter-card">
+        <div class="card-body py-3">
+            <form method="get" class="row g-2 align-items-end">
+                <div class="col-12 col-lg-4">
+                    <label class="form-label small text-muted">Busca</label>
+                    <input type="text" name="q" class="form-control form-control-sm" value="{{ filters.q }}" placeholder="Evento, protocolo, texto ou destino">
+                </div>
+                <div class="col-12 col-md-4 col-lg-3">
+                    <label class="form-label small text-muted">Evento</label>
+                    <select name="evento_id" class="form-select form-select-sm">
+                        <option value="">Todos</option>
+                        {% for evento in eventos_choices %}
+                        <option value="{{ evento.pk }}" {% if filters.evento_id == evento.pk|stringformat:"s" %}selected{% endif %}>{{ evento.titulo|default:"(sem titulo)" }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-6 col-md-2 col-lg-1">
+                    <label class="form-label small text-muted">Ano</label>
+                    <input type="text" name="ano" class="form-control form-control-sm" value="{{ filters.ano }}" placeholder="2026">
+                </div>
+                <div class="col-6 col-md-3 col-lg-2">
+                    <label class="form-label small text-muted">Status</label>
+                    <select name="status" class="form-select form-select-sm">
+                        <option value="">Todos</option>
+                        {% for value, label in status_choices %}
+                        <option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-12 col-md-auto">
+                    <button type="submit" class="btn btn-outline-primary btn-sm">Filtrar</button>
+                    <a href="{% url 'eventos:documentos-justificativas' %}" class="btn btn-outline-secondary btn-sm">Limpar</a>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="table-responsive">
+            <table class="table table-hover table-cadastro mb-0 align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>Oficio</th>
+                        <th>Evento</th>
+                        <th>Destino</th>
+                        <th>Status</th>
+                        <th>Antecedencia</th>
+                        <th class="text-end" width="300">Acoes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for row in object_list %}
+                    <tr>
+                        <td>
+                            <div class="fw-semibold">{{ row.oficio.numero_formatado }}</div>
+                            <div class="small text-muted">{{ row.oficio.protocolo_formatado|default:"—" }}</div>
+                        </td>
+                        <td>
+                            {% if row.evento %}
+                            <a href="{{ row.evento_url }}" class="text-decoration-none">{{ row.evento.titulo|default:"(sem titulo)" }}</a>
+                            {% else %}
+                            <span class="text-muted">Sem evento</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ row.destinos_display }}</td>
+                        <td>
+                            {% if row.info.status_key == 'preenchida' %}
+                            <span class="badge bg-success">{{ row.info.status_label }}</span>
+                            {% elif row.info.status_key == 'pendente' %}
+                            <span class="badge bg-warning text-dark">{{ row.info.status_label }}</span>
+                            {% else %}
+                            <span class="badge bg-secondary">{{ row.info.status_label }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if row.info.dias_antecedencia is not None %}
+                            {{ row.info.dias_antecedencia }} dia(s)
+                            {% else %}
+                            <span class="text-muted">—</span>
+                            {% endif %}
+                        </td>
+                        <td class="text-end">
+                            <a href="{{ row.justificativa_url }}" class="btn btn-sm btn-outline-primary">Abrir</a>
+                            <a href="{{ row.documentos_url }}" class="btn btn-sm btn-outline-secondary">Documentos</a>
+                            <a href="{{ row.oficio_url }}" class="btn btn-sm btn-outline-secondary">Step 4</a>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="6" class="text-center text-muted py-5">Nenhuma justificativa encontrada.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    {% include 'includes/pagination.html' %}
+</div>
+{% endblock %}

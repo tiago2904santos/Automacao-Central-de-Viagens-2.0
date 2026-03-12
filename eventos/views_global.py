@@ -1,0 +1,735 @@
+from __future__ import annotations
+
+from datetime import datetime
+from urllib.parse import urlencode
+
+from django.core.paginator import Paginator
+from django.db.models import Count, Prefetch, Q
+from django.shortcuts import render
+from django.urls import reverse
+
+from .models import Evento, EventoFundamentacao, EventoTermoParticipante, Oficio, RoteiroEvento
+from .services.diarias import PeriodMarker, TABELA_DIARIAS, calculate_periodized_diarias, formatar_valor_diarias
+from .services.documentos import (
+    DocumentoFormato,
+    DocumentoOficioTipo,
+    get_document_generation_status,
+    get_document_type_meta,
+)
+from .views import _build_oficio_justificativa_info
+
+
+SIMULACAO_SESSION_KEY = 'global_simulacao_diarias_last'
+STATUS_LABELS = {
+    'available': 'Disponivel',
+    'pending': 'Pendente',
+    'unavailable': 'Indisponivel',
+    'not_applicable': 'Nao aplicavel',
+    'preenchida': 'Preenchida',
+    'nao_exigida': 'Nao exigida',
+    'indefinida': 'Aguardando roteiro',
+    'indisponivel': 'Indisponivel',
+}
+
+
+def _clean(value):
+    return str(value or '').strip()
+
+
+def _full_route_name(request):
+    resolver = request.resolver_match
+    if not resolver:
+        return ''
+    namespace = getattr(resolver, 'namespace', '') or ''
+    url_name = getattr(resolver, 'url_name', '') or ''
+    return f'{namespace}:{url_name}' if namespace else url_name
+
+
+def _query_without_page(request):
+    params = request.GET.copy()
+    params.pop('page', None)
+    return params.urlencode()
+
+
+def _paginate(sequence, page_number, per_page=20):
+    paginator = Paginator(sequence, per_page)
+    return paginator.get_page(page_number)
+
+
+def _eventos_choices():
+    return Evento.objects.order_by('-data_inicio', 'titulo')
+
+
+def _append_next(url, next_url):
+    if not next_url:
+        return url
+    separator = '&' if '?' in url else '?'
+    return f'{url}{separator}{urlencode({"next": next_url})}'
+
+
+def _label_local(cidade, estado):
+    if cidade and estado:
+        return f'{cidade.nome}/{estado.sigla}'
+    if cidade:
+        return cidade.nome
+    if estado:
+        return estado.sigla
+    return '—'
+
+
+def _oficio_destinos_display(oficio):
+    labels = []
+    seen = set()
+    for trecho in oficio.trechos.all():
+        label = _label_local(
+            getattr(trecho, 'destino_cidade', None),
+            getattr(trecho, 'destino_estado', None),
+        )
+        if label == '—' or label in seen:
+            continue
+        seen.add(label)
+        labels.append(label)
+    if labels:
+        return ', '.join(labels)
+    return oficio.get_tipo_destino_display() or '—'
+
+
+def _roteiro_destinos_display(roteiro):
+    labels = []
+    for destino in roteiro.destinos.all():
+        labels.append(_label_local(destino.cidade, destino.estado))
+    return ', '.join(labels) if labels else '—'
+
+
+def _document_status_summary(oficio, tipo_documento, fundamentacao_tipo):
+    meta = get_document_type_meta(tipo_documento)
+    fundamentacao = getattr(oficio.evento, 'fundamentacao', None) if oficio.evento_id else None
+    if not oficio.evento_id:
+        return {
+            'status_key': 'not_applicable',
+            'status_label': STATUS_LABELS['not_applicable'],
+            'detail': 'Oficio sem evento vinculado.',
+            'fundamentacao_label': 'Sem evento',
+            'docx': None,
+            'pdf': None,
+            'download_docx_url': '',
+            'download_pdf_url': '',
+        }
+    if not fundamentacao or not _clean(fundamentacao.tipo_documento):
+        return {
+            'status_key': 'not_applicable',
+            'status_label': STATUS_LABELS['not_applicable'],
+            'detail': 'Etapa 4 do evento ainda nao definiu o documento base.',
+            'fundamentacao_label': 'Nao definido',
+            'docx': None,
+            'pdf': None,
+            'download_docx_url': '',
+            'download_pdf_url': '',
+        }
+    if fundamentacao.tipo_documento != fundamentacao_tipo:
+        return {
+            'status_key': 'not_applicable',
+            'status_label': STATUS_LABELS['not_applicable'],
+            'detail': f'Evento configurado para {fundamentacao.get_tipo_documento_display().lower()}.',
+            'fundamentacao_label': fundamentacao.get_tipo_documento_display(),
+            'docx': None,
+            'pdf': None,
+            'download_docx_url': '',
+            'download_pdf_url': '',
+        }
+
+    docx_status = get_document_generation_status(oficio, tipo_documento, DocumentoFormato.DOCX)
+    pdf_status = get_document_generation_status(oficio, tipo_documento, DocumentoFormato.PDF)
+    if docx_status['status'] == 'available' or pdf_status['status'] == 'available':
+        status_key = 'available'
+        detail = 'Documento pronto para download.'
+    elif docx_status['status'] == 'pending' or pdf_status['status'] == 'pending':
+        status_key = 'pending'
+        detail = (docx_status.get('errors') or pdf_status.get('errors') or ['Pendencias de preenchimento.'])[0]
+    else:
+        status_key = 'unavailable'
+        detail = (docx_status.get('errors') or pdf_status.get('errors') or ['Documento indisponivel.'])[0]
+
+    return {
+        'status_key': status_key,
+        'status_label': STATUS_LABELS[status_key],
+        'detail': detail,
+        'fundamentacao_label': fundamentacao.get_tipo_documento_display(),
+        'docx': docx_status,
+        'pdf': pdf_status,
+        'download_docx_url': (
+            reverse(
+                'eventos:oficio-documento-download',
+                kwargs={'pk': oficio.pk, 'tipo_documento': meta.slug, 'formato': DocumentoFormato.DOCX.value},
+            )
+            if docx_status['status'] == 'available'
+            else ''
+        ),
+        'download_pdf_url': (
+            reverse(
+                'eventos:oficio-documento-download',
+                kwargs={'pk': oficio.pk, 'tipo_documento': meta.slug, 'formato': DocumentoFormato.PDF.value},
+            )
+            if pdf_status['status'] == 'available'
+            else ''
+        ),
+    }
+
+
+def _build_oficio_filters(request):
+    return {
+        'q': _clean(request.GET.get('q')),
+        'status': _clean(request.GET.get('status')),
+        'evento_id': _clean(request.GET.get('evento_id')),
+        'ano': _clean(request.GET.get('ano')),
+        'numero': _clean(request.GET.get('numero')),
+        'protocolo': _clean(request.GET.get('protocolo')),
+        'destino': _clean(request.GET.get('destino')),
+    }
+
+
+def oficio_global_lista(request):
+    filters = _build_oficio_filters(request)
+    queryset = (
+        Oficio.objects.select_related('evento', 'cidade_sede', 'estado_sede', 'roteiro_evento')
+        .prefetch_related('trechos', 'viajantes')
+        .all()
+    )
+
+    if filters['q']:
+        queryset = queryset.filter(
+            Q(evento__titulo__icontains=filters['q'])
+            | Q(motivo__icontains=filters['q'])
+            | Q(viajantes__nome__icontains=filters['q'])
+            | Q(trechos__destino_cidade__nome__icontains=filters['q'])
+            | Q(trechos__destino_estado__sigla__icontains=filters['q'])
+        )
+    if filters['status']:
+        queryset = queryset.filter(status=filters['status'])
+    if filters['evento_id'].isdigit():
+        queryset = queryset.filter(evento_id=int(filters['evento_id']))
+    if filters['ano'].isdigit():
+        queryset = queryset.filter(ano=int(filters['ano']))
+    if filters['numero'].isdigit():
+        queryset = queryset.filter(numero=int(filters['numero']))
+    if filters['protocolo']:
+        protocolo_digits = Oficio.normalize_protocolo(filters['protocolo'])
+        queryset = queryset.filter(protocolo__icontains=protocolo_digits or filters['protocolo'])
+    if filters['destino']:
+        queryset = queryset.filter(
+            Q(tipo_destino__icontains=filters['destino'])
+            | Q(trechos__destino_cidade__nome__icontains=filters['destino'])
+            | Q(trechos__destino_estado__sigla__icontains=filters['destino'])
+            | Q(cidade_sede__nome__icontains=filters['destino'])
+        )
+
+    page_obj = _paginate(
+        queryset.distinct().order_by('-updated_at', '-created_at'),
+        request.GET.get('page'),
+    )
+    object_list = list(page_obj.object_list)
+    for oficio in object_list:
+        oficio.destinos_display = _oficio_destinos_display(oficio)
+        oficio.justificativa_info = _build_oficio_justificativa_info(oficio)
+        oficio.evento_url = reverse('eventos:guiado-painel', kwargs={'pk': oficio.evento_id}) if oficio.evento_id else ''
+        oficio.documentos_url = reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk})
+        oficio.edicao_url = reverse('eventos:oficio-editar', kwargs={'pk': oficio.pk})
+        oficio.excluir_url = reverse('eventos:oficio-excluir', kwargs={'pk': oficio.pk})
+
+    return render(
+        request,
+        'eventos/global/oficios_lista.html',
+        {
+            'object_list': object_list,
+            'page_obj': page_obj,
+            'pagination_query': _query_without_page(request),
+            'filters': filters,
+            'eventos_choices': _eventos_choices(),
+            'status_choices': Oficio.STATUS_CHOICES,
+        },
+    )
+
+
+def roteiro_global_lista(request):
+    filters = {
+        'q': _clean(request.GET.get('q')),
+        'status': _clean(request.GET.get('status')),
+        'evento_id': _clean(request.GET.get('evento_id')),
+    }
+    queryset = (
+        RoteiroEvento.objects.select_related('evento', 'origem_estado', 'origem_cidade')
+        .prefetch_related('destinos__estado', 'destinos__cidade')
+        .annotate(oficios_count=Count('oficios', distinct=True))
+    )
+    if filters['q']:
+        queryset = queryset.filter(
+            Q(evento__titulo__icontains=filters['q'])
+            | Q(origem_cidade__nome__icontains=filters['q'])
+            | Q(origem_estado__sigla__icontains=filters['q'])
+            | Q(destinos__cidade__nome__icontains=filters['q'])
+            | Q(destinos__estado__sigla__icontains=filters['q'])
+        )
+    if filters['status']:
+        queryset = queryset.filter(status=filters['status'])
+    if filters['evento_id'].isdigit():
+        queryset = queryset.filter(evento_id=int(filters['evento_id']))
+
+    page_obj = _paginate(
+        queryset.distinct().order_by('-updated_at', '-created_at'),
+        request.GET.get('page'),
+    )
+    object_list = list(page_obj.object_list)
+    for roteiro in object_list:
+        roteiro.destinos_display = _roteiro_destinos_display(roteiro)
+        roteiro.editar_url = reverse(
+            'eventos:guiado-etapa-2-editar',
+            kwargs={'evento_id': roteiro.evento_id, 'pk': roteiro.pk},
+        )
+        roteiro.evento_url = reverse('eventos:guiado-painel', kwargs={'pk': roteiro.evento_id})
+        roteiro.etapa_url = reverse('eventos:guiado-etapa-2', kwargs={'evento_id': roteiro.evento_id})
+        roteiro.oficios_url = reverse('eventos:guiado-etapa-3', kwargs={'evento_id': roteiro.evento_id})
+
+    selected_event = None
+    if filters['evento_id'].isdigit():
+        selected_event = Evento.objects.filter(pk=int(filters['evento_id'])).first()
+
+    return render(
+        request,
+        'eventos/global/roteiros_lista.html',
+        {
+            'object_list': object_list,
+            'page_obj': page_obj,
+            'pagination_query': _query_without_page(request),
+            'filters': filters,
+            'eventos_choices': _eventos_choices(),
+            'status_choices': RoteiroEvento.STATUS_CHOICES,
+            'novo_roteiro_url': (
+                reverse('eventos:guiado-etapa-2-cadastrar', kwargs={'evento_id': selected_event.pk})
+                if selected_event
+                else ''
+            ),
+            'selected_event': selected_event,
+        },
+    )
+
+
+def documentos_hub(request):
+    oficios = list(Oficio.objects.prefetch_related('trechos').all())
+    justificativas_pendentes = 0
+    justificativas_preenchidas = 0
+    for oficio in oficios:
+        info = _build_oficio_justificativa_info(oficio)
+        if info['status_key'] == 'pendente':
+            justificativas_pendentes += 1
+        elif info['status_key'] == 'preenchida':
+            justificativas_preenchidas += 1
+
+    cards = [
+        {
+            'label': 'Planos de trabalho',
+            'count': Oficio.objects.filter(evento__fundamentacao__tipo_documento=EventoFundamentacao.TIPO_PT).count(),
+            'description': 'Lista global derivada dos oficios e da etapa 4 do evento.',
+            'url': reverse('eventos:documentos-planos-trabalho'),
+        },
+        {
+            'label': 'Ordens de servico',
+            'count': Oficio.objects.filter(evento__fundamentacao__tipo_documento=EventoFundamentacao.TIPO_OS).count(),
+            'description': 'Acompanhamento global dos documentos de missao gerados por oficio.',
+            'url': reverse('eventos:documentos-ordens-servico'),
+        },
+        {
+            'label': 'Justificativas',
+            'count': justificativas_pendentes,
+            'description': f'{justificativas_preenchidas} preenchidas e {justificativas_pendentes} pendentes no momento.',
+            'url': reverse('eventos:documentos-justificativas'),
+        },
+        {
+            'label': 'Termos',
+            'count': EventoTermoParticipante.objects.count(),
+            'description': 'Situacao global dos termos por participante e evento.',
+            'url': reverse('eventos:documentos-termos'),
+        },
+    ]
+    return render(
+        request,
+        'eventos/global/documentos_hub.html',
+        {
+            'cards': cards,
+            'total_oficios': len(oficios),
+            'termos_pendentes': EventoTermoParticipante.objects.filter(
+                status=EventoTermoParticipante.STATUS_PENDENTE
+            ).count(),
+            'termos_concluidos': EventoTermoParticipante.objects.filter(
+                status=EventoTermoParticipante.STATUS_CONCLUIDO
+            ).count(),
+            'justificativas_pendentes': justificativas_pendentes,
+            'justificativas_preenchidas': justificativas_preenchidas,
+        },
+    )
+
+
+def _build_documento_derivado_rows(queryset, *, request, tipo_documento, fundamentacao_tipo, situacao):
+    next_url = request.get_full_path()
+    rows = []
+    for oficio in queryset:
+        status_info = _document_status_summary(oficio, tipo_documento, fundamentacao_tipo)
+        if situacao and situacao != 'todos' and status_info['status_key'] != situacao:
+            continue
+        rows.append(
+            {
+                'oficio': oficio,
+                'evento': oficio.evento,
+                'destinos_display': _oficio_destinos_display(oficio),
+                'status': status_info,
+                'oficio_url': reverse('eventos:oficio-editar', kwargs={'pk': oficio.pk}),
+                'documentos_url': reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk}),
+                'evento_url': reverse('eventos:guiado-painel', kwargs={'pk': oficio.evento_id}) if oficio.evento_id else '',
+                'justificativa_url': _append_next(
+                    reverse('eventos:oficio-justificativa', kwargs={'pk': oficio.pk}),
+                    next_url,
+                ),
+            }
+        )
+    return rows
+
+
+def _documento_derivado_global(request, *, template_title, template_page_title, template_subtitle, tipo_documento, fundamentacao_tipo):
+    filters = {
+        'q': _clean(request.GET.get('q')),
+        'evento_id': _clean(request.GET.get('evento_id')),
+        'ano': _clean(request.GET.get('ano')),
+        'situacao': _clean(request.GET.get('situacao')) or 'todos',
+        'oficio_status': _clean(request.GET.get('oficio_status')),
+    }
+    queryset = (
+        Oficio.objects.select_related('evento', 'evento__fundamentacao')
+        .prefetch_related('trechos', 'viajantes', 'viajantes__cargo')
+        .all()
+    )
+    if filters['q']:
+        queryset = queryset.filter(
+            Q(evento__titulo__icontains=filters['q'])
+            | Q(motivo__icontains=filters['q'])
+            | Q(protocolo__icontains=Oficio.normalize_protocolo(filters['q']) or filters['q'])
+            | Q(trechos__destino_cidade__nome__icontains=filters['q'])
+            | Q(viajantes__nome__icontains=filters['q'])
+        )
+    if filters['evento_id'].isdigit():
+        queryset = queryset.filter(evento_id=int(filters['evento_id']))
+    if filters['ano'].isdigit():
+        queryset = queryset.filter(ano=int(filters['ano']))
+    if filters['oficio_status']:
+        queryset = queryset.filter(status=filters['oficio_status'])
+
+    rows = _build_documento_derivado_rows(
+        queryset.distinct().order_by('-updated_at', '-created_at'),
+        request=request,
+        tipo_documento=tipo_documento,
+        fundamentacao_tipo=fundamentacao_tipo,
+        situacao=filters['situacao'],
+    )
+    page_obj = _paginate(rows, request.GET.get('page'))
+    return render(
+        request,
+        'eventos/global/documento_derivado_lista.html',
+        {
+            'object_list': list(page_obj.object_list),
+            'page_obj': page_obj,
+            'pagination_query': _query_without_page(request),
+            'filters': filters,
+            'eventos_choices': _eventos_choices(),
+            'oficio_status_choices': Oficio.STATUS_CHOICES,
+            'page_title': template_title,
+            'header_title': template_page_title,
+            'subtitle': template_subtitle,
+            'situacao_choices': [
+                ('todos', 'Todos'),
+                ('available', 'Disponiveis'),
+                ('pending', 'Pendentes'),
+                ('unavailable', 'Indisponiveis'),
+                ('not_applicable', 'Nao aplicaveis'),
+            ],
+        },
+    )
+
+
+def planos_trabalho_global(request):
+    return _documento_derivado_global(
+        request,
+        template_title='Planos de trabalho - Central de Viagens',
+        template_page_title='Planos de trabalho',
+        template_subtitle='Hub global derivado dos oficios e da fundamentacao do evento.',
+        tipo_documento=DocumentoOficioTipo.PLANO_TRABALHO,
+        fundamentacao_tipo=EventoFundamentacao.TIPO_PT,
+    )
+
+
+def ordens_servico_global(request):
+    return _documento_derivado_global(
+        request,
+        template_title='Ordens de servico - Central de Viagens',
+        template_page_title='Ordens de servico',
+        template_subtitle='Hub global derivado dos oficios e da configuracao documental do evento.',
+        tipo_documento=DocumentoOficioTipo.ORDEM_SERVICO,
+        fundamentacao_tipo=EventoFundamentacao.TIPO_OS,
+    )
+
+
+def justificativas_global(request):
+    filters = {
+        'q': _clean(request.GET.get('q')),
+        'evento_id': _clean(request.GET.get('evento_id')),
+        'ano': _clean(request.GET.get('ano')),
+        'status': _clean(request.GET.get('status')),
+    }
+    queryset = Oficio.objects.select_related('evento').prefetch_related('trechos').all()
+    if filters['q']:
+        queryset = queryset.filter(
+            Q(evento__titulo__icontains=filters['q'])
+            | Q(motivo__icontains=filters['q'])
+            | Q(justificativa_texto__icontains=filters['q'])
+            | Q(protocolo__icontains=Oficio.normalize_protocolo(filters['q']) or filters['q'])
+            | Q(trechos__destino_cidade__nome__icontains=filters['q'])
+        )
+    if filters['evento_id'].isdigit():
+        queryset = queryset.filter(evento_id=int(filters['evento_id']))
+    if filters['ano'].isdigit():
+        queryset = queryset.filter(ano=int(filters['ano']))
+
+    next_url = request.get_full_path()
+    rows = []
+    for oficio in queryset.distinct().order_by('-updated_at', '-created_at'):
+        info = _build_oficio_justificativa_info(oficio)
+        if filters['status'] and info['status_key'] != filters['status']:
+            continue
+        rows.append(
+            {
+                'oficio': oficio,
+                'evento': oficio.evento,
+                'info': info,
+                'destinos_display': _oficio_destinos_display(oficio),
+                'justificativa_url': _append_next(
+                    reverse('eventos:oficio-justificativa', kwargs={'pk': oficio.pk}),
+                    next_url,
+                ),
+                'documentos_url': reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk}),
+                'oficio_url': reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk}),
+                'evento_url': reverse('eventos:guiado-painel', kwargs={'pk': oficio.evento_id}) if oficio.evento_id else '',
+            }
+        )
+    page_obj = _paginate(rows, request.GET.get('page'))
+    return render(
+        request,
+        'eventos/global/justificativas_lista.html',
+        {
+            'object_list': list(page_obj.object_list),
+            'page_obj': page_obj,
+            'pagination_query': _query_without_page(request),
+            'filters': filters,
+            'eventos_choices': _eventos_choices(),
+            'status_choices': [
+                ('pendente', 'Pendentes'),
+                ('preenchida', 'Preenchidas'),
+                ('nao_exigida', 'Nao exigidas'),
+                ('indefinida', 'Aguardando roteiro'),
+                ('indisponivel', 'Indisponiveis'),
+            ],
+        },
+    )
+
+
+def termos_global(request):
+    filters = {
+        'q': _clean(request.GET.get('q')),
+        'evento_id': _clean(request.GET.get('evento_id')),
+        'status': _clean(request.GET.get('status')),
+    }
+    queryset = (
+        EventoTermoParticipante.objects.select_related('evento', 'viajante', 'viajante__cargo')
+        .prefetch_related(
+            Prefetch(
+                'evento__oficios',
+                queryset=Oficio.objects.prefetch_related('viajantes').order_by('ano', 'numero', 'id'),
+            )
+        )
+        .order_by('-updated_at', 'evento__titulo', 'viajante__nome')
+    )
+    if filters['q']:
+        queryset = queryset.filter(
+            Q(evento__titulo__icontains=filters['q'])
+            | Q(viajante__nome__icontains=filters['q'])
+            | Q(viajante__cargo__nome__icontains=filters['q'])
+        )
+    if filters['evento_id'].isdigit():
+        queryset = queryset.filter(evento_id=int(filters['evento_id']))
+    if filters['status']:
+        queryset = queryset.filter(status=filters['status'])
+
+    page_obj = _paginate(queryset, request.GET.get('page'))
+    object_list = []
+    for termo in page_obj.object_list:
+        oficios_relacionados = []
+        for oficio in termo.evento.oficios.all():
+            viajante_ids = {viajante.pk for viajante in oficio.viajantes.all()}
+            if termo.viajante_id in viajante_ids:
+                oficios_relacionados.append(oficio)
+        termo.oficios_relacionados = oficios_relacionados
+        termo.oficios_display = ', '.join(oficio.numero_formatado for oficio in oficios_relacionados) if oficios_relacionados else '—'
+        termo.termos_url = reverse('eventos:guiado-etapa-5', kwargs={'evento_id': termo.evento_id})
+        termo.oficios_url = reverse('eventos:guiado-etapa-3', kwargs={'evento_id': termo.evento_id})
+        termo.evento_url = reverse('eventos:guiado-painel', kwargs={'pk': termo.evento_id})
+        termo.documentos_url = (
+            reverse('eventos:oficio-documentos', kwargs={'pk': oficios_relacionados[0].pk})
+            if len(oficios_relacionados) == 1
+            else ''
+        )
+        object_list.append(termo)
+
+    return render(
+        request,
+        'eventos/global/termos_lista.html',
+        {
+            'object_list': object_list,
+            'page_obj': page_obj,
+            'pagination_query': _query_without_page(request),
+            'filters': filters,
+            'eventos_choices': _eventos_choices(),
+            'status_choices': EventoTermoParticipante.STATUS_CHOICES,
+        },
+    )
+
+
+def _default_simulacao_state():
+    return {
+        'quantidade_servidores': '1',
+        'chegada_final_data': '',
+        'chegada_final_hora': '',
+        'periodos': [
+            {
+                'saida_data': '',
+                'saida_hora': '',
+                'destino_cidade': '',
+                'destino_uf': '',
+            }
+        ],
+    }
+
+
+def _load_simulacao_state(request):
+    state = request.session.get(SIMULACAO_SESSION_KEY) or {}
+    periodos = state.get('periodos')
+    if not isinstance(periodos, list) or not periodos:
+        return _default_simulacao_state()
+    return {
+        'quantidade_servidores': _clean(state.get('quantidade_servidores')) or '1',
+        'chegada_final_data': _clean(state.get('chegada_final_data')),
+        'chegada_final_hora': _clean(state.get('chegada_final_hora')),
+        'periodos': periodos,
+    }
+
+
+def _parse_simulacao_post(request):
+    try:
+        period_count = max(1, min(int(request.POST.get('period_count') or 1), 12))
+    except (TypeError, ValueError):
+        period_count = 1
+
+    periodos = []
+    markers = []
+    for index in range(period_count):
+        row = {
+            'saida_data': _clean(request.POST.get(f'saida_data_{index}')),
+            'saida_hora': _clean(request.POST.get(f'saida_hora_{index}')),
+            'destino_cidade': _clean(request.POST.get(f'destino_cidade_{index}')),
+            'destino_uf': _clean(request.POST.get(f'destino_uf_{index}')).upper(),
+        }
+        periodos.append(row)
+        if not any(row.values()):
+            continue
+        if not all(row.values()):
+            raise ValueError(f'Preencha todos os campos do periodo {index + 1}.')
+        saida = datetime.strptime(
+            f"{row['saida_data']} {row['saida_hora']}",
+            '%Y-%m-%d %H:%M',
+        )
+        markers.append(
+            PeriodMarker(
+                saida=saida,
+                destino_cidade=row['destino_cidade'],
+                destino_uf=row['destino_uf'],
+            )
+        )
+
+    quantidade_servidores = _clean(request.POST.get('quantidade_servidores')) or '1'
+    try:
+        quantidade_servidores_int = max(1, int(quantidade_servidores))
+    except (TypeError, ValueError):
+        raise ValueError('Informe uma quantidade valida de servidores.')
+
+    chegada_final_data = _clean(request.POST.get('chegada_final_data'))
+    chegada_final_hora = _clean(request.POST.get('chegada_final_hora'))
+    if not markers:
+        raise ValueError('Informe ao menos um periodo de deslocamento.')
+    if not chegada_final_data or not chegada_final_hora:
+        raise ValueError('Informe a data e a hora de chegada final na sede.')
+
+    chegada_final = datetime.strptime(
+        f'{chegada_final_data} {chegada_final_hora}',
+        '%Y-%m-%d %H:%M',
+    )
+
+    return {
+        'quantidade_servidores': str(quantidade_servidores_int),
+        'chegada_final_data': chegada_final_data,
+        'chegada_final_hora': chegada_final_hora,
+        'periodos': periodos,
+        'markers': markers,
+        'chegada_final': chegada_final,
+    }
+
+
+def simulacao_diarias_global(request):
+    state = _load_simulacao_state(request)
+    resultado = None
+    erro = ''
+
+    if request.method == 'POST':
+        try:
+            parsed = _parse_simulacao_post(request)
+            state = {
+                'quantidade_servidores': parsed['quantidade_servidores'],
+                'chegada_final_data': parsed['chegada_final_data'],
+                'chegada_final_hora': parsed['chegada_final_hora'],
+                'periodos': parsed['periodos'],
+            }
+            resultado = calculate_periodized_diarias(
+                parsed['markers'],
+                parsed['chegada_final'],
+                quantidade_servidores=int(parsed['quantidade_servidores']),
+            )
+            request.session[SIMULACAO_SESSION_KEY] = state
+            request.session.modified = True
+        except ValueError as exc:
+            erro = str(exc)
+
+    tabela_valores = [
+        {
+            'tipo': tipo,
+            'valor_24h': formatar_valor_diarias(valores['24h']),
+            'valor_15': formatar_valor_diarias(valores['15']),
+            'valor_30': formatar_valor_diarias(valores['30']),
+        }
+        for tipo, valores in TABELA_DIARIAS.items()
+    ]
+
+    return render(
+        request,
+        'eventos/global/simulacao_diarias.html',
+        {
+            'state': state,
+            'period_count': len(state['periodos']),
+            'resultado': resultado,
+            'erro': erro,
+            'tabela_valores': tabela_valores,
+        },
+    )

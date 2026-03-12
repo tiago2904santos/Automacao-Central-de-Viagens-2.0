@@ -114,5 +114,18 @@ MEDIA_ROOT = BASE_DIR / 'media'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 LOGIN_URL = 'core:login'
-LOGIN_REDIRECT_URL = 'core:dashboard'
+LOGIN_REDIRECT_URL = 'eventos:documentos-hub'
 LOGOUT_REDIRECT_URL = 'core:login'
+
+# OSRM local (Docker). Sem OSRM = fallback Haversine/corredor.
+# OSRM_ENABLED=true  OSRM_BASE_URL=http://localhost:5000  OSRM_TIMEOUT_SECONDS=5
+OSRM_ENABLED = os.getenv('OSRM_ENABLED', 'false').strip().lower() in ('true', '1', 'yes')
+OSRM_BASE_URL = os.getenv('OSRM_BASE_URL', '').strip() or ''
+def _osrm_timeout():
+    try:
+        return max(1, min(30, int(os.getenv('OSRM_TIMEOUT_SECONDS', '5') or '5')))
+    except (TypeError, ValueError):
+        return 5
+
+
+OSRM_TIMEOUT_SECONDS = _osrm_timeout()

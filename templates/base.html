@@ -14,47 +14,51 @@
     {% if user.is_authenticated %}
     <aside class="sidebar" id="sidebar">
         <div class="sidebar-header">
-            <a href="{% url 'core:dashboard' %}" class="sidebar-brand">
+            <a href="{% url 'eventos:documentos-hub' %}" class="sidebar-brand">
                 <i class="bi bi-geo-alt-fill"></i>
                 <span>Central de Viagens</span>
             </a>
         </div>
         <nav class="sidebar-nav" id="sidebarNav">
-            <ul class="nav flex-column">
-                {% for group in sidebar_menu.groups %}
-                    {% for item in group.items %}
-                        {% if item.visible %}
-                        <li class="nav-item">
-                            {% if item.children %}
-                                <a class="nav-link {% if item.active %}active{% endif %}" href="{{ item.url }}">
-                                    {% if item.icon %}<i class="{{ item.icon }}"></i>{% endif %}
-                                    <span>{{ item.label }}</span>
-                                </a>
-                                <ul class="nav flex-column ms-3 small">
-                                    {% for child in item.children %}
-                                    <li class="nav-item">
-                                        <a class="nav-link py-1 {% if child.active %}active{% endif %}" href="{{ child.url }}">{{ child.label }}</a>
-                                    </li>
-                                    {% endfor %}
-                                </ul>
-                            {% elif item.enabled and item.url %}
-                                <a class="nav-link {% if item.active %}active{% endif %}" href="{{ item.url }}">
-                                    {% if item.icon %}<i class="{{ item.icon }}"></i>{% endif %}
-                                    <span>{{ item.label }}</span>
-                                </a>
-                            {% else %}
-                                <span class="nav-link sidebar-item-disabled" aria-disabled="true">
-                                    {% if item.icon %}<i class="{{ item.icon }}"></i>{% endif %}
-                                    <span>{{ item.label }}</span>
-                                    {% if item.badge %}<span class="sidebar-badge sidebar-badge-em-breve">{{ item.badge }}</span>{% endif %}
-                                </span>
-                            {% endif %}
-                        </li>
-                        {% endif %}
-                    {% endfor %}
-                    {% if group.id == 'main' and sidebar_menu.groups|length > 1 %}
-                        <li class="nav-item sidebar-divider" aria-hidden="true"></li>
+            <ul class="sidebar-groups">
+                {% for item in sidebar_menu.items %}
+                <li class="sidebar-group-shell">
+                    {% if item.has_children %}
+                    <details
+                        class="sidebar-group {% if item.active %}is-active{% endif %}"
+                        data-sidebar-group
+                        data-group-id="{{ item.id }}"
+                        data-active="{{ item.active|yesno:'true,false' }}"
+                        {% if item.open %}open{% endif %}
+                    >
+                        <summary class="sidebar-group-toggle">
+                            <span class="sidebar-group-heading">
+                                {% if item.icon %}<i class="{{ item.icon }}" aria-hidden="true"></i>{% endif %}
+                                <span class="sidebar-group-text">{{ item.label }}</span>
+                            </span>
+                            <i class="bi bi-chevron-down sidebar-group-chevron" aria-hidden="true"></i>
+                        </summary>
+                        <div class="sidebar-group-menu">
+                            <ul class="sidebar-subnav">
+                                {% for child in item.children %}
+                                <li class="sidebar-subnav-item">
+                                    <a class="sidebar-subnav-link sidebar-subnav-link-nested {% if child.active %}active{% endif %}" href="{{ child.url }}">
+                                        <span>{{ child.label }}</span>
+                                    </a>
+                                </li>
+                                {% endfor %}
+                            </ul>
+                        </div>
+                    </details>
+                    {% else %}
+                    <a href="{{ item.url }}" class="sidebar-direct-link {% if item.active %}active{% endif %}">
+                        <span class="sidebar-group-heading">
+                            {% if item.icon %}<i class="{{ item.icon }}" aria-hidden="true"></i>{% endif %}
+                            <span class="sidebar-group-text">{{ item.label }}</span>
+                        </span>
+                    </a>
                     {% endif %}
+                </li>
                 {% endfor %}
             </ul>
         </nav>
@@ -66,6 +70,7 @@
             </div>
         </div>
     </aside>
+    <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
     <button type="button" class="sidebar-toggle d-lg-none" id="sidebarToggle" aria-label="Alternar menu">
         <i class="bi bi-list"></i>
     </button>
@@ -98,11 +103,74 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
     <script src="{% static 'js/masks.js' %}"></script>
     <script>
-        document.getElementById('sidebarToggle')?.addEventListener('click', function() {
-            document.getElementById('sidebar').classList.toggle('show');
-        });
-
         document.addEventListener('DOMContentLoaded', function() {
+            var sidebar = document.getElementById('sidebar');
+            var sidebarToggle = document.getElementById('sidebarToggle');
+            var sidebarBackdrop = document.getElementById('sidebarBackdrop');
+            var sidebarGroups = Array.from(document.querySelectorAll('[data-sidebar-group]'));
+            var sidebarStorageKey = 'central-viagens.sidebar.open-group';
+            var syncingGroups = false;
+
+            function setSidebarOpen(isOpen) {
+                if (!sidebar) return;
+                sidebar.classList.toggle('show', isOpen);
+                sidebarBackdrop?.classList.toggle('show', isOpen);
+                document.body.classList.toggle('sidebar-open', isOpen);
+            }
+
+            function syncSidebarGroups(openGroupId, persist) {
+                syncingGroups = true;
+                sidebarGroups.forEach(function(group) {
+                    group.open = group.dataset.groupId === openGroupId;
+                });
+                syncingGroups = false;
+                if (persist) {
+                    if (openGroupId) {
+                        window.localStorage.setItem(sidebarStorageKey, openGroupId);
+                    } else {
+                        window.localStorage.removeItem(sidebarStorageKey);
+                    }
+                }
+            }
+
+            sidebarToggle?.addEventListener('click', function() {
+                setSidebarOpen(!sidebar?.classList.contains('show'));
+            });
+
+            sidebarBackdrop?.addEventListener('click', function() {
+                setSidebarOpen(false);
+            });
+
+            var activeGroup = sidebarGroups.find(function(group) {
+                return group.dataset.active === 'true';
+            });
+            var storedGroupId = window.localStorage.getItem(sidebarStorageKey);
+            var initialGroupId = activeGroup ? activeGroup.dataset.groupId : storedGroupId;
+            if (initialGroupId) {
+                syncSidebarGroups(initialGroupId, Boolean(activeGroup));
+            }
+
+            sidebarGroups.forEach(function(group) {
+                group.addEventListener('toggle', function() {
+                    if (syncingGroups) {
+                        return;
+                    }
+                    if (group.open) {
+                        syncSidebarGroups(group.dataset.groupId, true);
+                    } else if (window.localStorage.getItem(sidebarStorageKey) === group.dataset.groupId) {
+                        window.localStorage.removeItem(sidebarStorageKey);
+                    }
+                });
+            });
+
+            document.querySelectorAll('.sidebar-subnav-link').forEach(function(link) {
+                link.addEventListener('click', function() {
+                    if (window.innerWidth < 992) {
+                        setSidebarOpen(false);
+                    }
+                });
+            });
+
             var alerts = document.querySelectorAll('.alert[data-autodismiss="true"]');
             alerts.forEach(function(el) {
                 setTimeout(function() {

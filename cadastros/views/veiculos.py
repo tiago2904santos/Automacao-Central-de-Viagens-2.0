@@ -1,14 +1,40 @@
+from urllib.parse import urlencode
+
 from django.contrib.auth.decorators import login_required
 from django.shortcuts import render, redirect, get_object_or_404
 from django.db.models import Q
 from django.contrib import messages
 from django.urls import reverse
+from django.utils.http import url_has_allowed_host_and_scheme
 
 from ..models import Veiculo, CombustivelVeiculo
 from ..forms import VeiculoForm, CombustivelVeiculoForm
 from core.utils.masks import _normalizar_placa
 
 RETURN_URL_KEY = 'veiculo_form_return_url'
+
+
+def _next_url_safe(request):
+    nxt = (request.POST.get('next') or request.GET.get('next') or '').strip()
+    if not nxt:
+        return ''
+    if url_has_allowed_host_and_scheme(
+        url=nxt,
+        allowed_hosts={request.get_host()},
+        require_https=request.is_secure(),
+    ):
+        return nxt
+    return ''
+
+
+def _build_veiculo_return_url(request, pk):
+    """URL de retorno para edição do veículo, preservando next quando existir."""
+    path = reverse('cadastros:veiculo-editar', kwargs={'pk': pk})
+    next_url = _next_url_safe(request)
+    if next_url:
+        query = urlencode({'next': next_url})
+        path = f'{path}?{query}'
+    return request.build_absolute_uri(path)
 
 
 def _placa_valida(norm):
@@ -80,14 +106,14 @@ def veiculo_salvar_rascunho_ir_combustiveis(request):
             status=Veiculo.STATUS_RASCUNHO,
         )
         pk = obj.pk
-    request.session[RETURN_URL_KEY] = request.build_absolute_uri(reverse('cadastros:veiculo-editar', kwargs={'pk': pk}))
+    request.session[RETURN_URL_KEY] = _build_veiculo_return_url(request, pk)
     request.session.modified = True
     messages.info(request, 'Rascunho salvo. Ao voltar, continue editando o mesmo veículo.')
     return redirect('cadastros:combustivel-lista')
 
 
 @login_required
-def veiculo_cadastrar(request):
+def _legacy_veiculo_cadastrar(request):
     if request.method == 'GET':
         if RETURN_URL_KEY in request.session:
             del request.session[RETURN_URL_KEY]
@@ -109,7 +135,7 @@ def veiculo_cadastrar(request):
 
 
 @login_required
-def veiculo_editar(request, pk):
+def _legacy_veiculo_editar(request, pk):
     obj = get_object_or_404(Veiculo, pk=pk)
     form = VeiculoForm(request.POST or None, instance=obj)
     if request.method == 'POST' and form.is_valid():
@@ -203,3 +229,58 @@ def combustivel_definir_padrao(request, pk):
     obj.save(update_fields=['is_padrao'])
     messages.success(request, f'Combustível "{obj.nome}" definido como padrão.')
     return redirect('cadastros:combustivel-lista')
+@login_required
+def veiculo_cadastrar(request):
+    if request.method == 'GET':
+        if RETURN_URL_KEY in request.session:
+            del request.session[RETURN_URL_KEY]
+            request.session.modified = True
+    form = VeiculoForm(request.POST if request.method == 'POST' else None)
+    if request.method == 'POST' and form.is_valid():
+        obj = form.save(commit=False)
+        obj.status = Veiculo.STATUS_FINALIZADO if obj.esta_completo() else Veiculo.STATUS_RASCUNHO
+        obj.save()
+        if RETURN_URL_KEY in request.session:
+            del request.session[RETURN_URL_KEY]
+            request.session.modified = True
+        messages.success(request, 'Veículo cadastrado com sucesso.')
+        next_url = _next_url_safe(request)
+        if next_url:
+            return redirect(next_url)
+        return redirect('cadastros:veiculo-lista')
+    return_url = request.build_absolute_uri()
+    next_url = _next_url_safe(request)
+    return render(request, 'cadastros/veiculos/form.html', {
+        'form': form,
+        'is_create': True,
+        'return_url': return_url,
+        'next_url': next_url,
+        'object': None,
+    })
+
+
+@login_required
+def veiculo_editar(request, pk):
+    obj = get_object_or_404(Veiculo, pk=pk)
+    form = VeiculoForm(request.POST or None, instance=obj)
+    if request.method == 'POST' and form.is_valid():
+        form.save()
+        obj.status = Veiculo.STATUS_FINALIZADO if obj.esta_completo() else Veiculo.STATUS_RASCUNHO
+        obj.save(update_fields=['status'])
+        if RETURN_URL_KEY in request.session:
+            del request.session[RETURN_URL_KEY]
+            request.session.modified = True
+        messages.success(request, 'Veículo atualizado com sucesso.')
+        next_url = _next_url_safe(request)
+        if next_url:
+            return redirect(next_url)
+        return redirect('cadastros:veiculo-lista')
+    return_url = request.build_absolute_uri()
+    next_url = _next_url_safe(request)
+    return render(request, 'cadastros/veiculos/form.html', {
+        'form': form,
+        'object': obj,
+        'is_create': False,
+        'return_url': return_url,
+        'next_url': next_url,
+    })

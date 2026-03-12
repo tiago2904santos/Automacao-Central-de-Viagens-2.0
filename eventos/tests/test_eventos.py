@@ -1,26 +1,60 @@
 import json
+import os
+import sys
+from io import BytesIO
+from pathlib import Path
 from datetime import date, datetime, timedelta
 from decimal import Decimal
+import builtins
+import importlib
 from urllib.parse import quote
 from unittest.mock import patch, MagicMock
 
+from django.conf import settings
+from django.core.exceptions import ValidationError
 from django.test import TestCase, Client, RequestFactory
 from django.urls import reverse
 from django.contrib.auth import get_user_model
 from django.utils import timezone as tz
 
-from cadastros.models import Cargo, Estado, Cidade, UnidadeLotacao, Viajante, Veiculo, CombustivelVeiculo
+from cadastros.models import AssinaturaConfiguracao, Cargo, ConfiguracaoSistema, Estado, Cidade, UnidadeLotacao, Viajante, Veiculo, CombustivelVeiculo
 from eventos.models import (
     Evento,
     EventoDestino,
+    EventoFinalizacao,
+    EventoFundamentacao,
     EventoParticipante,
+    EventoTermoParticipante,
+    ModeloJustificativa,
     ModeloMotivoViagem,
     Oficio,
+    OficioTrecho,
     RoteiroEvento,
     RoteiroEventoDestino,
     RoteiroEventoTrecho,
     TipoDemandaEvento,
 )
+from eventos.services.justificativa import get_prazo_justificativa_dias, oficio_exige_justificativa
+from eventos.services.documentos import (
+    DocumentoOficioTipo,
+    build_document_filename,
+    build_justificativa_document_context,
+    build_oficio_document_context,
+    build_ordem_servico_document_context,
+    build_plano_trabalho_document_context,
+    build_termo_autorizacao_document_context,
+    get_assinaturas_documento,
+    get_document_backend_capabilities,
+    get_docx_backend_availability,
+    get_pdf_backend_availability,
+    reset_document_backend_capabilities_cache,
+    validate_oficio_for_document_generation,
+)
+
+try:
+    from docx import Document as DocxDocument
+except ImportError:
+    DocxDocument = None
 
 User = get_user_model()
 
@@ -1735,7 +1769,7 @@ class TipoDemandaEventoCRUDTest(TestCase):
 
 
 class EstimativaLocalServiceTest(TestCase):
-    """Testes do serviço de estimativa local (haversine + regras de negócio)."""
+    """Testes do serviço de estimativa local (tempo de viagem vs buffer, corredores)."""
 
     def test_minutos_para_hhmm(self):
         from eventos.services.estimativa_local import minutos_para_hhmm
@@ -1746,7 +1780,6 @@ class EstimativaLocalServiceTest(TestCase):
 
     def test_estimativa_entre_coordenadas_retorna_ok(self):
         from eventos.services.estimativa_local import estimar_distancia_duracao
-        # Curitiba ~ -25.43, -49.27; Maringá ~ -23.42, -51.94 (linha reta ~380 km)
         out = estimar_distancia_duracao(
             origem_lat=-25.43, origem_lon=-49.27,
             destino_lat=-23.42, destino_lon=-51.94,
@@ -1754,21 +1787,149 @@ class EstimativaLocalServiceTest(TestCase):
         self.assertTrue(out['ok'])
         self.assertIsNotNone(out['distancia_km'])
         self.assertIsNotNone(out['duracao_estimada_min'])
+        self.assertIsNotNone(out.get('tempo_viagem_estimado_min'))
+        self.assertIsNotNone(out.get('buffer_operacional_sugerido_min'))
         self.assertEqual(out['rota_fonte'], 'ESTIMATIVA_LOCAL')
 
-    def test_fator_rodoviario_progressivo_por_faixa(self):
-        """Fator rodoviário progressivo: até 100 km 1.18; 101-250 1.22; 251-400 1.27; >400 1.34."""
+    def test_tempo_viagem_e_buffer_separados(self):
+        """Retorno inclui tempo_viagem_estimado_min (comparável ao Google) e buffer_operacional_sugerido_min."""
+        from eventos.services.estimativa_local import estimar_distancia_duracao
+        out = estimar_distancia_duracao(-25.43, -49.27, -23.42, -51.94)
+        self.assertTrue(out['ok'])
+        self.assertIn('tempo_viagem_estimado_min', out)
+        self.assertIn('tempo_viagem_estimado_hhmm', out)
+        self.assertIn('buffer_operacional_sugerido_min', out)
+        tv = out['tempo_viagem_estimado_min']
+        buf = out['buffer_operacional_sugerido_min']
+        self.assertEqual(out['duracao_estimada_min'], tv + buf)
+
+    def test_duracao_igual_tempo_viagem_mais_buffer(self):
+        """duracao_estimada_min = tempo_viagem_estimado_min + buffer_operacional_sugerido_min."""
+        from eventos.services.estimativa_local import estimar_distancia_duracao
+        out = estimar_distancia_duracao(-25.43, -49.27, -23.42, -51.94)
+        self.assertTrue(out['ok'])
+        tv = out.get('tempo_viagem_estimado_min', 0) or 0
+        buf = out.get('buffer_operacional_sugerido_min', 0) or 0
+        self.assertEqual(out['duracao_estimada_min'], tv + buf)
+
+    def test_compatibilidade_tempo_cru_e_adicional(self):
+        """Compatibilidade: tempo_cru_estimado_min = tempo_viagem; tempo_adicional_sugerido_min = buffer."""
+        from eventos.services.estimativa_local import estimar_distancia_duracao
+        out = estimar_distancia_duracao(-25.43, -49.27, -23.42, -51.94)
+        self.assertTrue(out['ok'])
+        self.assertEqual(out['tempo_cru_estimado_min'], out['tempo_viagem_estimado_min'])
+        self.assertEqual(out['tempo_adicional_sugerido_min'], out['buffer_operacional_sugerido_min'])
+
+    def test_classificar_corredor_litoral_curto(self):
+        """Curitiba -> Pontal do Paraná: LITORAL_CURTO (fator 0.86, buffer 5)."""
+        from eventos.services.estimativa_local import (
+            estimar_distancia_duracao,
+            CORREDOR_LITORAL_CURTO,
+            FATOR_CORREDOR,
+            BUFFER_POR_CORREDOR,
+        )
+        # Pontal do Paraná ~ -25.67, -48.51
+        out = estimar_distancia_duracao(
+            origem_lat=-25.43, origem_lon=-49.27,
+            destino_lat=-25.67, destino_lon=-48.51,
+        )
+        self.assertTrue(out['ok'])
+        self.assertEqual(out['corredor'], CORREDOR_LITORAL_CURTO)
+        self.assertEqual(out['buffer_operacional_sugerido_min'], BUFFER_POR_CORREDOR[CORREDOR_LITORAL_CURTO])
+        self.assertEqual(BUFFER_POR_CORREDOR[CORREDOR_LITORAL_CURTO], 5)
+        self.assertEqual(FATOR_CORREDOR[CORREDOR_LITORAL_CURTO], 0.86)
+
+    def test_classificar_corredor_campos_gerais(self):
+        """Curitiba -> Ponta Grossa: CAMPOS_GERAIS_CURTO (fator 1.00, buffer 5)."""
+        from eventos.services.estimativa_local import (
+            estimar_distancia_duracao,
+            CORREDOR_CAMPOS_GERAIS_CURTO,
+            BUFFER_POR_CORREDOR,
+        )
+        out = estimar_distancia_duracao(
+            origem_lat=-25.43, origem_lon=-49.27,
+            destino_lat=-25.09, destino_lon=-50.16,
+        )
+        self.assertTrue(out['ok'])
+        self.assertEqual(out['corredor'], CORREDOR_CAMPOS_GERAIS_CURTO)
+        self.assertEqual(out['buffer_operacional_sugerido_min'], 5)
+
+    def test_classificar_corredor_norte_noroeste(self):
+        """Curitiba -> Maringá: NORTE_NOROESTE (fator 1.12, buffer 15)."""
+        from eventos.services.estimativa_local import (
+            estimar_distancia_duracao,
+            CORREDOR_NORTE_NOROESTE,
+            BUFFER_POR_CORREDOR,
+        )
+        out = estimar_distancia_duracao(
+            origem_lat=-25.43, origem_lon=-49.27,
+            destino_lat=-23.42, destino_lon=-51.93,
+        )
+        self.assertTrue(out['ok'])
+        self.assertEqual(out['corredor'], CORREDOR_NORTE_NOROESTE)
+        self.assertEqual(out['buffer_operacional_sugerido_min'], BUFFER_POR_CORREDOR[CORREDOR_NORTE_NOROESTE])
+        self.assertEqual(out['buffer_operacional_sugerido_min'], 15)
+
+    def test_classificar_corredor_oeste_br277(self):
+        """Curitiba -> Cascavel: OESTE_BR277 (fator 1.05, buffer 10)."""
+        from eventos.services.estimativa_local import (
+            estimar_distancia_duracao,
+            CORREDOR_OESTE_BR277,
+            BUFFER_POR_CORREDOR,
+        )
+        out = estimar_distancia_duracao(
+            origem_lat=-25.43, origem_lon=-49.27,
+            destino_lat=-24.96, destino_lon=-53.45,
+        )
+        self.assertTrue(out['ok'])
+        self.assertEqual(out['corredor'], CORREDOR_OESTE_BR277)
+        self.assertEqual(out['buffer_operacional_sugerido_min'], 10)
+
+    def test_fator_corredor_aplicado(self):
+        """tempo_viagem_estimado = tempo_cru_base * fator_corredor (arredondado múltiplo 5)."""
+        from eventos.services.estimativa_local import (
+            estimar_distancia_duracao,
+            _velocidade_base_por_faixa,
+            arredondar_para_multiplo_5_proximo,
+            FATOR_CORREDOR,
+        )
+        out = estimar_distancia_duracao(-25.43, -49.27, -23.42, -51.93)
+        self.assertTrue(out['ok'])
+        dist = float(out['distancia_km'])
+        vel = _velocidade_base_por_faixa(dist)
+        tempo_base_float = (dist / vel) * 60
+        tempo_base = arredondar_para_multiplo_5_proximo(tempo_base_float)
+        corredor = out['corredor']
+        esperado_float = tempo_base * FATOR_CORREDOR[corredor]
+        esperado = arredondar_para_multiplo_5_proximo(esperado_float)
+        self.assertEqual(out['tempo_viagem_estimado_min'], esperado)
+        self.assertEqual(out['tempo_viagem_estimado_min'] % 5, 0)
+
+    def test_buffers_baixos_rotas_curtas(self):
+        """Litoral e Campos Gerais curtos têm buffer 5 min."""
+        from eventos.services.estimativa_local import (
+            estimar_distancia_duracao,
+            CORREDOR_LITORAL_CURTO,
+            CORREDOR_CAMPOS_GERAIS_CURTO,
+            BUFFER_POR_CORREDOR,
+        )
+        self.assertEqual(BUFFER_POR_CORREDOR[CORREDOR_LITORAL_CURTO], 5)
+        self.assertEqual(BUFFER_POR_CORREDOR[CORREDOR_CAMPOS_GERAIS_CURTO], 5)
+
+    def test_fator_rodoviario_por_faixa(self):
+        """Fator rodoviário por linha reta: até 60→1.20; 61-120→1.18; 121-250→1.17; 251-400→1.19; 401-700→1.22; >700→1.24."""
         from eventos.services.estimativa_local import estimar_distancia_duracao, _fator_rodoviario_por_faixa
-        # ~100 km linha reta: fator 1.18 -> rodoviário ~118 km
+        # ~100 km linha reta: faixa 61-120 -> fator 1.18 -> rodoviário ~118 km
         out = estimar_distancia_duracao(0, 0, 0, 0.9)
         self.assertTrue(out['ok'])
         self.assertAlmostEqual(float(out['distancia_km']), 118, delta=8)
-        # Faixas do fator (régua refinada)
-        self.assertEqual(float(_fator_rodoviario_por_faixa(50)), 1.18)
+        self.assertEqual(float(_fator_rodoviario_por_faixa(50)), 1.20)
+        self.assertEqual(float(_fator_rodoviario_por_faixa(60)), 1.20)
         self.assertEqual(float(_fator_rodoviario_por_faixa(100)), 1.18)
-        self.assertEqual(float(_fator_rodoviario_por_faixa(200)), 1.22)
-        self.assertEqual(float(_fator_rodoviario_por_faixa(350)), 1.27)
-        self.assertEqual(float(_fator_rodoviario_por_faixa(500)), 1.34)
+        self.assertEqual(float(_fator_rodoviario_por_faixa(200)), 1.17)
+        self.assertEqual(float(_fator_rodoviario_por_faixa(350)), 1.19)
+        self.assertEqual(float(_fator_rodoviario_por_faixa(500)), 1.22)
+        self.assertEqual(float(_fator_rodoviario_por_faixa(800)), 1.24)
 
     def test_arredondamento_multiplo_5_proximo(self):
         """Arredondar para o múltiplo de 5 mais próximo (neutro)."""
@@ -1799,198 +1960,525 @@ class EstimativaLocalServiceTest(TestCase):
         self.assertFalse(out['ok'])
         self.assertEqual(out['erro'], ERRO_SEM_COORDENADAS)
 
-    def test_tempo_cru_multiplo_5_minutos(self):
-        """Tempo cru é sempre múltiplo de 5 minutos (arredondamento neutro)."""
+    def test_tempo_viagem_multiplo_5_minutos(self):
+        """tempo_viagem_estimado_min é múltiplo de 5 (arredondamento neutro)."""
         from eventos.services.estimativa_local import estimar_distancia_duracao
         out = estimar_distancia_duracao(-25.43, -49.27, -23.42, -51.94)
         self.assertTrue(out['ok'])
-        self.assertIsNotNone(out['tempo_cru_estimado_min'])
-        self.assertEqual(out['tempo_cru_estimado_min'] % 5, 0)
+        self.assertIsNotNone(out['tempo_viagem_estimado_min'])
+        self.assertEqual(out['tempo_viagem_estimado_min'] % 5, 0)
 
-    def test_total_igual_cru_mais_adicional_na_estimativa(self):
-        """Na estimativa, duracao_estimada_min = tempo_cru + tempo_adicional_sugerido (soma exata)."""
-        from eventos.services.estimativa_local import estimar_distancia_duracao
-        out = estimar_distancia_duracao(-25.43, -49.27, -23.42, -51.94)
-        self.assertTrue(out['ok'])
-        cru = out.get('tempo_cru_estimado_min', 0) or 0
-        adic = out.get('tempo_adicional_sugerido_min', 0) or 0
-        total = out.get('duracao_estimada_min')
-        self.assertEqual(total, cru + adic)
-
-    def test_tempo_cru_nao_contem_folga(self):
-        """Tempo cru = distância/velocidade_progressiva, arredondado para múltiplo 5 mais próximo. NÃO contém folga."""
-        from eventos.services.estimativa_local import (
-            estimar_distancia_duracao, arredondar_para_multiplo_5_proximo,
-            VELOCIDADE_MEDIA_BASE_KMH, VELOCIDADE_MEDIA_TETO_KMH, INCREMENTO_KM,
-        )
-        out = estimar_distancia_duracao(0, 0, 0, 1)  # ~111 km linha reta -> ~128 km rod
-        self.assertTrue(out['ok'])
-        dist_km = float(out['distancia_km'])
-        vel = min(VELOCIDADE_MEDIA_TETO_KMH, VELOCIDADE_MEDIA_BASE_KMH + int(dist_km // INCREMENTO_KM))
-        tempo_cru = out['tempo_cru_estimado_min']
-        esperado_float = (dist_km / vel) * 60
-        esperado = arredondar_para_multiplo_5_proximo(esperado_float)
-        self.assertEqual(tempo_cru, esperado)
-        self.assertIn('tempo_adicional_sugerido_min', out)
-        self.assertEqual(out['duracao_estimada_min'], tempo_cru + out['tempo_adicional_sugerido_min'])
-
-    def test_velocidade_media_progressiva_base_62(self):
-        """Velocidade média progressiva: base 62 km/h, +1 a cada 100 km, teto 76."""
-        from eventos.services.estimativa_local import (
-            VELOCIDADE_MEDIA_BASE_KMH, VELOCIDADE_MEDIA_TETO_KMH, INCREMENTO_KM,
-        )
-        self.assertEqual(VELOCIDADE_MEDIA_BASE_KMH, 62)
-        self.assertEqual(VELOCIDADE_MEDIA_TETO_KMH, 76)
-        self.assertEqual(INCREMENTO_KM, 100)
-
-    def test_velocidade_50_km_usar_62(self):
-        """0-99 km usa 62 km/h."""
-        from eventos.services.estimativa_local import estimar_distancia_duracao, arredondar_para_multiplo_5_proximo
-        out = estimar_distancia_duracao(0, 0, 0, 50/111)
-        self.assertTrue(out['ok'])
-        dist = float(out['distancia_km'])
-        self.assertLess(dist, 100)
-        tempo_cru = out['tempo_cru_estimado_min']
-        esperado = (dist / 62) * 60
-        self.assertEqual(tempo_cru, arredondar_para_multiplo_5_proximo(esperado))
-
-    def test_velocidade_100_km_usar_63(self):
-        """100-199 km usa 63 km/h."""
-        from eventos.services.estimativa_local import estimar_distancia_duracao, arredondar_para_multiplo_5_proximo
-        out = estimar_distancia_duracao(0, 0, 0, 100/111)
-        self.assertTrue(out['ok'])
-        dist = float(out['distancia_km'])
-        self.assertGreaterEqual(dist, 100)
-        self.assertLess(dist, 200)
-        tempo_cru = out['tempo_cru_estimado_min']
-        esperado = (dist / 63) * 60
-        self.assertEqual(tempo_cru, arredondar_para_multiplo_5_proximo(esperado))
-
-    def test_velocidade_300_km_usar_65(self):
-        """300-399 km usa 65 km/h."""
-        from eventos.services.estimativa_local import estimar_distancia_duracao, arredondar_para_multiplo_5_proximo
-        out = estimar_distancia_duracao(0, 0, 0, 300/111)
-        self.assertTrue(out['ok'])
-        dist = float(out['distancia_km'])
-        self.assertGreaterEqual(dist, 300)
-        self.assertLess(dist, 400)
-        tempo_cru = out['tempo_cru_estimado_min']
-        esperado = (dist / 65) * 60
-        self.assertEqual(tempo_cru, arredondar_para_multiplo_5_proximo(esperado))
-
-    def test_velocidade_600_km_usar_68(self):
-        """600-699 km (rodoviário) usa 68 km/h."""
-        from eventos.services.estimativa_local import estimar_distancia_duracao, arredondar_para_multiplo_5_proximo
-        # ~500 km linha reta -> fator 1.34 -> ~670 km rod (faixa 600-699 para vel 68)
-        out = estimar_distancia_duracao(0, 0, 0, 500/111)
-        self.assertTrue(out['ok'])
-        dist = float(out['distancia_km'])
-        self.assertGreaterEqual(dist, 600)
-        self.assertLess(dist, 700)
-        tempo_cru = out['tempo_cru_estimado_min']
-        esperado = (dist / 68) * 60
-        self.assertEqual(tempo_cru, arredondar_para_multiplo_5_proximo(esperado))
-
-    def test_velocidade_1000_km_usar_72(self):
-        """1000-1099 km (rodoviário) usa 72 km/h."""
-        from eventos.services.estimativa_local import estimar_distancia_duracao, arredondar_para_multiplo_5_proximo
-        # ~750 km linha reta -> fator 1.34 -> ~1005 km rod (faixa 1000-1099)
-        out = estimar_distancia_duracao(0, 0, 0, 750/111)
-        self.assertTrue(out['ok'])
-        dist = float(out['distancia_km'])
-        self.assertGreaterEqual(dist, 1000)
-        self.assertLess(dist, 1100)
-        tempo_cru = out['tempo_cru_estimado_min']
-        esperado = (dist / 72) * 60
-        self.assertEqual(tempo_cru, arredondar_para_multiplo_5_proximo(esperado))
-
-    def test_distancia_longa_nao_subestimada_francisco_beltrao_londrina(self):
-        """Francisco Beltrão -> Londrina: correção para rotas longas/diagonais (Google ~513 km / 7h32)."""
-        from eventos.services.estimativa_local import estimar_distancia_duracao
-        # Coordenadas aproximadas: Francisco Beltrão PR (-26.08, -53.05), Londrina PR (-23.30, -51.16)
-        out = estimar_distancia_duracao(
-            origem_lat=-26.08, origem_lon=-53.05,
-            destino_lat=-23.30, destino_lon=-51.16,
-        )
-        self.assertTrue(out['ok'])
-        dist = float(out['distancia_km'])
-        tempo_cru = out['tempo_cru_estimado_min']
-        # Com fator progressivo (1.27 ou 1.34), distância não subestimada como antes (~417 km)
-        self.assertGreaterEqual(dist, 450, 'Distância não pode ser subestimada como antes (~417 km)')
-        self.assertLessEqual(dist, 550)
-        # Tempo cru próximo de 7h (≥ ~6h30) para ~513 km; margem para arredondamento
-        self.assertGreaterEqual(tempo_cru, 385)
-        self.assertLessEqual(tempo_cru, 480)
-
-    def test_velocidade_1400_km_teto_76(self):
-        """1400 km ou mais respeita teto 76 km/h."""
-        from eventos.services.estimativa_local import estimar_distancia_duracao, arredondar_para_multiplo_5_proximo, VELOCIDADE_MEDIA_TETO_KMH
-        out = estimar_distancia_duracao(-25.43, -49.27, -10, -35)  # ~2500+ km
-        self.assertTrue(out['ok'])
-        dist = float(out['distancia_km'])
-        self.assertGreaterEqual(dist, 1400)
-        tempo_cru = out['tempo_cru_estimado_min']
-        esperado = (dist / VELOCIDADE_MEDIA_TETO_KMH) * 60
-        self.assertEqual(tempo_cru, arredondar_para_multiplo_5_proximo(esperado))
-
-    def test_adicional_sugerido_nao_zero_por_perfil(self):
-        """Adicional sugerido é 15/30/45 conforme perfil e distância; total = cru + adicional."""
-        from eventos.services.estimativa_local import estimar_distancia_duracao
-        out = estimar_distancia_duracao(-25.43, -49.27, -23.42, -51.94)
-        self.assertTrue(out['ok'])
-        adic = out.get('tempo_adicional_sugerido_min')
-        self.assertIn(adic, (15, 30, 45), f'Adicional sugerido deve ser 15, 30 ou 45, obtido {adic}')
-        self.assertEqual(
-            out['duracao_estimada_min'],
-            out['tempo_cru_estimado_min'] + adic,
-        )
+    def test_velocidade_base_por_faixa(self):
+        """Velocidade base por faixa: até 60→48; 61-120→56; 121-250→64; 251-400→70; 401-700→76; >700→80."""
+        from eventos.services.estimativa_local import _velocidade_base_por_faixa
+        self.assertEqual(_velocidade_base_por_faixa(50), 48)
+        self.assertEqual(_velocidade_base_por_faixa(60), 48)
+        self.assertEqual(_velocidade_base_por_faixa(100), 56)
+        self.assertEqual(_velocidade_base_por_faixa(200), 64)
+        self.assertEqual(_velocidade_base_por_faixa(350), 70)
+        self.assertEqual(_velocidade_base_por_faixa(600), 76)
+        self.assertEqual(_velocidade_base_por_faixa(800), 80)
 
     def test_perfil_rota_retornado_na_estimativa(self):
-        """Estimativa retorna perfil_rota (EIXO_PRINCIPAL, DIAGONAL_LONGA, LITORAL_SERRA ou PADRAO)."""
+        """Estimativa retorna perfil_rota (EIXO_PRINCIPAL, DIAGONAL_LONGA, LITORAL_SERRA, URBANA_CURTA ou PADRAO)."""
         from eventos.services.estimativa_local import (
             estimar_distancia_duracao,
             PERFIL_EIXO_PRINCIPAL,
             PERFIL_DIAGONAL_LONGA,
             PERFIL_LITORAL_SERRA,
+            PERFIL_URBANA_CURTA,
             PERFIL_PADRAO,
         )
         out = estimar_distancia_duracao(-25.43, -49.27, -23.42, -51.94)
         self.assertTrue(out['ok'])
         self.assertIn(
             out.get('perfil_rota'),
-            (PERFIL_EIXO_PRINCIPAL, PERFIL_DIAGONAL_LONGA, PERFIL_LITORAL_SERRA, PERFIL_PADRAO),
+            (PERFIL_EIXO_PRINCIPAL, PERFIL_DIAGONAL_LONGA, PERFIL_LITORAL_SERRA, PERFIL_URBANA_CURTA, PERFIL_PADRAO),
         )
 
-    def test_adicional_sugerido_curto_15(self):
-        """Trecho curto (< 250 km rod) recebe adicional sugerido 15 min."""
-        from eventos.services.estimativa_local import estimar_distancia_duracao
-        # ~50 km linha reta -> ~59 km rod -> curto
-        out = estimar_distancia_duracao(0, 0, 0, 50/111)
-        self.assertTrue(out['ok'])
-        self.assertEqual(out.get('tempo_adicional_sugerido_min'), 15)
+    def test_estimar_tempo_por_distancia_rodoviaria(self):
+        """estimar_tempo_por_distancia_rodoviaria retorna tempo_viagem, buffer, duracao; aceita corredor opcional."""
+        from eventos.services.estimativa_local import (
+            estimar_tempo_por_distancia_rodoviaria,
+            CORREDOR_PADRAO,
+            CORREDOR_NORTE_NOROESTE,
+            BUFFER_POR_CORREDOR,
+        )
+        out = estimar_tempo_por_distancia_rodoviaria(100.0)
+        self.assertIn('tempo_viagem_estimado_min', out)
+        self.assertIn('buffer_operacional_sugerido_min', out)
+        self.assertIn('duracao_estimada_min', out)
+        self.assertIn('corredor', out)
+        self.assertEqual(out['corredor'], CORREDOR_PADRAO)
+        self.assertEqual(out['buffer_operacional_sugerido_min'], BUFFER_POR_CORREDOR[CORREDOR_PADRAO])
+        self.assertEqual(out['duracao_estimada_min'], out['tempo_viagem_estimado_min'] + out['buffer_operacional_sugerido_min'])
+        self.assertEqual(out['tempo_viagem_estimado_min'] % 5, 0)
+        out2 = estimar_tempo_por_distancia_rodoviaria(100.0, corredor=CORREDOR_NORTE_NOROESTE)
+        self.assertEqual(out2['corredor'], CORREDOR_NORTE_NOROESTE)
+        self.assertEqual(out2['buffer_operacional_sugerido_min'], 15)
 
-    def test_adicional_sugerido_longo_padrao_30(self):
-        """Trecho longo (>= 250 km) perfil PADRAO/EIXO recebe adicional sugerido 30 min."""
+    def test_novos_campos_retorno_route_aware(self):
+        """Retorno inclui corredor_macro, corredor_fino, fallback_usado, confianca_estimativa, distancia_linha_reta_km."""
         from eventos.services.estimativa_local import estimar_distancia_duracao
-        # ~300 km linha reta -> fator 1.27 -> ~381 km rod, perfil pode ser PADRAO
-        out = estimar_distancia_duracao(0, 0, 0, 300/111)
+        out = estimar_distancia_duracao(-25.43, -49.27, -23.42, -51.94)
         self.assertTrue(out['ok'])
-        dist = float(out['distancia_km'])
-        self.assertGreaterEqual(dist, 250)
-        adic = out.get('tempo_adicional_sugerido_min')
-        self.assertIn(adic, (15, 30, 45), 'Adicional deve ser 15, 30 ou 45')
+        self.assertIn('corredor_macro', out)
+        self.assertIn('corredor_fino', out)
+        self.assertIn('fallback_usado', out)
+        self.assertIn('confianca_estimativa', out)
+        self.assertIn('distancia_linha_reta_km', out)
+        self.assertIn('distancia_rodoviaria_km', out)
+        self.assertIn('refs_predominantes', out)
+        self.assertIn('pedagio_presente', out)
+        self.assertIn('travessia_urbana_presente', out)
+        self.assertIn('serra_presente', out)
+        self.assertIn(out['confianca_estimativa'], ('alta', 'media', 'baixa'))
 
-    def test_adicional_sugerido_longo_diagonal_45(self):
-        """Trecho longo com perfil DIAGONAL_LONGA recebe adicional sugerido 45 min."""
+    def test_degradacao_limpa_sem_provider(self):
+        """Sem OSRM configurado: fallback_usado=True, rota_fonte=ESTIMATIVA_LOCAL, aplicação não quebra."""
         from eventos.services.estimativa_local import (
             estimar_distancia_duracao,
-            PERFIL_DIAGONAL_LONGA,
+            ROTA_FONTE_ESTIMATIVA_LOCAL,
         )
-        # Francisco Beltrão -> Londrina: rota longa e diagonal (ratio alto)
-        out = estimar_distancia_duracao(-26.08, -53.05, -23.30, -51.16)
+        with patch('eventos.services.estimativa_local.get_default_routing_provider', return_value=None):
+            out = estimar_distancia_duracao(-25.43, -49.27, -25.09, -50.16)
         self.assertTrue(out['ok'])
-        self.assertEqual(out.get('perfil_rota'), PERFIL_DIAGONAL_LONGA)
-        self.assertEqual(out.get('tempo_adicional_sugerido_min'), 45)
+        self.assertTrue(out.get('fallback_usado') is True)
+        self.assertEqual(out.get('rota_fonte'), ROTA_FONTE_ESTIMATIVA_LOCAL)
+        self.assertEqual(out['duracao_estimada_min'], out['tempo_viagem_estimado_min'] + out['buffer_operacional_sugerido_min'])
+
+    def test_buffer_nao_contamina_tempo_comparavel_maps(self):
+        """tempo_viagem_estimado_min é ETA técnico (comparável ao Maps); buffer está separado."""
+        from eventos.services.estimativa_local import estimar_distancia_duracao
+        out = estimar_distancia_duracao(-25.43, -49.27, -24.96, -53.45)
+        self.assertTrue(out['ok'])
+        self.assertIsNotNone(out['tempo_viagem_estimado_min'])
+        self.assertIsNotNone(out['buffer_operacional_sugerido_min'])
+        self.assertEqual(out['duracao_estimada_min'], out['tempo_viagem_estimado_min'] + out['buffer_operacional_sugerido_min'])
+
+    def test_rotas_parana_curitiba_ponta_grossa(self):
+        """Curitiba -> Ponta Grossa: corredor Campos Gerais, buffer 5."""
+        from eventos.services.estimativa_local import estimar_distancia_duracao
+        out = estimar_distancia_duracao(-25.4284, -49.2733, -25.09, -50.16)
+        self.assertTrue(out['ok'])
+        self.assertEqual(out['corredor'], 'CAMPOS_GERAIS_CURTO')
+        self.assertEqual(out['buffer_operacional_sugerido_min'], 5)
+
+    def test_rotas_parana_curitiba_cascavel(self):
+        """Curitiba -> Cascavel: corredor Oeste BR-277, buffer 10."""
+        from eventos.services.estimativa_local import estimar_distancia_duracao
+        out = estimar_distancia_duracao(-25.4284, -49.2733, -24.96, -53.45)
+        self.assertTrue(out['ok'])
+        self.assertEqual(out['corredor'], 'OESTE_BR277')
+        self.assertEqual(out['buffer_operacional_sugerido_min'], 10)
+
+    def test_caminho_com_provider_mock(self):
+        """Com provider retornando rota: fallback_usado=False, rota_fonte=OSRM, ETA do provider."""
+        from eventos.services.estimativa_local import estimar_distancia_duracao
+        from eventos.services.routing_provider import RouteResult
+        mock_route = RouteResult(
+            distance_km=120.0,
+            duration_min=95.0,
+            refs_predominantes=['BR-376'],
+            steps=[],
+            geometry=None,
+            raw=None,
+        )
+        provider = MagicMock()
+        provider.route.return_value = mock_route
+        with patch('eventos.services.estimativa_local.get_default_routing_provider', return_value=provider):
+            out = estimar_distancia_duracao(-25.43, -49.27, -23.42, -51.93)
+        self.assertTrue(out['ok'])
+        self.assertFalse(out.get('fallback_usado'))
+        self.assertEqual(out.get('rota_fonte'), 'OSRM')
+        self.assertIsNotNone(out.get('tempo_viagem_estimado_min'))
+        self.assertEqual(out['duracao_estimada_min'], out['tempo_viagem_estimado_min'] + out['buffer_operacional_sugerido_min'])
+
+
+class CalibracaoEstimativaLocalTest(TestCase):
+    """Testes da camada de calibração (ajustes por corredor, faixa, atributos)."""
+
+    def test_get_faixa_distancia_key(self):
+        from eventos.services.estimativa_local import get_faixa_distancia_key, FAIXA_ATE_60, FAIXA_61_120, FAIXA_121_250, FAIXA_251_400, FAIXA_401_700, FAIXA_ACIMA_700
+        self.assertEqual(get_faixa_distancia_key(30), FAIXA_ATE_60)
+        self.assertEqual(get_faixa_distancia_key(60), FAIXA_ATE_60)
+        self.assertEqual(get_faixa_distancia_key(61), FAIXA_61_120)
+        self.assertEqual(get_faixa_distancia_key(120), FAIXA_61_120)
+        self.assertEqual(get_faixa_distancia_key(121), FAIXA_121_250)
+        self.assertEqual(get_faixa_distancia_key(250), FAIXA_121_250)
+        self.assertEqual(get_faixa_distancia_key(251), FAIXA_251_400)
+        self.assertEqual(get_faixa_distancia_key(400), FAIXA_251_400)
+        self.assertEqual(get_faixa_distancia_key(401), FAIXA_401_700)
+        self.assertEqual(get_faixa_distancia_key(700), FAIXA_401_700)
+        self.assertEqual(get_faixa_distancia_key(701), FAIXA_ACIMA_700)
+
+    def test_aplicar_calibracao_eta_sem_ajustes(self):
+        from eventos.services.estimativa_local import _aplicar_calibracao_eta
+        from eventos.services import corredores_pr as corredores
+        eta = _aplicar_calibracao_eta(
+            100.0, 30.0, corredores.CORREDOR_PADRAO, corredores.CORREDOR_FINO_PADRAO,
+            serra_presente=False, travessia_urbana_presente=False, pedagio_presente=False, ref_predominante=None,
+        )
+        self.assertGreaterEqual(eta, 0)
+        self.assertAlmostEqual(eta, 100.0, delta=0.01)
+
+    def test_aplicar_calibracao_eta_com_ajuste_macro(self):
+        from eventos.services.estimativa_local import _aplicar_calibracao_eta, AJUSTE_CORREDOR_MACRO_MIN
+        from eventos.services import corredores_pr as corredores
+        original = AJUSTE_CORREDOR_MACRO_MIN.get(corredores.CORREDOR_PADRAO, 0)
+        try:
+            AJUSTE_CORREDOR_MACRO_MIN[corredores.CORREDOR_PADRAO] = 10
+            eta = _aplicar_calibracao_eta(
+                90.0, 30.0, corredores.CORREDOR_PADRAO, corredores.CORREDOR_FINO_PADRAO,
+            )
+            self.assertAlmostEqual(eta, 100.0, delta=0.01)
+        finally:
+            AJUSTE_CORREDOR_MACRO_MIN[corredores.CORREDOR_PADRAO] = original
+
+    def test_aplicar_calibracao_eta_com_ajuste_fino(self):
+        from eventos.services.estimativa_local import _aplicar_calibracao_eta, AJUSTE_CORREDOR_FINO_MIN
+        from eventos.services import corredores_pr as corredores
+        original = AJUSTE_CORREDOR_FINO_MIN.get(corredores.MARINGA, 0)
+        try:
+            AJUSTE_CORREDOR_FINO_MIN[corredores.MARINGA] = -5
+            eta = _aplicar_calibracao_eta(
+                105.0, 30.0, corredores.CORREDOR_PADRAO, corredores.MARINGA,
+            )
+            self.assertAlmostEqual(eta, 100.0, delta=0.01)
+        finally:
+            AJUSTE_CORREDOR_FINO_MIN[corredores.MARINGA] = original
+
+    def test_aplicar_calibracao_eta_com_ajuste_faixa(self):
+        from eventos.services.estimativa_local import _aplicar_calibracao_eta, AJUSTE_FAIXA_DISTANCIA_MIN, FAIXA_121_250
+        from eventos.services import corredores_pr as corredores
+        original = AJUSTE_FAIXA_DISTANCIA_MIN.get(FAIXA_121_250, 0)
+        try:
+            AJUSTE_FAIXA_DISTANCIA_MIN[FAIXA_121_250] = 3
+            eta = _aplicar_calibracao_eta(
+                97.0, 200.0, corredores.CORREDOR_PADRAO, corredores.CORREDOR_FINO_PADRAO,
+            )
+            self.assertAlmostEqual(eta, 100.0, delta=0.01)
+        finally:
+            AJUSTE_FAIXA_DISTANCIA_MIN[FAIXA_121_250] = original
+
+    def test_aplicar_calibracao_eta_com_ajuste_atributos(self):
+        from eventos.services.estimativa_local import _aplicar_calibracao_eta, AJUSTE_ATRIBUTOS_MIN
+        from eventos.services import corredores_pr as corredores
+        original_serra = AJUSTE_ATRIBUTOS_MIN.get('serra', 0)
+        original_urbana = AJUSTE_ATRIBUTOS_MIN.get('travessia_urbana', 0)
+        try:
+            AJUSTE_ATRIBUTOS_MIN['serra'] = 4
+            AJUSTE_ATRIBUTOS_MIN['travessia_urbana'] = 6
+            eta = _aplicar_calibracao_eta(
+                90.0, 30.0, corredores.CORREDOR_PADRAO, corredores.CORREDOR_FINO_PADRAO,
+                serra_presente=True, travessia_urbana_presente=True, pedagio_presente=False,
+            )
+            self.assertAlmostEqual(eta, 100.0, delta=0.01)
+        finally:
+            AJUSTE_ATRIBUTOS_MIN['serra'] = original_serra
+            AJUSTE_ATRIBUTOS_MIN['travessia_urbana'] = original_urbana
+
+    def test_aplicar_calibracao_eta_com_ajuste_ref_predominante(self):
+        from eventos.services.estimativa_local import _aplicar_calibracao_eta, AJUSTE_REF_PREDOMINANTE_MIN
+        from eventos.services import corredores_pr as corredores
+        original = AJUSTE_REF_PREDOMINANTE_MIN.get('BR-376', 0)
+        try:
+            AJUSTE_REF_PREDOMINANTE_MIN['BR-376'] = -8
+            eta = _aplicar_calibracao_eta(
+                108.0, 30.0, corredores.CORREDOR_PADRAO, corredores.CORREDOR_FINO_PADRAO,
+                ref_predominante='BR-376',
+            )
+            self.assertAlmostEqual(eta, 100.0, delta=0.01)
+        finally:
+            AJUSTE_REF_PREDOMINANTE_MIN['BR-376'] = original
+
+    def test_duracao_estimada_igual_tempo_viagem_mais_buffer_com_osrm(self):
+        """duracao_estimada_min = tempo_viagem_estimado_min + buffer_operacional_sugerido_min (com provider)."""
+        from eventos.services.estimativa_local import estimar_distancia_duracao
+        from eventos.services.routing_provider import RouteResult
+        mock_route = RouteResult(
+            distance_km=200.0,
+            duration_min=120.0,
+            refs_predominantes=['BR-376'],
+            steps=[],
+            geometry=None,
+            raw=None,
+        )
+        provider = MagicMock()
+        provider.route.return_value = mock_route
+        with patch('eventos.services.estimativa_local.get_default_routing_provider', return_value=provider):
+            out = estimar_distancia_duracao(-25.43, -49.27, -23.42, -51.93)
+        self.assertTrue(out['ok'])
+        self.assertEqual(
+            out['duracao_estimada_min'],
+            out['tempo_viagem_estimado_min'] + out['buffer_operacional_sugerido_min'],
+        )
+
+    def test_buffer_nao_contamina_eta_com_osrm(self):
+        """tempo_viagem_estimado_min é ETA técnico; buffer separado (com provider)."""
+        from eventos.services.estimativa_local import estimar_distancia_duracao
+        from eventos.services.routing_provider import RouteResult
+        mock_route = RouteResult(
+            distance_km=200.0,
+            duration_min=120.0,
+            refs_predominantes=[],
+            steps=[],
+            geometry=None,
+            raw=None,
+        )
+        provider = MagicMock()
+        provider.route.return_value = mock_route
+        with patch('eventos.services.estimativa_local.get_default_routing_provider', return_value=provider):
+            out = estimar_distancia_duracao(-25.43, -49.27, -23.42, -51.93)
+        self.assertTrue(out['ok'])
+        self.assertIsNotNone(out['tempo_viagem_estimado_min'])
+        self.assertIsNotNone(out['buffer_operacional_sugerido_min'])
+        self.assertEqual(out['duracao_estimada_min'], out['tempo_viagem_estimado_min'] + out['buffer_operacional_sugerido_min'])
+
+
+class EstimativaParanaProviderClassificacaoTest(TestCase):
+    """Cobertura dos corredores/atributos do provider route-aware do Parana."""
+
+    def test_provider_classifica_paranagua_sem_confundir_com_pontal(self):
+        from eventos.services.estimativa_local import estimar_distancia_duracao
+        from eventos.services.routing_provider import RouteResult
+
+        mock_route = RouteResult(
+            distance_km=90.0,
+            duration_min=65.0,
+            refs_predominantes=['BR-277'],
+            steps=[{'distance': 90000, 'duration': 3900, 'name': 'BR-277', 'ref': 'BR-277', 'road_refs': ['BR-277']}],
+            geometry=[
+                (-49.264622, -25.419547),
+                (-49.05, -25.33),
+                (-48.83, -25.40),
+                (-48.67, -25.46),
+                (-48.522528, -25.516078),
+            ],
+            raw=None,
+        )
+        provider = MagicMock()
+        provider.route.return_value = mock_route
+
+        with patch('eventos.services.estimativa_local.get_default_routing_provider', return_value=provider):
+            out = estimar_distancia_duracao(-25.419547, -49.264622, -25.516078, -48.522528)
+
+        self.assertEqual(out['rota_fonte'], 'OSRM')
+        self.assertEqual(out['corredor_macro'], 'BR277_LITORAL')
+        self.assertEqual(out['corredor_fino'], 'PARANAGUA')
+        self.assertTrue(out['serra_presente'])
+
+    def test_provider_classifica_cruzeiro_do_sul_no_noroeste(self):
+        from eventos.services.estimativa_local import estimar_distancia_duracao
+        from eventos.services.routing_provider import RouteResult
+
+        mock_route = RouteResult(
+            distance_km=495.0,
+            duration_min=410.0,
+            refs_predominantes=['BR-376', 'PR-463'],
+            steps=[
+                {'distance': 380000, 'duration': 20000, 'name': 'BR-376', 'ref': 'BR-376', 'road_refs': ['BR-376']},
+                {'distance': 115000, 'duration': 4600, 'name': 'PR-463', 'ref': 'PR-463', 'road_refs': ['PR-463']},
+            ],
+            geometry=[
+                (-49.264622, -25.419547),
+                (-50.5, -24.2),
+                (-51.4, -23.6),
+                (-51.9, -23.1),
+                (-52.162210, -22.962440),
+            ],
+            raw=None,
+        )
+        provider = MagicMock()
+        provider.route.return_value = mock_route
+
+        with patch('eventos.services.estimativa_local.get_default_routing_provider', return_value=provider):
+            out = estimar_distancia_duracao(-25.419547, -49.264622, -22.962440, -52.162210)
+
+        self.assertEqual(out['corredor_macro'], 'NOROESTE_INTERIOR')
+        self.assertEqual(out['corredor_fino'], 'CRUZEIRO_DO_SUL')
+        self.assertFalse(out['serra_presente'])
+
+    def test_serra_presente_fica_false_no_oeste_com_br277(self):
+        from eventos.services.estimativa_local import estimar_distancia_duracao
+        from eventos.services.routing_provider import RouteResult
+
+        mock_route = RouteResult(
+            distance_km=500.0,
+            duration_min=395.0,
+            refs_predominantes=['BR-277'],
+            steps=[{'distance': 500000, 'duration': 23700, 'name': 'BR-277', 'ref': 'BR-277', 'road_refs': ['BR-277']}],
+            geometry=[
+                (-49.264622, -25.419547),
+                (-50.1, -25.30),
+                (-51.2, -25.18),
+                (-52.3, -25.04),
+                (-53.459005, -24.957301),
+            ],
+            raw=None,
+        )
+        provider = MagicMock()
+        provider.route.return_value = mock_route
+
+        with patch('eventos.services.estimativa_local.get_default_routing_provider', return_value=provider):
+            out = estimar_distancia_duracao(-25.419547, -49.264622, -24.957301, -53.459005)
+
+        self.assertEqual(out['corredor_macro'], 'BR277_OESTE')
+        self.assertEqual(out['corredor_fino'], 'CASCAVEL')
+        self.assertFalse(out['serra_presente'])
+
+    def test_benchmark_oficial_contem_rotas_minimas_do_parana(self):
+        from scripts.analisar_estimativa_pr import load_benchmark
+
+        destinos_esperados = {
+            'Pontal do Paraná',
+            'Paranaguá',
+            'Ponta Grossa',
+            'Telêmaco Borba',
+            'Guarapuava',
+            'Londrina',
+            'Apucarana',
+            'Maringá',
+            'Cianorte',
+            'Umuarama',
+            'Cruzeiro do Sul',
+            'Cascavel',
+            'Palotina',
+            'Foz do Iguaçu',
+            'Francisco Beltrão',
+        }
+
+        destinos = {item['destino_nome'] for item in load_benchmark()}
+        self.assertTrue(destinos_esperados.issubset(destinos))
+
+
+class ScriptAnalisarEstimativaPrTest(TestCase):
+    """Testes do script de benchmark/calibração (métricas e sugestão)."""
+
+    def test_script_calcula_metricas_com_benchmark_temporario(self):
+        import tempfile
+        from scripts.analisar_estimativa_pr import load_benchmark, tempo_referencia
+        # Benchmark com 2 rotas e tempo de referência: erros absolutos 10 e 20 → MAE 15
+        records = [
+            {
+                'origem_lat': -25.43, 'origem_lon': -49.27, 'destino_lat': -25.09, 'destino_lon': -50.16,
+                'tempo_referencia_min': 100,
+            },
+            {
+                'origem_lat': -25.43, 'origem_lon': -49.27, 'destino_lat': -23.42, 'destino_lon': -51.93,
+                'tempo_referencia_min': 200,
+            },
+        ]
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:
+            json.dump(records, f, ensure_ascii=False)
+            path = Path(f.name)
+        try:
+            loaded = load_benchmark(path)
+            self.assertEqual(len(loaded), 2)
+            self.assertEqual(tempo_referencia(loaded[0]), 100)
+            self.assertEqual(tempo_referencia(loaded[1]), 200)
+        finally:
+            path.unlink(missing_ok=True)
+
+    def test_script_sugerir_calibracao_emite_saida_esperada(self):
+        import subprocess
+        import tempfile
+        BASE_DIR = Path(settings.BASE_DIR)
+        # Dois registros mesmo corredor: erro +12 e +12 → sugestão -12
+        records = [
+            {
+                'origem_lat': -25.4284, 'origem_lon': -49.2733, 'destino_lat': -25.09, 'destino_lon': -50.16,
+                'tempo_referencia_min': 90,
+            },
+            {
+                'origem_lat': -25.4284, 'origem_lon': -49.2733, 'destino_lat': -25.08, 'destino_lon': -50.15,
+                'tempo_referencia_min': 90,
+            },
+        ]
+        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False, encoding='utf-8') as f:
+            json.dump(records, f, ensure_ascii=False)
+            path = Path(f.name)
+        try:
+            result = subprocess.run(
+                [sys.executable, str(BASE_DIR / 'scripts' / 'analisar_estimativa_pr.py'), '--sugerir-calibracao', '--benchmark-file', str(path)],
+                capture_output=True,
+                text=True,
+                cwd=str(BASE_DIR),
+                env={**os.environ, 'DJANGO_SETTINGS_MODULE': 'config.settings'},
+                timeout=30,
+            )
+            out = result.stdout + result.stderr
+            self.assertIn('Sugestoes de calibracao', out or '')
+            self.assertIn('AJUSTE_', out or '')
+        finally:
+            path.unlink(missing_ok=True)
+
+
+class OSRMRoutingProviderHTTPTest(TestCase):
+    """Testes do OSRMRoutingProvider com mock de HTTP (requests)."""
+
+    def test_osrm_retorna_rota_quando_http_200_e_json_valido(self):
+        """Quando requests.get retorna 200 e JSON com routes[0], provider retorna RouteResult."""
+        from eventos.services.routing_provider import OSRMRoutingProvider, RouteResult
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {
+            'routes': [{
+                'distance': 120000,
+                'duration': 5700,
+                'legs': [{
+                    'steps': [
+                        {'distance': 1000, 'duration': 60, 'name': 'BR-376', 'ref': 'BR-376'},
+                    ],
+                }],
+            }],
+        }
+        with patch('requests.get', return_value=response):
+            provider = OSRMRoutingProvider('http://localhost:5000', timeout_seconds=5)
+            result = provider.route(-25.43, -49.27, -23.42, -51.93)
+        self.assertIsInstance(result, RouteResult)
+        self.assertEqual(result.distance_km, 120.0)
+        self.assertEqual(result.duration_min, 95.0)
+        self.assertIn('BR-376', result.refs_predominantes)
+
+    def test_osrm_retorna_none_em_timeout(self):
+        """Quando requests.get dá timeout, provider retorna None (sistema usa fallback)."""
+        import requests
+        from eventos.services.routing_provider import OSRMRoutingProvider
+        with patch('requests.get', side_effect=requests.Timeout('timeout')):
+            provider = OSRMRoutingProvider('http://localhost:5000', timeout_seconds=5)
+            result = provider.route(-25.43, -49.27, -23.42, -51.93)
+        self.assertIsNone(result)
+
+    def test_osrm_retorna_none_em_erro_http(self):
+        """Quando requests.get retorna HTTP 500, provider retorna None."""
+        from eventos.services.routing_provider import OSRMRoutingProvider
+        response = MagicMock()
+        response.raise_for_status.side_effect = Exception('500 Server Error')
+        with patch('requests.get', return_value=response):
+            provider = OSRMRoutingProvider('http://localhost:5000', timeout_seconds=5)
+            result = provider.route(-25.43, -49.27, -23.42, -51.93)
+        self.assertIsNone(result)
+
+    def test_osrm_retorna_none_quando_sem_rotas(self):
+        """Quando JSON tem routes vazio, provider retorna None."""
+        from eventos.services.routing_provider import OSRMRoutingProvider
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        response.json.return_value = {'routes': []}
+        with patch('requests.get', return_value=response):
+            provider = OSRMRoutingProvider('http://localhost:5000', timeout_seconds=5)
+            result = provider.route(-25.43, -49.27, -23.42, -51.93)
+        self.assertIsNone(result)
+
+    def test_osrm_retorna_none_quando_base_url_vazia(self):
+        """Quando base_url é vazio, provider.route retorna None sem chamar HTTP."""
+        from eventos.services.routing_provider import OSRMRoutingProvider
+        provider = OSRMRoutingProvider('', timeout_seconds=5)
+        with patch('requests.get') as mock_get:
+            result = provider.route(-25.43, -49.27, -23.42, -51.93)
+        self.assertIsNone(result)
+        mock_get.assert_not_called()
 
 
 class TrechoCalcularKmEndpointTest(TestCase):
@@ -2064,10 +2552,8 @@ class TrechoCalcularKmEndpointTest(TestCase):
         self.assertIsNotNone(self.trecho.duracao_estimada_min)
         self.assertIsNotNone(self.trecho.tempo_cru_estimado_min)
         self.assertIsNotNone(self.trecho.tempo_adicional_min)
-        self.assertEqual(
-            self.trecho.duracao_estimada_min,
-            (self.trecho.tempo_cru_estimado_min or 0) + (self.trecho.tempo_adicional_min or 0)
-        )
+        # duracao_estimada_min persiste o total retornado pelo serviço (cru + adicional + correção final)
+        self.assertEqual(self.trecho.duracao_estimada_min, data['duracao_estimada_min'])
         self.assertEqual(self.trecho.rota_fonte, 'ESTIMATIVA_LOCAL')
         self.assertIsNotNone(self.trecho.rota_calculada_em)
         self.assertEqual(self.trecho.tempo_cru_estimado_min % 5, 0)
@@ -2162,10 +2648,10 @@ class EstimarKmPorCidadesEndpointTest(TestCase):
         self.assertIn('tempo_cru_estimado_min', data)
         self.assertIn('tempo_adicional_sugerido_min', data)
         self.assertEqual(data.get('rota_fonte'), 'ESTIMATIVA_LOCAL')
-        if data.get('tempo_cru_estimado_min') and data.get('tempo_adicional_sugerido_min') is not None:
+        if data.get('tempo_viagem_estimado_min') is not None and data.get('buffer_operacional_sugerido_min') is not None:
             self.assertEqual(
                 data['duracao_estimada_min'],
-                data['tempo_cru_estimado_min'] + data['tempo_adicional_sugerido_min'],
+                data['tempo_viagem_estimado_min'] + data['buffer_operacional_sugerido_min'],
             )
 
     def test_estimar_km_por_cidades_sem_ids_retorna_erro(self):
@@ -2200,7 +2686,7 @@ class EstimarKmPorCidadesEndpointTest(TestCase):
 
 
 class PainelBlocosClicaveisTest(TestCase):
-    """Painel: blocos das etapas implementadas devem ser clicáveis (link real)."""
+    """Painel: ordem de neg?cio e links clic?veis."""
 
     def setUp(self):
         self.user = User.objects.create_user(username='u', password='p')
@@ -2213,36 +2699,563 @@ class PainelBlocosClicaveisTest(TestCase):
             status=Evento.STATUS_RASCUNHO,
         )
 
-    def test_painel_bloco_etapa_1_clicavel(self):
-        """Bloco da Etapa 1 deve ter link para guiado-etapa-1."""
+    def test_painel_ordem_de_negocio_1_a_6(self):
         response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
         self.assertEqual(response.status_code, 200)
-        url_etapa1 = reverse('eventos:guiado-etapa-1', kwargs={'pk': self.evento.pk})
-        self.assertContains(response, url_etapa1)
-        self.assertContains(response, 'Etapa 1 — Evento')
+        etapas = response.context['etapas']
+        self.assertEqual([e['numero'] for e in etapas], [1, 2, 3, 4, 5, 6])
+        nomes = [e['nome'] for e in etapas]
+        self.assertEqual(nomes[0], 'Dados do evento')
+        self.assertEqual(nomes[1], 'PT / OS')
+        self.assertEqual(nomes[2], 'Termos')
+        self.assertEqual(nomes[3], 'Roteiros')
+        self.assertTrue((nomes[4] or '').lower().startswith('of'))
+        self.assertTrue((nomes[5] or '').lower().startswith('finaliza'))
 
-    def test_painel_bloco_etapa_2_clicavel(self):
-        """Bloco da Etapa 2 deve ter link para guiado-etapa-2."""
+    def test_links_das_etapas_no_painel(self):
         response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
         self.assertEqual(response.status_code, 200)
-        url_etapa2 = reverse('eventos:guiado-etapa-2', kwargs={'evento_id': self.evento.pk})
-        self.assertContains(response, url_etapa2)
-        self.assertContains(response, 'Etapa 2 — Roteiros')
+        etapas = response.context['etapas']
+        urls = {e['numero']: e['url'] for e in etapas}
+        self.assertEqual(urls[1], reverse('eventos:guiado-etapa-1', kwargs={'pk': self.evento.pk}))
+        self.assertEqual(urls[2], reverse('eventos:guiado-etapa-4', kwargs={'evento_id': self.evento.pk}))
+        self.assertEqual(urls[3], reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}))
+        self.assertEqual(urls[4], reverse('eventos:guiado-etapa-2', kwargs={'evento_id': self.evento.pk}))
+        self.assertEqual(urls[5], reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}))
+        self.assertEqual(urls[6], reverse('eventos:guiado-etapa-6', kwargs={'evento_id': self.evento.pk}))
 
-    def test_painel_bloco_etapa_3_clicavel(self):
-        """Bloco da Etapa 3 deve ter link para guiado-etapa-3 (Ofícios do evento)."""
-        response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
-        self.assertEqual(response.status_code, 200)
-        url_etapa3 = reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk})
-        self.assertContains(response, url_etapa3)
-        self.assertContains(response, 'Etapa 3 — Ofícios do evento')
+    def test_telas_reais_das_etapas(self):
+        urls = [
+            reverse('eventos:guiado-etapa-1', kwargs={'pk': self.evento.pk}),
+            reverse('eventos:guiado-etapa-4', kwargs={'evento_id': self.evento.pk}),
+            reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}),
+            reverse('eventos:guiado-etapa-2', kwargs={'evento_id': self.evento.pk}),
+            reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}),
+            reverse('eventos:guiado-etapa-6', kwargs={'evento_id': self.evento.pk}),
+        ]
+        for url in urls:
+            response = self.client.get(url)
+            self.assertEqual(response.status_code, 200)
 
-    def test_painel_etapas_4_5_6_em_breve_sem_link(self):
-        """Etapas 4, 5, 6 devem aparecer como 'Em breve' sem link de navegação."""
+
+class EventoEtapa4FundamentacaoTest(TestCase):
+    """Etapa 4 — Fundamentação / PT-OS: tela real, salvar, reabrir, critério de conclusão."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='u', password='p')
+        self.client = Client()
+        self.client.login(username='u', password='p')
+        self.evento = Evento.objects.create(
+            titulo='Evento Etapa 4',
+            data_inicio=date(2025, 1, 1),
+            data_fim=date(2025, 1, 5),
+            status=Evento.STATUS_RASCUNHO,
+        )
+
+    def test_etapa_4_exige_login(self):
+        self.client.logout()
+        response = self.client.get(reverse('eventos:guiado-etapa-4', kwargs={'evento_id': self.evento.pk}))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('login', response.url)
+
+    def test_etapa_4_get_retorna_200_com_formulario(self):
+        response = self.client.get(reverse('eventos:guiado-etapa-4', kwargs={'evento_id': self.evento.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Fundamentação / PT-OS')
+        self.assertContains(response, 'Texto da fundamentação')
+        self.assertContains(response, 'Salvar')
+        self.assertContains(response, 'Voltar ao painel')
+        self.assertContains(response, self.evento.titulo)
+
+    def test_etapa_4_get_exibe_tipo_pt_os(self):
+        response = self.client.get(reverse('eventos:guiado-etapa-4', kwargs={'evento_id': self.evento.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Tipo do documento')
+        self.assertContains(response, 'Plano de Trabalho')
+        self.assertContains(response, 'Ordem de Serviço')
+
+    def test_etapa_4_post_salva_rascunho(self):
+        response = self.client.post(
+            reverse('eventos:guiado-etapa-4', kwargs={'evento_id': self.evento.pk}),
+            {'tipo_documento': '', 'texto_fundamentacao': '', 'observacoes_pt_os': ''},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(EventoFundamentacao.objects.filter(evento=self.evento).exists())
+        fund = EventoFundamentacao.objects.get(evento=self.evento)
+        self.assertFalse(fund.concluido)
+
+    def test_etapa_4_post_com_tipo_e_texto_marca_concluido_e_painel_mostra_ok(self):
+        response = self.client.post(
+            reverse('eventos:guiado-etapa-4', kwargs={'evento_id': self.evento.pk}),
+            {
+                'tipo_documento': 'PT',
+                'texto_fundamentacao': 'Fundamentação do evento para PT-OS.',
+                'observacoes_pt_os': '',
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        fund = EventoFundamentacao.objects.get(evento=self.evento)
+        self.assertTrue(fund.concluido)
+        response_painel = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
+        self.assertEqual(response_painel.status_code, 200)
+        self.assertContains(response_painel, 'Fundamentação / PT-OS')
+        self.assertContains(response_painel, 'bg-success')
+
+    def test_etapa_4_painel_em_andamento_quando_tipo_sem_texto(self):
+        EventoFundamentacao.objects.create(
+            evento=self.evento,
+            tipo_documento=EventoFundamentacao.TIPO_PT,
+            texto_fundamentacao='',
+            observacoes_pt_os='',
+        )
         response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Em breve')
-        self.assertNotContains(response, 'guiado/etapa-4/')
+        self.assertContains(response, 'Em andamento')
+
+    def test_etapa_4_reabrir_exibe_dados_salvos(self):
+        EventoFundamentacao.objects.create(
+            evento=self.evento,
+            tipo_documento=EventoFundamentacao.TIPO_OS,
+            texto_fundamentacao='Texto já salvo.',
+            observacoes_pt_os='Obs PT-OS',
+        )
+        response = self.client.get(reverse('eventos:guiado-etapa-4', kwargs={'evento_id': self.evento.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Texto já salvo.')
+        self.assertContains(response, 'Obs PT-OS')
+        self.assertContains(response, 'Ordem de Serviço')
+
+    def test_etapa_4_salvar_e_voltar_ao_painel(self):
+        response = self.client.post(
+            reverse('eventos:guiado-etapa-4', kwargs={'evento_id': self.evento.pk}),
+            {
+                'tipo_documento': 'PT',
+                'texto_fundamentacao': 'Conteúdo',
+                'observacoes_pt_os': '',
+                'voltar_painel': '1',
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('guiado/painel', response.url)
+        self.assertTrue(EventoFundamentacao.objects.filter(evento=self.evento).exists())
+
+    def test_etapa_4_painel_pendente_quando_registro_vazio(self):
+        EventoFundamentacao.objects.create(
+            evento=self.evento,
+            tipo_documento='',
+            texto_fundamentacao='',
+            observacoes_pt_os='',
+        )
+        response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Etapa 4 — Fundamentação / PT-OS')
+        self.assertContains(response, 'Pendente')
+
+
+class EventoEtapa5TermosTest(TestCase):
+    """Etapa 3 ? Termos no n?vel do evento: status, modalidade e gera??o por participante."""
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username='u5', password='p5')
+        self.client = Client()
+        self.client.login(username='u5', password='p5')
+        self.evento = Evento.objects.create(
+            titulo='Evento Etapa Termos',
+            data_inicio=date(2025, 1, 1),
+            data_fim=date(2025, 1, 5),
+            status=Evento.STATUS_RASCUNHO,
+        )
+        self.estado = Estado.objects.create(nome='Paran?', sigla='PR', codigo_ibge='41')
+        self.cidade = Cidade.objects.create(nome='Curitiba', estado=self.estado, codigo_ibge='4106902')
+        EventoDestino.objects.create(evento=self.evento, estado=self.estado, cidade=self.cidade, ordem=0)
+
+    def _criar_viajante(self, nome='Viajante A', completo=False, cpf='12345678909'):
+        kwargs = {
+            'nome': nome,
+            'cpf': cpf,
+        }
+        if completo:
+            cargo = Cargo.objects.create(nome=f'CARGO {nome}')
+            unidade = UnidadeLotacao.objects.create(nome=f'UNIDADE {nome}')
+            kwargs.update(
+                {
+                    'status': Viajante.STATUS_FINALIZADO,
+                    'cargo': cargo,
+                    'telefone': '41999990000',
+                    'unidade_lotacao': unidade,
+                    'rg': '1234567890',
+                }
+            )
+        return Viajante.objects.create(**kwargs)
+
+    def _vincular_viajante_em_oficio(self, viajante, numero=1):
+        oficio = Oficio.objects.create(evento=self.evento, numero=numero, status=Oficio.STATUS_RASCUNHO)
+        oficio.viajantes.add(viajante)
+        return oficio
+
+    def test_etapa_5_exige_login(self):
+        self.client.logout()
+        response = self.client.get(reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('login', response.url)
+
+    def test_etapa_5_get_sem_oficios_exibe_mensagem(self):
+        response = self.client.get(reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Nenhum participante no evento')
+
+    def test_etapa_5_get_com_oficio_e_viajante_exibe_tabela(self):
+        viajante = self._criar_viajante(nome='Viajante A')
+        self._vincular_viajante_em_oficio(viajante)
+        response = self.client.get(reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, viajante.nome)
+        self.assertContains(response, 'value="PENDENTE"')
+        self.assertContains(response, 'value="GERADO"')
+        self.assertContains(response, 'value="COMPLETO"')
+        self.assertContains(response, 'value="SEMIPREENCHIDO"')
+
+    def test_etapa_5_post_salva_status_e_modalidade(self):
+        viajante = self._criar_viajante(nome='Viajante B')
+        self._vincular_viajante_em_oficio(viajante)
+        response = self.client.post(
+            reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}),
+            {
+                f'status_{viajante.pk}': EventoTermoParticipante.STATUS_DISPENSADO,
+                f'modalidade_{viajante.pk}': EventoTermoParticipante.MODALIDADE_SEMIPREENCHIDO,
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        termo = EventoTermoParticipante.objects.get(evento=self.evento, viajante=viajante)
+        self.assertEqual(termo.status, EventoTermoParticipante.STATUS_DISPENSADO)
+        self.assertEqual(termo.modalidade, EventoTermoParticipante.MODALIDADE_SEMIPREENCHIDO)
+
+    def test_etapa_5_acoes_participante_dispensar_reabrir(self):
+        viajante = self._criar_viajante(nome='Viajante C')
+        self._vincular_viajante_em_oficio(viajante)
+        url = reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk})
+
+        post_dispensa = self.client.post(url, {'acao_participante': f'dispensar:{viajante.pk}'})
+        self.assertEqual(post_dispensa.status_code, 302)
+        termo = EventoTermoParticipante.objects.get(evento=self.evento, viajante=viajante)
+        self.assertEqual(termo.status, EventoTermoParticipante.STATUS_DISPENSADO)
+
+        post_reabrir = self.client.post(url, {'acao_participante': f'reabrir:{viajante.pk}'})
+        self.assertEqual(post_reabrir.status_code, 302)
+        termo.refresh_from_db()
+        self.assertEqual(termo.status, EventoTermoParticipante.STATUS_PENDENTE)
+
+    def test_etapa_5_download_docx_nao_exige_assinatura_configurada(self):
+        viajante = self._criar_viajante(nome='Servidor Completo', completo=True, cpf='98765432100')
+        self._vincular_viajante_em_oficio(viajante)
+        url = reverse(
+            'eventos:guiado-etapa-5-termo-download',
+            kwargs={'evento_id': self.evento.pk, 'viajante_id': viajante.pk, 'formato': 'docx'},
+        )
+
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response['Content-Type'],
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        )
+        termo = EventoTermoParticipante.objects.get(evento=self.evento, viajante=viajante)
+        self.assertEqual(termo.status, EventoTermoParticipante.STATUS_GERADO)
+
+    def test_etapa_5_download_docx_semipreenchido_funciona_sem_dados_pessoais(self):
+        viajante = self._criar_viajante(nome='Servidor Sem Dados', completo=False, cpf='')
+        self._vincular_viajante_em_oficio(viajante)
+        EventoTermoParticipante.objects.update_or_create(
+            evento=self.evento,
+            viajante=viajante,
+            defaults={'modalidade': EventoTermoParticipante.MODALIDADE_SEMIPREENCHIDO},
+        )
+        url = reverse(
+            'eventos:guiado-etapa-5-termo-download',
+            kwargs={'evento_id': self.evento.pk, 'viajante_id': viajante.pk, 'formato': 'docx'},
+        )
+
+        response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        termo = EventoTermoParticipante.objects.get(evento=self.evento, viajante=viajante)
+        self.assertEqual(termo.status, EventoTermoParticipante.STATUS_GERADO)
+
+    def test_etapa_5_download_pdf_quando_backend_disponivel(self):
+        viajante = self._criar_viajante(nome='Servidor PDF', completo=True, cpf='11122233399')
+        self._vincular_viajante_em_oficio(viajante)
+        url = reverse(
+            'eventos:guiado-etapa-5-termo-download',
+            kwargs={'evento_id': self.evento.pk, 'viajante_id': viajante.pk, 'formato': 'pdf'},
+        )
+
+        with patch('eventos.views.convert_docx_bytes_to_pdf_bytes', return_value=b'%PDF-1.4 termo'):
+            response = self.client.get(url)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertTrue(response.content.startswith(b'%PDF-1.4'))
+        termo = EventoTermoParticipante.objects.get(evento=self.evento, viajante=viajante)
+        self.assertEqual(termo.status, EventoTermoParticipante.STATUS_GERADO)
+        self.assertEqual(termo.ultimo_formato_gerado, 'pdf')
+
+    def test_etapa_5_funciona_com_multiplos_servidores_e_multiplos_oficios(self):
+        viajante1 = self._criar_viajante(nome='Servidor 1', cpf='11122233344')
+        viajante2 = self._criar_viajante(nome='Servidor 2', cpf='11122233345')
+        oficio1 = self._vincular_viajante_em_oficio(viajante1, numero=1)
+        oficio2 = self._vincular_viajante_em_oficio(viajante2, numero=2)
+        oficio2.viajantes.add(viajante1)
+
+        response = self.client.get(reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, viajante1.nome)
+        self.assertContains(response, viajante2.nome)
+        self.assertContains(response, oficio1.numero_formatado)
+        self.assertContains(response, oficio2.numero_formatado)
+
+    def test_etapa_5_painel_ok_quando_sem_participantes(self):
+        response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
+        self.assertEqual(response.status_code, 200)
+        etapa_termos = next(e for e in response.context['etapas'] if e['numero'] == 3)
+        self.assertTrue(etapa_termos['ok'])
+
+    def test_etapa_5_painel_pendente_quando_participante_pendente(self):
+        viajante = self._criar_viajante(nome='V', cpf='11122233344')
+        self._vincular_viajante_em_oficio(viajante)
+        EventoTermoParticipante.objects.create(evento=self.evento, viajante=viajante, status=EventoTermoParticipante.STATUS_PENDENTE)
+        response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
+        self.assertEqual(response.status_code, 200)
+        etapa_termos = next(e for e in response.context['etapas'] if e['numero'] == 3)
+        self.assertFalse(etapa_termos['ok'])
+
+    def test_etapa_5_painel_em_andamento_quando_algum_nao_finalizador(self):
+        viajante1 = self._criar_viajante(nome='V1', cpf='11122233341')
+        viajante2 = self._criar_viajante(nome='V2', cpf='11122233342')
+        oficio = Oficio.objects.create(evento=self.evento, status=Oficio.STATUS_RASCUNHO)
+        oficio.viajantes.add(viajante1, viajante2)
+        EventoTermoParticipante.objects.create(evento=self.evento, viajante=viajante1, status=EventoTermoParticipante.STATUS_GERADO)
+        EventoTermoParticipante.objects.create(evento=self.evento, viajante=viajante2, status=EventoTermoParticipante.STATUS_PENDENTE)
+        response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
+        self.assertEqual(response.status_code, 200)
+        etapa_termos = next(e for e in response.context['etapas'] if e['numero'] == 3)
+        self.assertTrue(etapa_termos['em_andamento'])
+
+    def test_etapa_5_painel_ok_quando_todos_dispensado_ou_concluido(self):
+        viajante = self._criar_viajante(nome='V', cpf='55566677788')
+        self._vincular_viajante_em_oficio(viajante)
+        EventoTermoParticipante.objects.create(evento=self.evento, viajante=viajante, status=EventoTermoParticipante.STATUS_CONCLUIDO)
+        response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
+        self.assertEqual(response.status_code, 200)
+        etapa_termos = next(e for e in response.context['etapas'] if e['numero'] == 3)
+        self.assertTrue(etapa_termos['ok'])
+
+    def test_etapa_5_salvar_e_voltar_ao_painel(self):
+        viajante = self._criar_viajante(nome='V', cpf='99988877766')
+        self._vincular_viajante_em_oficio(viajante)
+        response = self.client.post(
+            reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}),
+            {
+                f'status_{viajante.pk}': EventoTermoParticipante.STATUS_DISPENSADO,
+                f'modalidade_{viajante.pk}': EventoTermoParticipante.MODALIDADE_COMPLETO,
+                'voltar_painel': '1',
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('guiado/painel', response.url)
+
+
+class EventoEtapa6FinalizacaoTest(TestCase):
+    """Etapa 6 — Finalização: checklist, pendências, observações, finalizar evento, painel."""
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username='u6', password='p6')
+        self.client = Client()
+        self.client.login(username='u6', password='p6')
+        self.evento = Evento.objects.create(
+            titulo='Evento Etapa 6',
+            data_inicio=date(2025, 1, 1),
+            data_fim=date(2025, 1, 5),
+            status=Evento.STATUS_RASCUNHO,
+        )
+
+    def test_etapa_6_exige_login(self):
+        self.client.logout()
+        response = self.client.get(reverse('eventos:guiado-etapa-6', kwargs={'evento_id': self.evento.pk}))
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('login', response.url)
+
+    def test_etapa_6_get_exibe_checklist_e_pendencias(self):
+        response = self.client.get(reverse('eventos:guiado-etapa-6', kwargs={'evento_id': self.evento.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Situação das etapas')
+        self.assertContains(response, 'Etapa 4')
+        self.assertContains(response, 'Etapa 5')
+        self.assertContains(response, 'Ofícios vinculados')
+        self.assertContains(response, 'Pendências para finalizar')
+        self.assertContains(response, 'Nenhum ofício vinculado')
+
+    def test_etapa_6_post_salva_observacoes(self):
+        response = self.client.post(
+            reverse('eventos:guiado-etapa-6', kwargs={'evento_id': self.evento.pk}),
+            {'observacoes_finais': 'Obs finais do evento.'},
+        )
+        self.assertEqual(response.status_code, 302)
+        fin = EventoFinalizacao.objects.get(evento=self.evento)
+        self.assertEqual((fin.observacoes_finais or '').strip(), 'Obs finais do evento.')
+        self.assertIsNone(fin.finalizado_em)
+
+    def test_etapa_6_finalizar_com_criterios_atendidos(self):
+        EventoFundamentacao.objects.create(
+            evento=self.evento,
+            tipo_documento=EventoFundamentacao.TIPO_PT,
+            texto_fundamentacao='Fundamentação.',
+            observacoes_pt_os='',
+        )
+        viajante = Viajante.objects.create(nome='V', cpf='11122233344')
+        oficio = Oficio.objects.create(evento=self.evento, status=Oficio.STATUS_RASCUNHO)
+        oficio.viajantes.add(viajante)
+        EventoTermoParticipante.objects.create(
+            evento=self.evento, viajante=viajante, status=EventoTermoParticipante.STATUS_CONCLUIDO
+        )
+        response = self.client.post(
+            reverse('eventos:guiado-etapa-6', kwargs={'evento_id': self.evento.pk}),
+            {'observacoes_finais': '', 'finalizar': '1'},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('guiado/painel', response.url)
+        fin = EventoFinalizacao.objects.get(evento=self.evento)
+        self.assertIsNotNone(fin.finalizado_em)
+        self.assertEqual(fin.finalizado_por_id, self.user.pk)
+        self.evento.refresh_from_db()
+        self.assertEqual(self.evento.status, Evento.STATUS_FINALIZADO)
+
+    def test_etapa_6_painel_pendente_sem_registro(self):
+        response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Etapa 6 — Finalização')
+        self.assertContains(response, 'Pendente')
+
+    def test_etapa_6_painel_em_andamento_com_observacoes_sem_finalizar(self):
+        EventoFinalizacao.objects.create(evento=self.evento, observacoes_finais='Em andamento.')
+        response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Em andamento')
+
+    def test_etapa_6_painel_ok_quando_finalizado(self):
+        EventoFinalizacao.objects.create(
+            evento=self.evento,
+            observacoes_finais='',
+            finalizado_em=tz.now(),
+            finalizado_por=self.user,
+        )
+        response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'bg-success')
+
+
+class EventoFinalizadoTravasTest(TestCase):
+    """Travas pós-finalização: bloqueio de edição e ações destrutivas; consulta permitida."""
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username='u_trava', password='p_trava')
+        self.client = Client()
+        self.client.login(username='u_trava', password='p_trava')
+        self.evento = Evento.objects.create(
+            titulo='Evento Finalizado',
+            data_inicio=date(2025, 1, 1),
+            data_fim=date(2025, 1, 5),
+            status=Evento.STATUS_FINALIZADO,
+        )
+
+    def test_excluir_evento_finalizado_bloqueado(self):
+        response = self.client.post(
+            reverse('eventos:excluir', kwargs={'pk': self.evento.pk}),
+            {},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(Evento.objects.filter(pk=self.evento.pk).exists())
+        self.assertContains(response, 'finalizado')
+        self.assertContains(response, 'não pode')
+
+    def test_get_etapa_1_finalizado_retorna_200_consulta(self):
+        response = self.client.get(reverse('eventos:guiado-etapa-1', kwargs={'pk': self.evento.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Evento finalizado')
+        self.assertContains(response, 'Apenas consulta')
+
+    def test_post_etapa_1_finalizado_bloqueado(self):
+        response = self.client.post(
+            reverse('eventos:guiado-etapa-1', kwargs={'pk': self.evento.pk}),
+            {'data_inicio': '2025-01-10', 'data_fim': '2025-01-15', 'tipos_demanda': []},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('guiado/painel', response.url)
+        self.evento.refresh_from_db()
+        self.assertEqual(self.evento.data_inicio, date(2025, 1, 1))
+
+    def test_post_etapa_4_finalizado_bloqueado(self):
+        EventoFundamentacao.objects.create(
+            evento=self.evento,
+            tipo_documento=EventoFundamentacao.TIPO_PT,
+            texto_fundamentacao='Texto',
+            observacoes_pt_os='',
+        )
+        response = self.client.post(
+            reverse('eventos:guiado-etapa-4', kwargs={'evento_id': self.evento.pk}),
+            {'tipo_documento': 'OS', 'texto_fundamentacao': 'Alterado', 'observacoes_pt_os': ''},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('guiado/painel', response.url)
+        self.evento.fundamentacao.refresh_from_db()
+        self.assertEqual(self.evento.fundamentacao.tipo_documento, EventoFundamentacao.TIPO_PT)
+
+    def test_post_etapa_5_finalizado_bloqueado(self):
+        viajante = Viajante.objects.create(nome='V', cpf='11122233344')
+        oficio = Oficio.objects.create(evento=self.evento, status=Oficio.STATUS_RASCUNHO)
+        oficio.viajantes.add(viajante)
+        EventoTermoParticipante.objects.create(
+            evento=self.evento, viajante=viajante, status=EventoTermoParticipante.STATUS_PENDENTE,
+        )
+        response = self.client.post(
+            reverse('eventos:guiado-etapa-5', kwargs={'evento_id': self.evento.pk}),
+            {f'status_{viajante.pk}': EventoTermoParticipante.STATUS_DISPENSADO},
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('guiado/painel', response.url)
+        self.evento.termos_participantes.get(viajante=viajante).refresh_from_db()
+        self.assertEqual(
+            self.evento.termos_participantes.get(viajante=viajante).status,
+            EventoTermoParticipante.STATUS_PENDENTE,
+        )
+
+    def test_painel_finalizado_nao_exibe_botao_excluir(self):
+        response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertNotContains(response, 'Excluir evento')
+
+    def test_oficio_excluir_bloqueado_quando_evento_finalizado(self):
+        oficio = Oficio.objects.create(evento=self.evento, status=Oficio.STATUS_RASCUNHO)
+        response = self.client.post(
+            reverse('eventos:oficio-excluir', kwargs={'pk': oficio.pk}),
+            {},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(Oficio.objects.filter(pk=oficio.pk).exists())
+        self.assertContains(response, 'finalizado')
+
+    def test_oficio_step1_post_bloqueado_quando_evento_finalizado(self):
+        oficio = Oficio.objects.create(evento=self.evento, status=Oficio.STATUS_RASCUNHO)
+        response = self.client.post(
+            reverse('eventos:oficio-step1', kwargs={'pk': oficio.pk}),
+            {'protocolo': 'X', 'motivo': 'Teste', 'custeio_tipo': Oficio.CUSTEIO_UNIDADE, 'viajantes': []},
+            follow=True,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'finalizado')
 
 
 class EventoEtapa3OficiosTest(TestCase):
@@ -2285,15 +3298,15 @@ class EventoEtapa3OficiosTest(TestCase):
         url_criar = reverse('eventos:guiado-etapa-3-criar-oficio', kwargs={'evento_id': self.evento.pk})
         self.assertContains(response, url_criar)
 
-    def test_etapa_3_ok_quando_existe_oficio(self):
+    def test_etapa_3_pendente_quando_existe_apenas_oficio_rascunho(self):
         Oficio.objects.create(evento=self.evento, status=Oficio.STATUS_RASCUNHO)
         from eventos.views import _evento_etapa3_ok
-        self.assertTrue(_evento_etapa3_ok(self.evento))
+        self.assertFalse(_evento_etapa3_ok(self.evento))
         response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
         self.assertEqual(response.status_code, 200)
         etapas = response.context['etapas']
         etapa3 = next(e for e in etapas if e['numero'] == 3)
-        self.assertTrue(etapa3['ok'])
+        self.assertFalse(etapa3['ok'])
         self.assertContains(response, 'Etapa 3 — Ofícios do evento')
 
     def test_etapa_3_pendente_quando_nao_existe_oficio(self):
@@ -2305,9 +3318,26 @@ class EventoEtapa3OficiosTest(TestCase):
         etapa3 = next(e for e in etapas if e['numero'] == 3)
         self.assertFalse(etapa3['ok'])
 
-    def test_criar_oficio_preserva_vinculo_com_evento(self):
+    def test_etapa_3_ok_quando_existe_oficio_finalizado(self):
+        Oficio.objects.create(evento=self.evento, status=Oficio.STATUS_FINALIZADO)
+        from eventos.views import _evento_etapa3_ok
+        self.assertTrue(_evento_etapa3_ok(self.evento))
+        response = self.client.get(reverse('eventos:guiado-painel', kwargs={'pk': self.evento.pk}))
+        self.assertEqual(response.status_code, 200)
+        etapas = response.context['etapas']
+        etapa3 = next(e for e in etapas if e['numero'] == 3)
+        self.assertTrue(etapa3['ok'])
+
+    def test_get_criar_oficio_nao_cria_registro(self):
         url_criar = reverse('eventos:guiado-etapa-3-criar-oficio', kwargs={'evento_id': self.evento.pk})
         response = self.client.get(url_criar)
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}))
+        self.assertEqual(self.evento.oficios.count(), 0)
+
+    def test_post_criar_oficio_preserva_vinculo_com_evento(self):
+        url_criar = reverse('eventos:guiado-etapa-3-criar-oficio', kwargs={'evento_id': self.evento.pk})
+        response = self.client.post(url_criar)
         self.assertEqual(response.status_code, 302)
         self.assertIn('oficio/', response.url)
         self.assertIn('/step1/', response.url)
@@ -2315,6 +3345,20 @@ class EventoEtapa3OficiosTest(TestCase):
         oficio = self.evento.oficios.get()
         self.assertEqual(oficio.evento_id, self.evento.pk)
         self.assertEqual(oficio.status, Oficio.STATUS_RASCUNHO)
+
+    def test_etapa_3_abre_mesmo_quando_schema_0018_ainda_nao_foi_aplicado(self):
+        Oficio.objects.create(evento=self.evento, status=Oficio.STATUS_RASCUNHO)
+        schema_status = {
+            'available': False,
+            'message': 'Banco local desatualizado: aplique a migration 0018 do app eventos.',
+        }
+
+        with patch('eventos.views.get_oficio_justificativa_schema_status', return_value=schema_status):
+            response = self.client.get(reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Ofícios do evento')
+        self.assertContains(response, 'Justificativa: indisponível')
 
 
 class OficioWizardTest(TestCase):
@@ -2413,9 +3457,10 @@ class OficioWizardTest(TestCase):
             'modelo': 'Modelo X',
             'combustivel': 'GASOLINA',
             'tipo_viatura': Oficio.TIPO_VIATURA_DESCARACTERIZADA,
-            'motorista_carona': True,
+            'motorista_viajante': '__manual__',
+            'motorista_nome': 'Motorista Externo',
             'motorista_oficio_numero': '',
-            'motorista_oficio_ano': '',
+            'motorista_oficio_ano': str(tz.localdate().year),
             'motorista_protocolo': '',
             'csrfmiddlewaretoken': csrf,
         })
@@ -2423,15 +3468,90 @@ class OficioWizardTest(TestCase):
         form = post_resp.context['form']
         self.assertTrue(form.errors.get('motorista_oficio_numero') or form.errors.get('motorista_protocolo'))
 
+    def test_oficio_model_exige_motorista_protocolo_9_digitos_quando_carona(self):
+        """Model Oficio.clean() deve exigir motorista_protocolo com 9 dígitos quando motorista_carona=True."""
+        self.oficio.motorista_carona = True
+        self.oficio.motorista_protocolo = '12345678'  # 8 dígitos
+        with self.assertRaises(ValidationError) as ctx:
+            self.oficio.full_clean()
+        self.assertIn('motorista_protocolo', ctx.exception.message_dict)
+        self.oficio.motorista_protocolo = '123456789'
+        self.oficio.full_clean()  # não deve levantar
+
+    def test_wizard_step2_motorista_sem_cadastro_exige_nome_manual(self):
+        url = reverse('eventos:oficio-step2', kwargs={'pk': self.oficio.pk})
+        response = self.client.post(url, data={
+            'placa': 'ABC1234',
+            'modelo': 'Modelo X',
+            'combustivel': 'GASOLINA',
+            'tipo_viatura': Oficio.TIPO_VIATURA_DESCARACTERIZADA,
+            'motorista_viajante': '__manual__',
+            'motorista_nome': '',
+            'motorista_oficio_numero': '1',
+            'motorista_oficio_ano': str(tz.localdate().year),
+            'motorista_protocolo': '12.345.678-9',
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertFormError(
+            response.context['form'],
+            'motorista_nome',
+            'Informe o nome do motorista sem cadastro.',
+        )
+
     def test_editar_oficio_redireciona_para_step1(self):
         response = self.client.get(reverse('eventos:oficio-editar', kwargs={'pk': self.oficio.pk}))
         self.assertEqual(response.status_code, 302)
         self.assertIn('/step1/', response.url)
 
     def test_oficio_step4_finalizar_marca_finalizado(self):
-        self.oficio.numero = 1
-        self.oficio.ano = 2025
-        self.oficio.save(update_fields=['numero', 'ano'])
+        data_saida = tz.localdate() + timedelta(days=20)
+        data_retorno = data_saida + timedelta(days=1)
+        self.client.post(
+            reverse('eventos:oficio-step1', kwargs={'pk': self.oficio.pk}),
+            data={
+                'oficio_numero': self.oficio.numero_formatado,
+                'protocolo': '12.345.678-9',
+                'data_criacao': self.oficio.data_criacao.strftime('%d/%m/%Y'),
+                'motivo': 'Motivo teste',
+                'custeio_tipo': Oficio.CUSTEIO_UNIDADE,
+                'viajantes': [self.viajante.pk],
+            },
+        )
+        self.client.post(
+            reverse('eventos:oficio-step2', kwargs={'pk': self.oficio.pk}),
+            data={
+                'placa': 'ABC1234',
+                'modelo': 'Modelo X',
+                'combustivel': 'GASOLINA',
+                'tipo_viatura': Oficio.TIPO_VIATURA_DESCARACTERIZADA,
+                'motorista_viajante': '__manual__',
+                'motorista_nome': 'Motorista Externo',
+                'motorista_oficio_numero': '1',
+                'motorista_oficio_ano': str(tz.localdate().year),
+                'motorista_protocolo': '12.345.678-9',
+            },
+        )
+        cidade_destino = Cidade.objects.create(nome='Destino Wizard', estado=self.estado, codigo_ibge='4106999')
+        self.client.post(
+            reverse('eventos:oficio-step3', kwargs={'pk': self.oficio.pk}),
+            data={
+                'roteiro_modo': Oficio.ROTEIRO_MODO_PROPRIO,
+                'sede_estado': str(self.estado.pk),
+                'sede_cidade': str(self.cidade.pk),
+                'destino_estado_0': str(self.estado.pk),
+                'destino_cidade_0': str(cidade_destino.pk),
+                'trecho_0_saida_data': data_saida.strftime('%Y-%m-%d'),
+                'trecho_0_saida_hora': '08:00',
+                'trecho_0_chegada_data': data_saida.strftime('%Y-%m-%d'),
+                'trecho_0_chegada_hora': '12:00',
+                'retorno_saida_data': data_retorno.strftime('%Y-%m-%d'),
+                'retorno_saida_hora': '09:00',
+                'retorno_chegada_data': data_retorno.strftime('%Y-%m-%d'),
+                'retorno_chegada_hora': '18:00',
+            },
+        )
+        self.oficio.refresh_from_db()
+        before_update = self.oficio.updated_at
         url = reverse('eventos:oficio-step4', kwargs={'pk': self.oficio.pk})
         get_resp = self.client.get(url)
         csrf = str(get_resp.context['csrf_token']) if get_resp.context.get('csrf_token') else ''
@@ -2439,6 +3559,7 @@ class OficioWizardTest(TestCase):
         self.assertEqual(post_resp.status_code, 302)
         self.oficio.refresh_from_db()
         self.assertEqual(self.oficio.status, Oficio.STATUS_FINALIZADO)
+        self.assertGreater(self.oficio.updated_at, before_update)
 
 
 class OficioStep1AcceptanceTest(TestCase):
@@ -2467,6 +3588,15 @@ class OficioStep1AcceptanceTest(TestCase):
             unidade_lotacao=self.unidade,
             rg='1234567890',
         )
+        self.viajante_final_2 = Viajante.objects.create(
+            nome='Outro Viajante Finalizado',
+            status=Viajante.STATUS_FINALIZADO,
+            cargo=self.cargo,
+            cpf='22233344455',
+            telefone='41999990004',
+            unidade_lotacao=self.unidade,
+            rg='2234567890',
+        )
         self.viajante_rascunho = Viajante.objects.create(
             nome='Viajante Rascunho',
             status=Viajante.STATUS_RASCUNHO,
@@ -2476,6 +3606,16 @@ class OficioStep1AcceptanceTest(TestCase):
             unidade_lotacao=self.unidade,
             rg='1234567891',
         )
+        self.motorista_externo = Viajante.objects.create(
+            nome='Motorista Externo Cadastro',
+            status=Viajante.STATUS_FINALIZADO,
+            cargo=self.cargo,
+            cpf='99988877766',
+            telefone='41999990003',
+            unidade_lotacao=self.unidade,
+            rg='1234567892',
+        )
+        self.combustivel = CombustivelVeiculo.objects.create(nome='GASOLINA', is_padrao=True)
 
     def _criar_oficio(self, ano=None):
         kwargs = {'evento': self.evento, 'status': Oficio.STATUS_RASCUNHO}
@@ -2504,15 +3644,151 @@ class OficioStep1AcceptanceTest(TestCase):
             'modelo': 'VIATURA TESTE',
             'combustivel': 'GASOLINA',
             'tipo_viatura': Oficio.TIPO_VIATURA_DESCARACTERIZADA,
-            'motorista_viajante': '',
+            'porte_transporte_armas': '1',
+            'motorista_viajante': '__manual__',
             'motorista_nome': 'Motorista Externo',
-            'motorista_carona': 'on',
             'motorista_oficio_numero': '7',
-            'motorista_oficio_ano': '2026',
+            'motorista_oficio_ano': str(tz.localdate().year),
             'motorista_protocolo': '12.345.678-9',
         }
         data.update(overrides)
         return data
+
+    def _payload_step3(self, destinos, trechos=None, retorno=None, **overrides):
+        data = {
+            'roteiro_modo': Oficio.ROTEIRO_MODO_PROPRIO,
+            'sede_estado': str(self.estado.pk),
+            'sede_cidade': str(self.cidade.pk),
+        }
+        for idx, cidade in enumerate(destinos):
+            data[f'destino_estado_{idx}'] = str(cidade.estado_id)
+            data[f'destino_cidade_{idx}'] = str(cidade.pk)
+        trechos = trechos or []
+        for idx, trecho in enumerate(trechos):
+            data[f'trecho_{idx}_saida_data'] = trecho.get('saida_data', '')
+            data[f'trecho_{idx}_saida_hora'] = trecho.get('saida_hora', '')
+            data[f'trecho_{idx}_chegada_data'] = trecho.get('chegada_data', '')
+            data[f'trecho_{idx}_chegada_hora'] = trecho.get('chegada_hora', '')
+        retorno = retorno or {}
+        data.update(
+            {
+                'retorno_saida_data': retorno.get('saida_data', ''),
+                'retorno_saida_hora': retorno.get('saida_hora', ''),
+                'retorno_chegada_data': retorno.get('chegada_data', ''),
+                'retorno_chegada_hora': retorno.get('chegada_hora', ''),
+            }
+        )
+        data.update(overrides)
+        return data
+
+    def _criar_destino(self, nome='Destino Finalizacao'):
+        codigo = str(4107000 + Cidade.objects.count())
+        return Cidade.objects.create(nome=nome, estado=self.estado, codigo_ibge=codigo)
+
+    def _salvar_steps_1_e_2(self, oficio, step1_overrides=None, step2_overrides=None):
+        step1_overrides = step1_overrides or {}
+        step2_overrides = step2_overrides or {}
+        response_step1 = self.client.post(
+            reverse('eventos:oficio-step1', kwargs={'pk': oficio.pk}),
+            data=self._payload_step1(oficio, **step1_overrides),
+        )
+        self.assertEqual(response_step1.status_code, 302)
+        response_step2 = self.client.post(
+            reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}),
+            data=self._payload_step2(**step2_overrides),
+        )
+        self.assertEqual(response_step2.status_code, 302)
+
+    def _salvar_oficio_finalizavel(self, oficio, destino=None, step1_overrides=None, step2_overrides=None, step3_overrides=None):
+        self._salvar_steps_1_e_2(oficio, step1_overrides=step1_overrides, step2_overrides=step2_overrides)
+        destino = destino or self._criar_destino()
+        payload_step3 = self._payload_step3(
+            [destino],
+            trechos=[
+                {
+                    'saida_data': '2026-10-10',
+                    'saida_hora': '08:00',
+                    'chegada_data': '2026-10-10',
+                    'chegada_hora': '12:00',
+                }
+            ],
+            retorno={
+                'saida_data': '2026-10-11',
+                'saida_hora': '08:30',
+                'chegada_data': '2026-10-11',
+                'chegada_hora': '16:30',
+            },
+            **(step3_overrides or {}),
+        )
+        response_step3 = self.client.post(
+            reverse('eventos:oficio-step3', kwargs={'pk': oficio.pk}),
+            data=payload_step3,
+        )
+        self.assertEqual(response_step3.status_code, 302)
+        oficio.refresh_from_db()
+        return destino
+
+    def _post_finalizar_oficio(self, oficio):
+        return self.client.post(
+            reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk}),
+            data={'finalizar': '1'},
+        )
+
+    def _criar_roteiro_evento_base(self, destinos, data_base=None):
+        data_base = data_base or datetime(2026, 2, 10, 8, 0)
+        if tz.is_naive(data_base):
+            data_base = tz.make_aware(data_base)
+        self.evento.cidade_base = self.cidade
+        self.evento.save(update_fields=['cidade_base'])
+        roteiro = RoteiroEvento.objects.create(
+            evento=self.evento,
+            origem_estado=self.estado,
+            origem_cidade=self.cidade,
+            saida_dt=data_base,
+            retorno_saida_dt=data_base + timedelta(days=1, hours=1),
+            retorno_chegada_dt=data_base + timedelta(days=1, hours=4),
+            status=RoteiroEvento.STATUS_FINALIZADO,
+        )
+        origem_estado_id = self.estado.pk
+        origem_cidade_id = self.cidade.pk
+        for ordem, cidade_destino in enumerate(destinos):
+            RoteiroEventoDestino.objects.create(
+                roteiro=roteiro,
+                estado=self.estado,
+                cidade=cidade_destino,
+                ordem=ordem,
+            )
+            RoteiroEventoTrecho.objects.create(
+                roteiro=roteiro,
+                ordem=ordem,
+                tipo=RoteiroEventoTrecho.TIPO_IDA,
+                origem_estado_id=origem_estado_id,
+                origem_cidade_id=origem_cidade_id,
+                destino_estado_id=self.estado.pk,
+                destino_cidade_id=cidade_destino.pk,
+                saida_dt=data_base + timedelta(hours=ordem * 3),
+                chegada_dt=data_base + timedelta(hours=ordem * 3 + 2),
+            )
+            origem_estado_id = self.estado.pk
+            origem_cidade_id = cidade_destino.pk
+        RoteiroEventoTrecho.objects.create(
+            roteiro=roteiro,
+            ordem=len(destinos),
+            tipo=RoteiroEventoTrecho.TIPO_RETORNO,
+            origem_estado_id=origem_estado_id,
+            origem_cidade_id=origem_cidade_id,
+            destino_estado_id=self.estado.pk,
+            destino_cidade_id=self.cidade.pk,
+            saida_dt=data_base + timedelta(days=1, hours=1),
+            chegada_dt=data_base + timedelta(days=1, hours=4),
+        )
+        return roteiro
+
+    def _split_step2_response(self, response):
+        html = response.content.decode('utf-8')
+        if '<script>' not in html:
+            self.fail('Template do Step 2 sem bloco de script esperado.')
+        return html.split('<script>', 1)
 
     def test_1_novo_oficio_gera_numero_automatico_formato_xx_ano(self):
         oficio = self._criar_oficio(ano=2026)
@@ -2667,13 +3943,36 @@ class OficioStep1AcceptanceTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertFormError(response.context['form'], 'viajantes', 'Selecione ao menos um viajante.')
 
-    def test_13_so_viajantes_finalizados_aparecem(self):
-        oficio = self._criar_oficio(ano=2026)
-        url = reverse('eventos:oficio-step1', kwargs={'pk': oficio.pk})
-        response = self.client.get(url)
+    def test_13_autocomplete_busca_por_nome_e_filtra_rascunho(self):
+        response = self.client.get(
+            reverse('eventos:oficio-step1-viajantes-api'),
+            {'q': 'Finalizado'},
+        )
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, self.viajante_final.nome)
-        self.assertNotContains(response, self.viajante_rascunho.nome)
+        payload = response.json()
+        nomes = [item['nome'] for item in payload['results']]
+        self.assertIn(self.viajante_final.nome, nomes)
+        self.assertIn(self.viajante_final_2.nome, nomes)
+        self.assertNotIn(self.viajante_rascunho.nome, nomes)
+
+    def test_13b_autocomplete_busca_por_rg(self):
+        response = self.client.get(
+            reverse('eventos:oficio-step1-viajantes-api'),
+            {'q': self.viajante_final.rg},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['results'][0]['id'], self.viajante_final.pk)
+
+    def test_13c_autocomplete_busca_por_cpf_mascarado(self):
+        response = self.client.get(
+            reverse('eventos:oficio-step1-viajantes-api'),
+            {'q': '111.222.333-44'},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['results'][0]['id'], self.viajante_final.pk)
+        self.assertEqual(payload['results'][0]['cpf'], '111.222.333-44')
 
     def test_14_botao_cadastrar_novo_viajante_existe(self):
         oficio = self._criar_oficio(ano=2026)
@@ -2706,7 +4005,30 @@ class OficioStep1AcceptanceTest(TestCase):
         self.assertContains(reaberto, '98.765.432-1')
         self.assertContains(reaberto, 'Motivo salvo')
         self.assertContains(reaberto, 'Instituição de Teste')
-        self.assertContains(reaberto, 'checked')
+        self.assertContains(reaberto, f'data-viajante-chip="{self.viajante_final.pk}"')
+        self.assertContains(reaberto, f'data-viajante-hidden="{self.viajante_final.pk}"')
+        self.assertContains(reaberto, self.viajante_final.nome)
+
+    def test_step1_post_duplicado_nao_duplica_viajante_salvo(self):
+        oficio = self._criar_oficio(ano=2026)
+        response = self.client.post(
+            reverse('eventos:oficio-step1', kwargs={'pk': oficio.pk}),
+            data=self._payload_step1(oficio, viajantes=[self.viajante_final.pk, self.viajante_final.pk]),
+        )
+        self.assertEqual(response.status_code, 302)
+        oficio.refresh_from_db()
+        self.assertEqual(list(oficio.viajantes.values_list('pk', flat=True)), [self.viajante_final.pk])
+
+    def test_step1_regravar_remove_viajante_que_saiu_dos_chips(self):
+        oficio = self._criar_oficio(ano=2026)
+        oficio.viajantes.set([self.viajante_final, self.viajante_final_2])
+        response = self.client.post(
+            reverse('eventos:oficio-step1', kwargs={'pk': oficio.pk}),
+            data=self._payload_step1(oficio, viajantes=[self.viajante_final_2.pk]),
+        )
+        self.assertEqual(response.status_code, 302)
+        oficio.refresh_from_db()
+        self.assertEqual(list(oficio.viajantes.values_list('pk', flat=True)), [self.viajante_final_2.pk])
 
     def test_step2_reabre_motorista_protocolo_mascarado(self):
         oficio = self._criar_oficio(ano=2026)
@@ -2718,6 +4040,396 @@ class OficioStep1AcceptanceTest(TestCase):
         reaberto = self.client.get(url)
         self.assertEqual(reaberto.status_code, 200)
         self.assertContains(reaberto, '12.345.678-9')
+
+    def test_step2_preenche_carona_oficio_referencia_quando_numero_ano_existem(self):
+        """Step 2 deve preencher carona_oficio_referencia quando motorista carona e número/ano batem com outro ofício."""
+        oficio_atual = self._criar_oficio()
+        oficio_ref = self._criar_oficio()
+        self.client.post(
+            reverse('eventos:oficio-step1', kwargs={'pk': oficio_atual.pk}),
+            data=self._payload_step1(oficio_atual, viajantes=[self.viajante_final.pk]),
+        )
+        self.assertEqual(self.client.post(
+            reverse('eventos:oficio-step2', kwargs={'pk': oficio_atual.pk}),
+            data=self._payload_step2(
+                motorista_oficio_numero=str(oficio_ref.numero),
+                motorista_oficio_ano=str(oficio_ref.ano),
+            ),
+        ).status_code, 302)
+        oficio_atual.refresh_from_db()
+        self.assertEqual(oficio_atual.carona_oficio_referencia_id, oficio_ref.pk)
+
+    def test_step2_busca_viatura_por_placa_retorna_modelo_combustivel_e_tipo(self):
+        veiculo = Veiculo.objects.create(
+            placa='ABC1234',
+            modelo='SPIN',
+            combustivel=self.combustivel,
+            tipo=Veiculo.TIPO_CARACTERIZADO,
+            status=Veiculo.STATUS_FINALIZADO,
+        )
+        response = self.client.get(
+            reverse('eventos:oficio-step2-veiculo-api'),
+            {'placa': 'ABC-1234'},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['ok'])
+        self.assertTrue(payload['found'])
+        self.assertEqual(payload['modelo'], veiculo.modelo)
+        self.assertEqual(payload['combustivel'], 'GASOLINA')
+        self.assertEqual(payload['tipo_viatura'], Oficio.TIPO_VIATURA_CARACTERIZADA)
+
+    def test_step2_autocomplete_de_viatura_busca_por_modelo_e_filtra_rascunho(self):
+        finalizado = Veiculo.objects.create(
+            placa='ABC1234',
+            modelo='SPIN LT',
+            combustivel=self.combustivel,
+            tipo=Veiculo.TIPO_CARACTERIZADO,
+            status=Veiculo.STATUS_FINALIZADO,
+        )
+        Veiculo.objects.create(
+            placa='ABC9999',
+            modelo='SPIN LTZ',
+            combustivel=self.combustivel,
+            tipo=Veiculo.TIPO_CARACTERIZADO,
+            status=Veiculo.STATUS_RASCUNHO,
+        )
+
+        response = self.client.get(
+            reverse('eventos:oficio-step2-veiculos-busca-api'),
+            {'q': 'spin'},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        returned_ids = [item['id'] for item in payload['results']]
+        self.assertIn(finalizado.pk, returned_ids)
+        self.assertContains(response, 'ABC-1234')
+        self.assertNotContains(response, 'ABC-9999')
+
+    def test_step2_placa_inexistente_retorna_found_false(self):
+        response = self.client.get(
+            reverse('eventos:oficio-step2-veiculo-api'),
+            {'placa': 'ZZZ-9999'},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['ok'])
+        self.assertFalse(payload['found'])
+
+    def test_step2_exibe_porte_transporte_armas_com_sim_por_padrao(self):
+        oficio = self._criar_oficio(ano=2026)
+        response = self.client.get(reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['form'].initial['porte_transporte_armas'], '1')
+        self.assertContains(response, 'id="preview-porte-transporte-armas">Sim</dd>')
+
+    def test_step2_salva_e_reabre_porte_transporte_armas_nao(self):
+        oficio = self._criar_oficio(ano=2026)
+        response = self.client.post(
+            reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}),
+            data=self._payload_step2(porte_transporte_armas='0'),
+        )
+        self.assertEqual(response.status_code, 302)
+        oficio.refresh_from_db()
+        self.assertFalse(oficio.porte_transporte_armas)
+        reaberto = self.client.get(reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}))
+        self.assertEqual(reaberto.status_code, 200)
+        self.assertEqual(reaberto.context['form'].initial['porte_transporte_armas'], '0')
+        self.assertContains(reaberto, 'id="preview-porte-transporte-armas">N\u00e3o</dd>')
+
+    def test_step2_template_da_placa_tem_protecao_contra_loop(self):
+        oficio = self._criar_oficio(ano=2026)
+        response = self.client.get(reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}))
+        self.assertEqual(response.status_code, 200)
+        _, script = self._split_step2_response(response)
+        self.assertIn("form.dataset.step2JsInitialized === 'true'", script)
+        self.assertIn("form.dataset.step2JsInitialized = 'true'", script)
+        self.assertIn('var exactLookupDebounceMs = 380;', script)
+        self.assertIn('var exactLookupController = null;', script)
+        self.assertIn('AbortController', script)
+        self.assertIn('normalized.length !== 7', script)
+        self.assertIn('normalized === lastExactLookup || normalized === exactLookupInFlightPlaca', script)
+        self.assertIn('exactLookupController.abort()', script)
+        self.assertNotIn("placaInput.dispatchEvent(new Event('change'", script)
+
+    def test_step2_template_da_placa_reabre_com_bootstrap_controlado(self):
+        oficio = self._criar_oficio(ano=2026)
+        response = self.client.get(reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}))
+        self.assertEqual(response.status_code, 200)
+        _, script = self._split_step2_response(response)
+        self.assertIn('function bootstrapVehicleLookupIfNeeded()', script)
+        self.assertIn('if (modeloPreenchido && combustivelPreenchido && tipoViaturaPreenchido)', script)
+        self.assertIn('bootstrapVehicleLookupIfNeeded();', script)
+
+    def test_step2_exibe_botao_cadastrar_nova_viatura_com_retorno(self):
+        oficio = self._criar_oficio(ano=2026)
+        response = self.client.get(reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}))
+        self.assertEqual(response.status_code, 200)
+        expected = (
+            f"{reverse('cadastros:veiculo-cadastrar')}?next="
+            f"{quote(reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}))}"
+        )
+        self.assertContains(response, expected)
+
+    def test_step2_exibe_botao_adicionar_servidor_com_retorno(self):
+        oficio = self._criar_oficio(ano=2026)
+        response = self.client.get(reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}))
+        self.assertEqual(response.status_code, 200)
+        expected = (
+            f"{reverse('cadastros:viajante-cadastrar')}?next="
+            f"{quote(reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}))}"
+        )
+        self.assertContains(response, expected)
+
+    def test_step2_oculta_motorista_manual_por_padrao(self):
+        oficio = self._criar_oficio(ano=2026)
+        response = self.client.get(reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'id="motorista-manual-wrapper"')
+        self.assertContains(response, 'class="row g-3 mt-1 d-none" id="motorista-manual-wrapper"')
+        self.assertContains(response, 'id="btn-motorista-manual"')
+        self.assertContains(response, 'id="motorista-autocomplete-input"')
+
+    def test_step2_reexibe_campo_manual_quando_seleciona_motorista_sem_cadastro(self):
+        oficio = self._criar_oficio(ano=2026)
+        response = self.client.post(
+            reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}),
+            data=self._payload_step2(motorista_nome=''),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'class="row g-3 mt-1" id="motorista-manual-wrapper"')
+        self.assertContains(response, 'Informe o nome do motorista sem cadastro.')
+
+    def test_step2_motoristas_api_busca_por_nome(self):
+        response = self.client.get(
+            reverse('eventos:oficio-step2-motoristas-api'),
+            {'q': 'Motorista Externo'},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['results'][0]['id'], self.motorista_externo.pk)
+
+    def test_step2_motoristas_api_busca_por_rg(self):
+        response = self.client.get(
+            reverse('eventos:oficio-step2-motoristas-api'),
+            {'q': self.motorista_externo.rg},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['results'][0]['id'], self.motorista_externo.pk)
+
+    def test_step2_motoristas_api_busca_por_cpf_mascarado(self):
+        response = self.client.get(
+            reverse('eventos:oficio-step2-motoristas-api'),
+            {'q': '999.888.777-66'},
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload['results'][0]['id'], self.motorista_externo.pk)
+        self.assertEqual(payload['results'][0]['cpf'], '999.888.777-66')
+
+    def test_step2_motorista_de_fora_do_oficio_vira_carona(self):
+        oficio = self._criar_oficio(ano=2026)
+        oficio.viajantes.add(self.viajante_final)
+        response = self.client.post(
+            reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}),
+            data=self._payload_step2(
+                motorista_viajante=str(self.motorista_externo.pk),
+                motorista_nome='',
+                motorista_oficio_numero='',
+                motorista_protocolo='',
+            ),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'class="row g-3 mt-1" id="motorista-carona-wrapper"')
+        self.assertFormError(
+            response.context['form'],
+            'motorista_oficio_numero',
+            'Informe o número do ofício do motorista.',
+        )
+        self.assertFormError(
+            response.context['form'],
+            'motorista_protocolo',
+            'Informe o protocolo do motorista.',
+        )
+
+    def test_step2_motorista_do_oficio_nao_exige_carona(self):
+        oficio = self._criar_oficio(ano=2026)
+        oficio.viajantes.add(self.viajante_final)
+        response = self.client.post(
+            reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}),
+            data=self._payload_step2(
+                motorista_viajante=str(self.viajante_final.pk),
+                motorista_nome='',
+                motorista_oficio_numero='',
+                motorista_protocolo='',
+            ),
+        )
+        self.assertEqual(response.status_code, 302)
+        oficio.refresh_from_db()
+        self.assertFalse(oficio.motorista_carona)
+        self.assertEqual(oficio.motorista_viajante_id, self.viajante_final.pk)
+        self.assertEqual(oficio.motorista_oficio, '')
+        self.assertEqual(oficio.motorista_protocolo, '')
+
+    def test_step2_reabre_motorista_cadastrado_com_chip_e_hidden_corretos(self):
+        oficio = self._criar_oficio(ano=2026)
+        oficio.viajantes.add(self.viajante_final)
+        self.client.post(
+            reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}),
+            data=self._payload_step2(
+                motorista_viajante=str(self.viajante_final.pk),
+                motorista_nome='',
+                motorista_oficio_numero='',
+                motorista_protocolo='',
+            ),
+        )
+        response = self.client.get(reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, f'data-motorista-chip="{self.viajante_final.pk}"')
+        self.assertContains(response, f'name="motorista_viajante" value="{self.viajante_final.pk}"')
+
+    def test_step2_persistencia_numero_oficio_motorista_com_ano_atual(self):
+        oficio = self._criar_oficio(ano=2026)
+        response = self.client.post(
+            reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}),
+            data=self._payload_step2(motorista_oficio_numero='12'),
+        )
+        self.assertEqual(response.status_code, 302)
+        oficio.refresh_from_db()
+        self.assertEqual(oficio.motorista_oficio_numero, 12)
+        self.assertEqual(oficio.motorista_oficio_ano, tz.localdate().year)
+        self.assertEqual(oficio.motorista_oficio, f'12/{tz.localdate().year}')
+
+    def test_step2_reabre_dados_salvos_de_carona(self):
+        oficio = self._criar_oficio(ano=2026)
+        self.client.post(
+            reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}),
+            data=self._payload_step2(motorista_oficio_numero='12'),
+        )
+        response = self.client.get(reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'ABC-1234')
+        self.assertContains(response, 'VIATURA TESTE')
+        self.assertContains(response, 'GASOLINA')
+        self.assertContains(response, f'/{tz.localdate().year}')
+        self.assertContains(response, '12.345.678-9')
+
+    def test_step2_reabre_resumo_rapido_com_step1_e_transporte(self):
+        oficio = self._criar_oficio(ano=2026)
+        self.client.post(
+            reverse('eventos:oficio-step1', kwargs={'pk': oficio.pk}),
+            data=self._payload_step1(
+                oficio,
+                protocolo='98.765.432-1',
+                motivo='Motivo acumulado',
+                custeio_tipo=Oficio.CUSTEIO_OUTRA_INSTITUICAO,
+                nome_instituicao_custeio='Instituição Acumulada',
+                viajantes=[self.viajante_final.pk],
+            ),
+        )
+        self.client.post(
+            reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}),
+            data=self._payload_step2(
+                motorista_viajante=str(self.motorista_externo.pk),
+                motorista_nome='',
+                motorista_oficio_numero='12',
+            ),
+        )
+        response = self.client.get(reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.motorista_externo.refresh_from_db()
+        self.assertContains(response, f'id="preview-oficio">{oficio.numero_formatado}</dd>')
+        self.assertContains(response, 'id="preview-protocolo">98.765.432-1</dd>')
+        self.assertContains(response, 'id="preview-motivo">Motivo acumulado</dd>')
+        self.assertContains(response, 'Instituição Acumulada')
+        self.assertContains(response, self.viajante_final.nome)
+        self.assertContains(response, 'id="preview-placa">ABC-1234</dd>')
+        self.assertContains(response, 'id="preview-modelo">VIATURA TESTE</dd>')
+        self.assertContains(response, 'id="preview-combustivel">GASOLINA</dd>')
+        self.assertContains(response, 'id="preview-motorista-nome"')
+        self.assertContains(response, f'{self.motorista_externo.nome} (carona)')
+        self.assertContains(
+            response,
+            f'id="preview-motorista-oficio">12/{tz.localdate().year}</span>',
+        )
+        self.assertContains(response, 'id="preview-motorista-protocolo">12.345.678-9</span>')
+
+    def test_step2_resumo_manual_carona_mostra_documentos_sem_dados_cadastrais(self):
+        oficio = self._criar_oficio(ano=2026)
+        self.client.post(
+            reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}),
+            data=self._payload_step2(motorista_nome='Motorista Manual', motorista_oficio_numero='12'),
+        )
+        response = self.client.get(reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}))
+        self.assertEqual(response.status_code, 200)
+        preview = response.context['step2_preview']['motorista']
+        self.assertTrue(preview['is_manual'])
+        self.assertFalse(preview['show_cargo'])
+        self.assertFalse(preview['show_rg'])
+        self.assertFalse(preview['show_cpf'])
+        self.assertTrue(preview['show_oficio'])
+        self.assertTrue(preview['show_protocolo'])
+        server_html, _ = self._split_step2_response(response)
+        self.assertIn('preview-motorista-nome">MOTORISTA MANUAL (carona)', server_html)
+        self.assertIn(f'id="preview-motorista-oficio">12/{tz.localdate().year}</span>', server_html)
+        self.assertIn('id="preview-motorista-protocolo">12.345.678-9</span>', server_html)
+        self.assertNotIn('id="preview-motorista-cargo-row"', server_html)
+        self.assertNotIn('id="preview-motorista-rg-row"', server_html)
+        self.assertNotIn('id="preview-motorista-cpf-row"', server_html)
+
+    def test_step2_motorista_do_oficio_nao_exibe_linhas_vazias_de_carona_no_resumo(self):
+        oficio = self._criar_oficio(ano=2026)
+        oficio.viajantes.add(self.viajante_final)
+        self.client.post(
+            reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}),
+            data=self._payload_step2(
+                motorista_viajante=str(self.viajante_final.pk),
+                motorista_nome='',
+                motorista_oficio_numero='',
+                motorista_protocolo='',
+            ),
+        )
+        response = self.client.get(reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}))
+        self.assertEqual(response.status_code, 200)
+        preview = response.context['step2_preview']['motorista']
+        self.assertFalse(preview['is_carona'])
+        self.assertFalse(preview['show_oficio'])
+        self.assertFalse(preview['show_protocolo'])
+        server_html, _ = self._split_step2_response(response)
+        self.assertNotIn('id="preview-motorista-oficio-row"', server_html)
+        self.assertNotIn('id="preview-motorista-protocolo-row"', server_html)
+
+    def test_step2_reabre_modo_manual_quando_motorista_manual_foi_salvo(self):
+        oficio = self._criar_oficio(ano=2026)
+        self.client.post(
+            reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}),
+            data=self._payload_step2(motorista_nome='Motorista Manual', motorista_oficio_numero='12'),
+        )
+        response = self.client.get(reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'name="motorista_viajante" value="__manual__"')
+        self.assertContains(response, 'id="motorista-manual-wrapper"')
+        self.assertContains(response, 'MOTORISTA MANUAL')
+
+    def test_step2_salva_manual_quando_placa_existe_e_campos_vao_vazios(self):
+        Veiculo.objects.create(
+            placa='ABC1234',
+            modelo='TRAILBLAZER',
+            combustivel=self.combustivel,
+            tipo=Veiculo.TIPO_DESCARACTERIZADO,
+            status=Veiculo.STATUS_FINALIZADO,
+        )
+        oficio = self._criar_oficio(ano=2026)
+        response = self.client.post(
+            reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}),
+            data=self._payload_step2(modelo='', combustivel='', tipo_viatura=''),
+        )
+        self.assertEqual(response.status_code, 302)
+        oficio.refresh_from_db()
+        self.assertEqual(oficio.modelo, 'TRAILBLAZER')
+        self.assertEqual(oficio.combustivel, 'GASOLINA')
+        self.assertEqual(oficio.tipo_viatura, Oficio.TIPO_VIATURA_DESCARACTERIZADA)
 
     def test_step4_exibe_protocolos_mascarados(self):
         oficio = self._criar_oficio(ano=2026)
@@ -2763,6 +4475,1678 @@ class OficioStep1AcceptanceTest(TestCase):
         response = self.client.post(url)
         self.assertRedirects(response, reverse('eventos:guiado-etapa-3', kwargs={'evento_id': self.evento.pk}))
         self.assertFalse(Oficio.objects.filter(pk=oficio.pk).exists())
+
+    def test_step3_get_seed_do_roteiro_do_evento(self):
+        oficio = self._criar_oficio(ano=2026)
+        cidade_destino = Cidade.objects.create(nome='Londrina Step3', estado=self.estado, codigo_ibge='4113701')
+        self._criar_roteiro_evento_base([cidade_destino])
+
+        response = self.client.get(reverse('eventos:oficio-step3', kwargs={'pk': oficio.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Pré-preenchido com o roteiro do evento.')
+        self.assertContains(response, cidade_destino.nome)
+        self.assertEqual(len(response.context['trechos_state']), 1)
+        self.assertEqual(response.context['trechos_state'][0]['saida_data'], '2026-02-10')
+        self.assertEqual(response.context['retorno_state']['saida_data'], '2026-02-11')
+        self.assertEqual(response.context['retorno_state']['saida_hora'], '09:00')
+
+    def test_step3_permite_escolher_roteiro_existente_entre_varios_do_evento(self):
+        oficio = self._criar_oficio(ano=2026)
+        cidade_a = Cidade.objects.create(nome='Destino A Step3', estado=self.estado, codigo_ibge='4113703')
+        cidade_b = Cidade.objects.create(nome='Destino B Step3', estado=self.estado, codigo_ibge='4113704')
+        roteiro_a = self._criar_roteiro_evento_base([cidade_a], data_base=datetime(2026, 2, 10, 8, 0))
+        roteiro_b = self._criar_roteiro_evento_base([cidade_b], data_base=datetime(2026, 2, 12, 7, 30))
+
+        response = self.client.get(reverse('eventos:oficio-step3', kwargs={'pk': oficio.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.context['roteiros_evento']), 2)
+
+        post = self.client.post(
+            reverse('eventos:oficio-step3', kwargs={'pk': oficio.pk}),
+            data={
+                'roteiro_modo': Oficio.ROTEIRO_MODO_EVENTO,
+                'roteiro_evento_id': str(roteiro_b.pk),
+            },
+        )
+
+        self.assertEqual(post.status_code, 302)
+        oficio.refresh_from_db()
+        self.assertEqual(oficio.roteiro_modo, Oficio.ROTEIRO_MODO_EVENTO)
+        self.assertEqual(oficio.roteiro_evento_id, roteiro_b.pk)
+        self.assertEqual(OficioTrecho.objects.filter(oficio=oficio).count(), 1)
+        self.assertEqual(OficioTrecho.objects.get(oficio=oficio).destino_cidade_id, cidade_b.pk)
+        self.assertEqual(RoteiroEventoTrecho.objects.filter(roteiro=roteiro_a).count(), 2)
+        self.assertEqual(RoteiroEventoTrecho.objects.filter(roteiro=roteiro_b).count(), 2)
+
+        reopened = self.client.get(reverse('eventos:oficio-step3', kwargs={'pk': oficio.pk}))
+
+        self.assertEqual(reopened.status_code, 200)
+        self.assertEqual(reopened.context['roteiro_evento_id'], roteiro_b.pk)
+        self.assertEqual(reopened.context['roteiro_modo'], Oficio.ROTEIRO_MODO_EVENTO)
+        self.assertEqual(reopened.context['trechos_state'][0]['destino_cidade_id'], cidade_b.pk)
+        self.assertContains(reopened, cidade_b.nome)
+
+    def test_step3_salva_trechos_no_proprio_oficio_sem_corromper_roteiro_evento(self):
+        oficio = self._criar_oficio(ano=2026)
+        cidade_destino = Cidade.objects.create(nome='Maringá Step3', estado=self.estado, codigo_ibge='4115201')
+        roteiro = self._criar_roteiro_evento_base([cidade_destino])
+
+        response = self.client.post(
+            reverse('eventos:oficio-step3', kwargs={'pk': oficio.pk}),
+            data=self._payload_step3(
+                [cidade_destino],
+                trechos=[
+                    {
+                        'saida_data': '2026-03-10',
+                        'saida_hora': '08:00',
+                        'chegada_data': '2026-03-10',
+                        'chegada_hora': '12:00',
+                    }
+                ],
+                retorno={
+                    'saida_data': '2026-03-11',
+                    'saida_hora': '09:00',
+                    'chegada_data': '2026-03-11',
+                    'chegada_hora': '18:00',
+                },
+            ),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        oficio.refresh_from_db()
+        trechos = list(OficioTrecho.objects.filter(oficio=oficio).order_by('ordem'))
+        self.assertEqual(len(trechos), 1)
+        self.assertEqual(trechos[0].destino_cidade, cidade_destino)
+        self.assertEqual(trechos[0].saida_hora.strftime('%H:%M'), '08:00')
+        self.assertEqual(oficio.retorno_saida_cidade, f'{cidade_destino.nome}/{self.estado.sigla}')
+        self.assertEqual(oficio.retorno_chegada_cidade, f'{self.cidade.nome}/{self.estado.sigla}')
+        trecho_roteiro = RoteiroEventoTrecho.objects.get(roteiro=roteiro, ordem=0)
+        self.assertEqual(tz.localtime(trecho_roteiro.saida_dt).replace(tzinfo=None), datetime(2026, 2, 10, 8, 0))
+        self.assertEqual(RoteiroEventoTrecho.objects.filter(roteiro=roteiro).count(), 2)
+
+    def test_step3_persiste_estimativa_local_no_roteiro_proprio(self):
+        oficio = self._criar_oficio(ano=2026)
+        cidade_destino = Cidade.objects.create(nome='Apucarana Step3', estado=self.estado, codigo_ibge='4101409')
+
+        response = self.client.post(
+            reverse('eventos:oficio-step3', kwargs={'pk': oficio.pk}),
+            data=self._payload_step3(
+                [cidade_destino],
+                trechos=[
+                    {
+                        'saida_data': '2026-03-10',
+                        'saida_hora': '08:00',
+                        'chegada_data': '2026-03-10',
+                        'chegada_hora': '10:45',
+                    }
+                ],
+                retorno={
+                    'saida_data': '2026-03-11',
+                    'saida_hora': '09:00',
+                    'chegada_data': '2026-03-11',
+                    'chegada_hora': '12:00',
+                },
+                trecho_0_distancia_km='123.45',
+                trecho_0_tempo_cru_estimado_min='150',
+                trecho_0_tempo_adicional_min='15',
+                trecho_0_duracao_estimada_min='165',
+                trecho_0_rota_fonte='ESTIMATIVA_LOCAL',
+            ),
+        )
+
+        self.assertEqual(response.status_code, 302)
+        trecho = OficioTrecho.objects.get(oficio=oficio)
+        self.assertEqual(str(trecho.distancia_km), '123.45')
+        self.assertEqual(trecho.tempo_cru_estimado_min, 150)
+        self.assertEqual(trecho.tempo_adicional_min, 15)
+        self.assertEqual(trecho.duracao_estimada_min, 165)
+        self.assertEqual(trecho.rota_fonte, 'ESTIMATIVA_LOCAL')
+
+        reopened = self.client.get(reverse('eventos:oficio-step3', kwargs={'pk': oficio.pk}))
+
+        self.assertEqual(reopened.context['trechos_state'][0]['distancia_km'], '123.45')
+        self.assertEqual(reopened.context['trechos_state'][0]['tempo_cru_estimado_min'], 150)
+        self.assertEqual(reopened.context['trechos_state'][0]['tempo_adicional_min'], 15)
+        self.assertEqual(reopened.context['trechos_state'][0]['duracao_estimada_min'], 165)
+        self.assertEqual(reopened.context['trechos_state'][0]['rota_fonte'], 'ESTIMATIVA_LOCAL')
+
+    def test_step3_reabre_com_mesma_ordem_cidades_e_horarios(self):
+        oficio = self._criar_oficio(ano=2026)
+        cidade_b = Cidade.objects.create(nome='Londrina Reabertura', estado=self.estado, codigo_ibge='4113702')
+        cidade_c = Cidade.objects.create(nome='Foz Reabertura', estado=self.estado, codigo_ibge='4108301')
+        self.client.post(
+            reverse('eventos:oficio-step3', kwargs={'pk': oficio.pk}),
+            data=self._payload_step3(
+                [cidade_b, cidade_c],
+                trechos=[
+                    {
+                        'saida_data': '2026-04-01',
+                        'saida_hora': '08:00',
+                        'chegada_data': '2026-04-01',
+                        'chegada_hora': '10:00',
+                    },
+                    {
+                        'saida_data': '2026-04-01',
+                        'saida_hora': '11:00',
+                        'chegada_data': '2026-04-01',
+                        'chegada_hora': '15:00',
+                    },
+                ],
+                retorno={
+                    'saida_data': '2026-04-02',
+                    'saida_hora': '09:00',
+                    'chegada_data': '2026-04-02',
+                    'chegada_hora': '18:00',
+                },
+            ),
+        )
+
+        response = self.client.get(reverse('eventos:oficio-step3', kwargs={'pk': oficio.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        trechos_state = response.context['trechos_state']
+        self.assertEqual(len(trechos_state), 2)
+        self.assertEqual(trechos_state[0]['destino_nome'], f'{cidade_b.nome}/{self.estado.sigla}')
+        self.assertEqual(trechos_state[1]['destino_nome'], f'{cidade_c.nome}/{self.estado.sigla}')
+        self.assertEqual(trechos_state[0]['saida_hora'], '08:00')
+        self.assertEqual(trechos_state[1]['saida_hora'], '11:00')
+        self.assertEqual(response.context['retorno_state']['saida_data'], '2026-04-02')
+        self.assertEqual(response.context['retorno_state']['chegada_hora'], '18:00')
+
+    def test_step3_valida_retorno_obrigatorio(self):
+        oficio = self._criar_oficio(ano=2026)
+        cidade_destino = Cidade.objects.create(nome='Ponta Grossa Step3', estado=self.estado, codigo_ibge='4119906')
+
+        response = self.client.post(
+            reverse('eventos:oficio-step3', kwargs={'pk': oficio.pk}),
+            data=self._payload_step3(
+                [cidade_destino],
+                trechos=[
+                    {
+                        'saida_data': '2026-05-10',
+                        'saida_hora': '08:00',
+                        'chegada_data': '2026-05-10',
+                        'chegada_hora': '11:00',
+                    }
+                ],
+                retorno={},
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Informe a saída do retorno')
+        self.assertContains(response, 'Informe a chegada do retorno')
+
+    def test_step3_resumo_rapido_acumula_steps_1_2_e_3(self):
+        oficio = self._criar_oficio(ano=2026)
+        cidade_destino = Cidade.objects.create(nome='Guarapuava Step3', estado=self.estado, codigo_ibge='4109400')
+        self.client.post(reverse('eventos:oficio-step1', kwargs={'pk': oficio.pk}), data=self._payload_step1(oficio))
+        self.client.post(reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}), data=self._payload_step2())
+        self.client.post(
+            reverse('eventos:oficio-step3', kwargs={'pk': oficio.pk}),
+            data=self._payload_step3(
+                [cidade_destino],
+                trechos=[
+                    {
+                        'saida_data': '2026-06-01',
+                        'saida_hora': '08:30',
+                        'chegada_data': '2026-06-01',
+                        'chegada_hora': '12:00',
+                    }
+                ],
+                retorno={
+                    'saida_data': '2026-06-02',
+                    'saida_hora': '07:00',
+                    'chegada_data': '2026-06-02',
+                    'chegada_hora': '14:00',
+                },
+            ),
+        )
+
+        response = self.client.get(reverse('eventos:oficio-step3', kwargs={'pk': oficio.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, '12.345.678-9')
+        self.assertContains(response, 'ABC-1234')
+        self.assertContains(response, self.viajante_final.nome)
+        self.assertContains(response, f'{self.cidade.nome}/{self.estado.sigla} → {cidade_destino.nome}/{self.estado.sigla}')
+        self.assertContains(response, 'Retorno')
+
+    def test_step3_calculadora_diarias_endpoint_usa_dados_dos_trechos(self):
+        oficio = self._criar_oficio(ano=2026)
+        cidade_destino = Cidade.objects.create(nome='Interior Diarias Step3', estado=self.estado, codigo_ibge='4113705')
+        oficio.viajantes.add(self.viajante_final)
+
+        response = self.client.post(
+            reverse('eventos:oficio-step3-calcular-diarias', kwargs={'pk': oficio.pk}),
+            data=self._payload_step3(
+                [cidade_destino],
+                trechos=[
+                    {
+                        'saida_data': '2026-08-10',
+                        'saida_hora': '08:00',
+                        'chegada_data': '2026-08-10',
+                        'chegada_hora': '12:00',
+                    }
+                ],
+                retorno={
+                    'saida_data': '2026-08-11',
+                    'saida_hora': '08:00',
+                    'chegada_data': '2026-08-11',
+                    'chegada_hora': '10:00',
+                },
+            ),
+        )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['ok'])
+        self.assertEqual(payload['tipo_destino'], Oficio.TIPO_DESTINO_INTERIOR)
+        self.assertEqual(payload['totais']['total_diarias'], '1 x 100%')
+        self.assertEqual(payload['totais']['total_valor'], '290,55')
+
+    def test_step4_exibe_trechos_salvos_do_step3(self):
+        oficio = self._criar_oficio(ano=2026)
+        cidade_destino = Cidade.objects.create(nome='Cascavel Step4', estado=self.estado, codigo_ibge='4104809')
+        self.client.post(
+            reverse('eventos:oficio-step3', kwargs={'pk': oficio.pk}),
+            data=self._payload_step3(
+                [cidade_destino],
+                trechos=[
+                    {
+                        'saida_data': '2026-07-01',
+                        'saida_hora': '08:00',
+                        'chegada_data': '2026-07-01',
+                        'chegada_hora': '12:30',
+                    }
+                ],
+                retorno={
+                    'saida_data': '2026-07-02',
+                    'saida_hora': '09:15',
+                    'chegada_data': '2026-07-02',
+                    'chegada_hora': '18:45',
+                },
+            ),
+        )
+
+        response = self.client.get(reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, f'{self.cidade.nome}/{self.estado.sigla} → {cidade_destino.nome}/{self.estado.sigla}')
+        self.assertContains(response, 'Retorno:')
+        self.assertContains(response, '02/07/2026 09:15')
+
+    def test_step4_exibe_modo_fonte_e_diarias_do_step3(self):
+        oficio = self._criar_oficio(ano=2026)
+        cidade_destino = Cidade.objects.create(nome='Umuarama Step4', estado=self.estado, codigo_ibge='4128105')
+        oficio.viajantes.add(self.viajante_final)
+
+        self.client.post(
+            reverse('eventos:oficio-step3', kwargs={'pk': oficio.pk}),
+            data=self._payload_step3(
+                [cidade_destino],
+                trechos=[
+                    {
+                        'saida_data': '2026-09-01',
+                        'saida_hora': '08:00',
+                        'chegada_data': '2026-09-01',
+                        'chegada_hora': '12:00',
+                    }
+                ],
+                retorno={
+                    'saida_data': '2026-09-02',
+                    'saida_hora': '08:00',
+                    'chegada_data': '2026-09-02',
+                    'chegada_hora': '10:00',
+                },
+            ),
+        )
+
+        response = self.client.get(reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context['step3_preview']['roteiro_modo'], Oficio.ROTEIRO_MODO_PROPRIO)
+        self.assertEqual(response.context['step3_preview']['diarias']['quantidade'], '1 x 100%')
+        self.assertEqual(response.context['step3_preview']['diarias']['valor_total'], '290,55')
+
+    def test_step3_calculo_diarias_respeita_pernoites_tres_noites(self):
+        """Regra de pernoites: 3 noites fora da sede → 3 x 100% (não 2 x 100% + 1 x 30%)."""
+        oficio = self._criar_oficio(ano=2026)
+        cidade_destino = Cidade.objects.create(
+            nome='Interior Pernoites', estado=self.estado, codigo_ibge='4113706'
+        )
+        oficio.viajantes.add(self.viajante_final)
+        response = self.client.post(
+            reverse('eventos:oficio-step3-calcular-diarias', kwargs={'pk': oficio.pk}),
+            data=self._payload_step3(
+                [cidade_destino],
+                trechos=[
+                    {
+                        'saida_data': '2026-03-15',
+                        'saida_hora': '14:00',
+                        'chegada_data': '2026-03-15',
+                        'chegada_hora': '17:30',
+                    }
+                ],
+                retorno={
+                    'saida_data': '2026-03-18',
+                    'saida_hora': '08:00',
+                    'chegada_data': '2026-03-18',
+                    'chegada_hora': '11:30',
+                },
+            ),
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload['ok'])
+        self.assertEqual(
+            payload['totais']['total_diarias'],
+            '3 x 100%',
+            msg='3 pernoites (15→16, 16→17, 17→18) devem gerar 3 diárias integrais',
+        )
+        self.assertEqual(payload['totais']['total_valor'], '871,65')
+
+    def test_step4_nao_finaliza_sem_protocolo(self):
+        oficio = self._criar_oficio(ano=2026)
+        self._salvar_oficio_finalizavel(oficio, destino=self._criar_destino('Destino Sem Protocolo'))
+        Oficio.objects.filter(pk=oficio.pk).update(protocolo='')
+
+        response = self._post_finalizar_oficio(oficio)
+
+        self.assertEqual(response.status_code, 200)
+        oficio.refresh_from_db()
+        self.assertEqual(oficio.status, Oficio.STATUS_RASCUNHO)
+        self.assertContains(response, 'Informe o protocolo do ofício.')
+
+    def test_step4_nao_finaliza_sem_viajantes(self):
+        oficio = self._criar_oficio(ano=2026)
+        self._salvar_oficio_finalizavel(oficio, destino=self._criar_destino('Destino Sem Viajantes'))
+        oficio.viajantes.clear()
+
+        response = self._post_finalizar_oficio(oficio)
+
+        self.assertEqual(response.status_code, 200)
+        oficio.refresh_from_db()
+        self.assertEqual(oficio.status, Oficio.STATUS_RASCUNHO)
+        self.assertContains(response, 'Selecione ao menos um viajante.')
+
+    def test_step4_nao_finaliza_sem_nome_da_instituicao_de_custeio(self):
+        oficio = self._criar_oficio(ano=2026)
+        self._salvar_oficio_finalizavel(oficio, destino=self._criar_destino('Destino Outra Instituicao'))
+        Oficio.objects.filter(pk=oficio.pk).update(
+            custeio_tipo=Oficio.CUSTEIO_OUTRA_INSTITUICAO,
+            nome_instituicao_custeio='',
+        )
+
+        response = self._post_finalizar_oficio(oficio)
+
+        self.assertEqual(response.status_code, 200)
+        oficio.refresh_from_db()
+        self.assertEqual(oficio.status, Oficio.STATUS_RASCUNHO)
+        self.assertContains(response, 'Informe a instituição responsável pelo custeio.')
+
+    def test_step4_nao_finaliza_com_motorista_carona_sem_referencias(self):
+        oficio = self._criar_oficio(ano=2026)
+        self._salvar_oficio_finalizavel(oficio, destino=self._criar_destino('Destino Motorista Carona'))
+        Oficio.objects.filter(pk=oficio.pk).update(
+            motorista_carona=True,
+            motorista_oficio='',
+            motorista_oficio_numero=None,
+            motorista_oficio_ano=None,
+            motorista_protocolo='',
+        )
+
+        response = self._post_finalizar_oficio(oficio)
+
+        self.assertEqual(response.status_code, 200)
+        oficio.refresh_from_db()
+        self.assertEqual(oficio.status, Oficio.STATUS_RASCUNHO)
+        self.assertContains(response, 'Informe o número do ofício do motorista carona.')
+        self.assertContains(response, 'Informe o protocolo do motorista carona.')
+
+    def test_step4_nao_finaliza_com_step3_incompleto(self):
+        oficio = self._criar_oficio(ano=2026)
+        self._salvar_steps_1_e_2(oficio)
+
+        response = self._post_finalizar_oficio(oficio)
+
+        self.assertEqual(response.status_code, 200)
+        oficio.refresh_from_db()
+        self.assertEqual(oficio.status, Oficio.STATUS_RASCUNHO)
+        self.assertContains(response, 'Preencha e salve o Step 3 antes de finalizar.')
+
+    def test_step4_finaliza_com_dados_completos(self):
+        oficio = self._criar_oficio(ano=2026)
+        self._salvar_oficio_finalizavel(oficio, destino=self._criar_destino('Destino Completo'))
+        before_update = oficio.updated_at
+
+        response = self._post_finalizar_oficio(oficio)
+
+        self.assertEqual(response.status_code, 302)
+        oficio.refresh_from_db()
+        self.assertEqual(oficio.status, Oficio.STATUS_FINALIZADO)
+        self.assertGreater(oficio.updated_at, before_update)
+
+    def test_oficio_finalizado_permanece_editavel_nos_steps_1_2_e_3(self):
+        oficio = self._criar_oficio(ano=2026)
+        destino_inicial = self._criar_destino('Destino Inicial Finalizado')
+        self._salvar_oficio_finalizavel(oficio, destino=destino_inicial)
+        self.assertEqual(self._post_finalizar_oficio(oficio).status_code, 302)
+        oficio.refresh_from_db()
+        self.assertEqual(oficio.status, Oficio.STATUS_FINALIZADO)
+
+        response_step1 = self.client.post(
+            reverse('eventos:oficio-step1', kwargs={'pk': oficio.pk}),
+            data=self._payload_step1(oficio, motivo='Motivo editado com status finalizado'),
+        )
+        self.assertEqual(response_step1.status_code, 302)
+        oficio.refresh_from_db()
+        self.assertEqual(oficio.status, Oficio.STATUS_FINALIZADO)
+        self.assertEqual(oficio.motivo, 'Motivo editado com status finalizado')
+
+        response_step2 = self.client.post(
+            reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}),
+            data=self._payload_step2(placa='DEF-5678', modelo='VIATURA FINALIZADA'),
+        )
+        self.assertEqual(response_step2.status_code, 302)
+        oficio.refresh_from_db()
+        self.assertEqual(oficio.status, Oficio.STATUS_FINALIZADO)
+        self.assertEqual(oficio.placa, 'DEF5678')
+
+        destino_editado = self._criar_destino('Destino Editado Finalizado')
+        response_step3 = self.client.post(
+            reverse('eventos:oficio-step3', kwargs={'pk': oficio.pk}),
+            data=self._payload_step3(
+                [destino_editado],
+                trechos=[
+                    {
+                        'saida_data': '2026-11-10',
+                        'saida_hora': '09:00',
+                        'chegada_data': '2026-11-10',
+                        'chegada_hora': '13:00',
+                    }
+                ],
+                retorno={
+                    'saida_data': '2026-11-11',
+                    'saida_hora': '08:00',
+                    'chegada_data': '2026-11-11',
+                    'chegada_hora': '17:00',
+                },
+            ),
+        )
+        self.assertEqual(response_step3.status_code, 302)
+        oficio.refresh_from_db()
+        self.assertEqual(oficio.status, Oficio.STATUS_FINALIZADO)
+        self.assertEqual(oficio.trechos.count(), 1)
+
+
+class OficioJustificativaTest(TestCase):
+    """Fase 3 do ofício: justificativa obrigatória, tela própria e modelos."""
+
+    def setUp(self):
+        self.user = User.objects.create_user(username='justificativa', password='justificativa')
+        self.client = Client()
+        self.client.login(username='justificativa', password='justificativa')
+        self.estado = Estado.objects.create(nome='Paraná', sigla='PR', codigo_ibge='41')
+        self.cidade = Cidade.objects.create(nome='Curitiba', estado=self.estado, codigo_ibge='4106902')
+        self.evento = Evento.objects.create(
+            titulo='Evento Justificativa',
+            data_inicio=date(2026, 10, 1),
+            data_fim=date(2026, 10, 3),
+            status=Evento.STATUS_RASCUNHO,
+        )
+        self.cargo = Cargo.objects.create(nome='ANALISTA JUSTIFICATIVA', is_padrao=True)
+        self.unidade = UnidadeLotacao.objects.create(nome='DPC JUSTIFICATIVA')
+        self.viajante = Viajante.objects.create(
+            nome='Viajante Justificativa',
+            status=Viajante.STATUS_FINALIZADO,
+            cargo=self.cargo,
+            cpf='12345678901',
+            telefone='41999990000',
+            unidade_lotacao=self.unidade,
+            rg='1234567890',
+        )
+        self.combustivel = CombustivelVeiculo.objects.create(nome='GASOLINA', is_padrao=True)
+
+    def _criar_destino(self, nome='Destino Justificativa'):
+        codigo = str(4108000 + Cidade.objects.count())
+        return Cidade.objects.create(nome=nome, estado=self.estado, codigo_ibge=codigo)
+
+    def _criar_oficio(self, data_criacao=None):
+        oficio = Oficio.objects.create(evento=self.evento, status=Oficio.STATUS_RASCUNHO)
+        if data_criacao is not None:
+            Oficio.objects.filter(pk=oficio.pk).update(data_criacao=data_criacao)
+            oficio.refresh_from_db()
+        return oficio
+
+    def _payload_step1(self, oficio):
+        oficio.refresh_from_db()
+        return {
+            'oficio_numero': oficio.numero_formatado,
+            'protocolo': '12.345.678-9',
+            'data_criacao': oficio.data_criacao.strftime('%d/%m/%Y'),
+            'modelo_motivo': '',
+            'motivo': 'Motivo com justificativa',
+            'custeio_tipo': Oficio.CUSTEIO_UNIDADE,
+            'nome_instituicao_custeio': '',
+            'viajantes': [self.viajante.pk],
+        }
+
+    def _payload_step2(self):
+        return {
+            'placa': 'ABC-1234',
+            'modelo': 'VIATURA JUSTIFICATIVA',
+            'combustivel': 'GASOLINA',
+            'tipo_viatura': Oficio.TIPO_VIATURA_DESCARACTERIZADA,
+            'porte_transporte_armas': '1',
+            'motorista_viajante': '__manual__',
+            'motorista_nome': 'Motorista Justificativa',
+            'motorista_oficio_numero': '5',
+            'motorista_oficio_ano': str(tz.localdate().year),
+            'motorista_protocolo': '12.345.678-9',
+        }
+
+    def _payload_step3(self, destino, data_saida, data_retorno):
+        return {
+            'roteiro_modo': Oficio.ROTEIRO_MODO_PROPRIO,
+            'sede_estado': str(self.estado.pk),
+            'sede_cidade': str(self.cidade.pk),
+            'destino_estado_0': str(destino.estado_id),
+            'destino_cidade_0': str(destino.pk),
+            'trecho_0_saida_data': data_saida.strftime('%Y-%m-%d'),
+            'trecho_0_saida_hora': '08:00',
+            'trecho_0_chegada_data': data_saida.strftime('%Y-%m-%d'),
+            'trecho_0_chegada_hora': '12:00',
+            'retorno_saida_data': data_retorno.strftime('%Y-%m-%d'),
+            'retorno_saida_hora': '09:00',
+            'retorno_chegada_data': data_retorno.strftime('%Y-%m-%d'),
+            'retorno_chegada_hora': '18:00',
+        }
+
+    def _salvar_oficio_finalizavel(self, oficio, data_saida, data_retorno):
+        destino = self._criar_destino()
+        response_step1 = self.client.post(
+            reverse('eventos:oficio-step1', kwargs={'pk': oficio.pk}),
+            data=self._payload_step1(oficio),
+        )
+        self.assertEqual(response_step1.status_code, 302)
+        response_step2 = self.client.post(
+            reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}),
+            data=self._payload_step2(),
+        )
+        self.assertEqual(response_step2.status_code, 302)
+        response_step3 = self.client.post(
+            reverse('eventos:oficio-step3', kwargs={'pk': oficio.pk}),
+            data=self._payload_step3(destino, data_saida, data_retorno),
+        )
+        self.assertEqual(response_step3.status_code, 302)
+        oficio.refresh_from_db()
+        return destino
+
+    def test_prazo_justificativa_usa_fallback_10_quando_configuracao_ausente(self):
+        self.assertFalse(ConfiguracaoSistema.objects.exists())
+        self.assertEqual(get_prazo_justificativa_dias(), 10)
+
+    def test_step4_finaliza_sem_justificativa_quando_antecedencia_atende_prazo(self):
+        ConfiguracaoSistema.objects.create(cidade_sede_padrao=self.cidade, prazo_justificativa_dias=10)
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(
+            oficio,
+            data_saida=date(2026, 10, 10),
+            data_retorno=date(2026, 10, 11),
+        )
+
+        self.assertFalse(oficio_exige_justificativa(oficio))
+        response = self.client.post(reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk}), data={'finalizar': '1'})
+
+        self.assertEqual(response.status_code, 302)
+        oficio.refresh_from_db()
+        self.assertEqual(oficio.status, Oficio.STATUS_FINALIZADO)
+
+    def test_step4_redireciona_para_justificativa_quando_ela_e_obrigatoria(self):
+        ConfiguracaoSistema.objects.create(cidade_sede_padrao=self.cidade, prazo_justificativa_dias=10)
+        oficio = self._criar_oficio(data_criacao=date(2026, 10, 5))
+        self._salvar_oficio_finalizavel(
+            oficio,
+            data_saida=date(2026, 10, 10),
+            data_retorno=date(2026, 10, 11),
+        )
+
+        self.assertTrue(oficio_exige_justificativa(oficio))
+        response = self.client.post(reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk}), data={'finalizar': '1'})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertIn(reverse('eventos:oficio-justificativa', kwargs={'pk': oficio.pk}), response.url)
+        self.assertIn('next=', response.url)
+        oficio.refresh_from_db()
+        self.assertEqual(oficio.status, Oficio.STATUS_RASCUNHO)
+
+    def test_step4_finaliza_quando_justificativa_exigida_esta_preenchida(self):
+        ConfiguracaoSistema.objects.create(cidade_sede_padrao=self.cidade, prazo_justificativa_dias=10)
+        oficio = self._criar_oficio(data_criacao=date(2026, 10, 5))
+        self._salvar_oficio_finalizavel(
+            oficio,
+            data_saida=date(2026, 10, 10),
+            data_retorno=date(2026, 10, 11),
+        )
+        Oficio.objects.filter(pk=oficio.pk).update(justificativa_texto='Necessidade operacional urgente.')
+
+        response = self.client.post(reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk}), data={'finalizar': '1'})
+
+        self.assertEqual(response.status_code, 302)
+        oficio.refresh_from_db()
+        self.assertEqual(oficio.status, Oficio.STATUS_FINALIZADO)
+
+    def test_salvar_justificativa_grava_texto_e_retorna_para_next(self):
+        oficio = self._criar_oficio(data_criacao=date(2026, 10, 5))
+        self._salvar_oficio_finalizavel(
+            oficio,
+            data_saida=date(2026, 10, 10),
+            data_retorno=date(2026, 10, 11),
+        )
+        next_url = reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk})
+        response = self.client.post(
+            reverse('eventos:oficio-justificativa', kwargs={'pk': oficio.pk}),
+            data={
+                'modelo_justificativa': '',
+                'justificativa_texto': 'Texto final da justificativa.',
+                'next': next_url,
+            },
+        )
+
+        self.assertRedirects(response, next_url)
+        oficio.refresh_from_db()
+        self.assertEqual(oficio.justificativa_texto, 'Texto final da justificativa.')
+
+    def test_tela_justificativa_preseleciona_modelo_padrao_quando_texto_ainda_vazio(self):
+        oficio = self._criar_oficio(data_criacao=date(2026, 10, 5))
+        modelo = ModeloJustificativa.objects.create(
+            nome='Modelo Padrão Justificativa',
+            texto='Texto padrão da justificativa.',
+            padrao=True,
+        )
+
+        response = self.client.get(reverse('eventos:oficio-justificativa', kwargs={'pk': oficio.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, f'<option value="{modelo.pk}" selected>')
+        self.assertContains(response, 'Texto padrão da justificativa.')
+
+    def test_tela_justificativa_nao_quebra_sem_trechos_validos(self):
+        oficio = self._criar_oficio()
+
+        response = self.client.get(reverse('eventos:oficio-justificativa', kwargs={'pk': oficio.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Aguardando dados válidos do Step 3')
+
+    def test_lista_modelos_justificativa_ordena_por_nome(self):
+        ModeloJustificativa.objects.create(nome='ZZZ', texto='z')
+        ModeloJustificativa.objects.create(nome='AAA', texto='a')
+
+        response = self.client.get(reverse('eventos:modelos-justificativa-lista'))
+
+        self.assertEqual(response.status_code, 200)
+        html = response.content.decode()
+        self.assertLess(html.index('AAA'), html.index('ZZZ'))
+
+    def test_modelo_justificativa_pode_ser_editado_e_excluido(self):
+        modelo = ModeloJustificativa.objects.create(nome='Modelo Editável', texto='Texto original')
+
+        response_edicao = self.client.post(
+            reverse('eventos:modelos-justificativa-editar', kwargs={'pk': modelo.pk}),
+            data={'nome': 'Modelo Editado', 'texto': 'Texto editado', 'next': ''},
+        )
+
+        self.assertRedirects(response_edicao, reverse('eventos:modelos-justificativa-lista'))
+        modelo.refresh_from_db()
+        self.assertEqual(modelo.nome, 'Modelo Editado')
+        self.assertEqual(modelo.texto, 'Texto editado')
+
+        response_exclusao = self.client.post(
+            reverse('eventos:modelos-justificativa-excluir', kwargs={'pk': modelo.pk}),
+            data={'next': ''},
+        )
+
+        self.assertRedirects(response_exclusao, reverse('eventos:modelos-justificativa-lista'))
+        self.assertFalse(ModeloJustificativa.objects.filter(pk=modelo.pk).exists())
+
+    def test_definir_padrao_desmarca_modelo_anterior_de_justificativa(self):
+        modelo_1 = ModeloJustificativa.objects.create(nome='Modelo 1', texto='1', padrao=True)
+        modelo_2 = ModeloJustificativa.objects.create(nome='Modelo 2', texto='2', padrao=False)
+
+        response = self.client.post(reverse('eventos:modelos-justificativa-definir-padrao', kwargs={'pk': modelo_2.pk}))
+
+        self.assertRedirects(response, reverse('eventos:modelos-justificativa-lista'))
+        modelo_1.refresh_from_db()
+        modelo_2.refresh_from_db()
+        self.assertFalse(modelo_1.padrao)
+        self.assertTrue(modelo_2.padrao)
+
+
+class OficioDocumentosTest(TestCase):
+    """Fase 4 do ofício: contexto, validação e geração documental."""
+
+    def setUp(self):
+        reset_document_backend_capabilities_cache()
+        self.addCleanup(reset_document_backend_capabilities_cache)
+        self.user = User.objects.create_user(username='documentos', password='documentos')
+        self.client = Client()
+        self.client.login(username='documentos', password='documentos')
+        self.estado = Estado.objects.create(nome='Paraná', sigla='PR', codigo_ibge='41')
+        self.cidade = Cidade.objects.create(nome='Curitiba', estado=self.estado, codigo_ibge='4106902')
+        self.evento = Evento.objects.create(
+            titulo='Evento Documental',
+            data_inicio=date(2026, 10, 1),
+            data_fim=date(2026, 10, 3),
+            status=Evento.STATUS_RASCUNHO,
+        )
+        self.cargo = Cargo.objects.create(nome='ANALISTA DOCUMENTAL', is_padrao=True)
+        self.unidade = UnidadeLotacao.objects.create(nome='DPC DOCUMENTAL')
+        self.viajante = Viajante.objects.create(
+            nome='Viajante Documental',
+            status=Viajante.STATUS_FINALIZADO,
+            cargo=self.cargo,
+            cpf='12345678901',
+            telefone='41999990000',
+            unidade_lotacao=self.unidade,
+            rg='1234567890',
+        )
+        self.assinante = Viajante.objects.create(
+            nome='Autoridade Assinante',
+            status=Viajante.STATUS_FINALIZADO,
+            cargo=self.cargo,
+            cpf='10987654321',
+            telefone='41999991111',
+            unidade_lotacao=self.unidade,
+            rg='9988776655',
+        )
+        self.combustivel = CombustivelVeiculo.objects.create(nome='GASOLINA', is_padrao=True)
+
+    def _criar_configuracao(self):
+        config = ConfiguracaoSistema.objects.create(
+            cidade_sede_padrao=self.cidade,
+            prazo_justificativa_dias=10,
+            nome_orgao='Polícia Civil do Paraná',
+            sigla_orgao='PCPR',
+            divisao='Diretoria de Polícia do Interior',
+            unidade='Departamento de Polícia Civil',
+            logradouro='Rua Exemplo',
+            numero='123',
+            bairro='Centro',
+            cidade_endereco='Curitiba',
+            uf='PR',
+            cep='80000000',
+            telefone='4133334444',
+            email='documentos@pc.pr.gov.br',
+        )
+        AssinaturaConfiguracao.objects.create(
+            configuracao=config,
+            tipo=AssinaturaConfiguracao.TIPO_OFICIO,
+            ordem=1,
+            viajante=self.assinante,
+            ativo=True,
+        )
+        AssinaturaConfiguracao.objects.create(
+            configuracao=config,
+            tipo=AssinaturaConfiguracao.TIPO_JUSTIFICATIVA,
+            ordem=1,
+            viajante=self.assinante,
+            ativo=True,
+        )
+        AssinaturaConfiguracao.objects.create(
+            configuracao=config,
+            tipo=AssinaturaConfiguracao.TIPO_PLANO_TRABALHO,
+            ordem=1,
+            viajante=self.assinante,
+            ativo=True,
+        )
+        AssinaturaConfiguracao.objects.create(
+            configuracao=config,
+            tipo=AssinaturaConfiguracao.TIPO_ORDEM_SERVICO,
+            ordem=1,
+            viajante=self.assinante,
+            ativo=True,
+        )
+        AssinaturaConfiguracao.objects.create(
+            configuracao=config,
+            tipo=AssinaturaConfiguracao.TIPO_TERMO_AUTORIZACAO,
+            ordem=1,
+            viajante=self.assinante,
+            ativo=True,
+        )
+        return config
+
+    def _criar_destino(self, nome='Destino Documental'):
+        codigo = str(4109000 + Cidade.objects.count())
+        return Cidade.objects.create(nome=nome, estado=self.estado, codigo_ibge=codigo)
+
+    def _criar_oficio(self, data_criacao=None):
+        oficio = Oficio.objects.create(evento=self.evento, status=Oficio.STATUS_RASCUNHO)
+        if data_criacao is not None:
+            Oficio.objects.filter(pk=oficio.pk).update(data_criacao=data_criacao)
+            oficio.refresh_from_db()
+        return oficio
+
+    def _payload_step1(self, oficio):
+        oficio.refresh_from_db()
+        return {
+            'oficio_numero': oficio.numero_formatado,
+            'protocolo': '12.345.678-9',
+            'data_criacao': oficio.data_criacao.strftime('%d/%m/%Y'),
+            'modelo_motivo': '',
+            'motivo': 'Motivo documental',
+            'custeio_tipo': Oficio.CUSTEIO_UNIDADE,
+            'nome_instituicao_custeio': '',
+            'viajantes': [self.viajante.pk],
+        }
+
+    def _payload_step2(self):
+        return {
+            'placa': 'ABC-1234',
+            'modelo': 'VIATURA DOCUMENTAL',
+            'combustivel': 'GASOLINA',
+            'tipo_viatura': Oficio.TIPO_VIATURA_DESCARACTERIZADA,
+            'porte_transporte_armas': '1',
+            'motorista_viajante': '__manual__',
+            'motorista_nome': 'Motorista Documental',
+            'motorista_oficio_numero': '12',
+            'motorista_oficio_ano': str(tz.localdate().year),
+            'motorista_protocolo': '12.345.678-9',
+        }
+
+    def _payload_step3(self, destino, data_saida, data_retorno):
+        return {
+            'roteiro_modo': Oficio.ROTEIRO_MODO_PROPRIO,
+            'sede_estado': str(self.estado.pk),
+            'sede_cidade': str(self.cidade.pk),
+            'destino_estado_0': str(destino.estado_id),
+            'destino_cidade_0': str(destino.pk),
+            'trecho_0_saida_data': data_saida.strftime('%Y-%m-%d'),
+            'trecho_0_saida_hora': '08:00',
+            'trecho_0_chegada_data': data_saida.strftime('%Y-%m-%d'),
+            'trecho_0_chegada_hora': '12:00',
+            'retorno_saida_data': data_retorno.strftime('%Y-%m-%d'),
+            'retorno_saida_hora': '09:00',
+            'retorno_chegada_data': data_retorno.strftime('%Y-%m-%d'),
+            'retorno_chegada_hora': '18:00',
+        }
+
+    def _salvar_steps_1_e_2(self, oficio):
+        response_step1 = self.client.post(
+            reverse('eventos:oficio-step1', kwargs={'pk': oficio.pk}),
+            data=self._payload_step1(oficio),
+        )
+        self.assertEqual(response_step1.status_code, 302)
+        response_step2 = self.client.post(
+            reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}),
+            data=self._payload_step2(),
+        )
+        self.assertEqual(response_step2.status_code, 302)
+
+    def _salvar_oficio_finalizavel(self, oficio, data_saida, data_retorno):
+        destino = self._criar_destino()
+        self._salvar_steps_1_e_2(oficio)
+        response_step3 = self.client.post(
+            reverse('eventos:oficio-step3', kwargs={'pk': oficio.pk}),
+            data=self._payload_step3(destino, data_saida, data_retorno),
+        )
+        self.assertEqual(response_step3.status_code, 302)
+        oficio.refresh_from_db()
+        return destino
+
+    def _extract_docx_text(self, payload):
+        if DocxDocument is None:
+            self.skipTest('python-docx não está instalado neste ambiente de teste.')
+        document = DocxDocument(BytesIO(payload))
+        texts = [paragraph.text for paragraph in document.paragraphs if paragraph.text]
+        for table in document.tables:
+            for row in table.rows:
+                for cell in row.cells:
+                    if cell.text:
+                        texts.append(cell.text)
+        return '\n'.join(texts)
+
+    def test_contexto_documental_do_oficio(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        destino = self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        context = build_oficio_document_context(oficio)
+
+        self.assertEqual(context['identificacao']['numero_formatado'], oficio.numero_formatado)
+        self.assertEqual(context['evento']['titulo'], self.evento.titulo)
+        self.assertEqual(context['viajantes'][0]['nome'], self.viajante.nome)
+        self.assertEqual(context['veiculo']['placa_formatada'], 'ABC-1234')
+        self.assertEqual(context['motorista']['nome'], 'MOTORISTA DOCUMENTAL')
+        self.assertEqual(context['roteiro']['destinos'], [f'{destino.nome}/{self.estado.sigla}'])
+        self.assertEqual(context['institucional']['sigla_orgao'], 'PCPR')
+        self.assertEqual(len(context['assinaturas']), 1)
+
+    def test_contexto_documental_da_justificativa(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 10, 5))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+        Oficio.objects.filter(pk=oficio.pk).update(justificativa_texto='Justificativa documental.')
+        oficio.refresh_from_db()
+
+        context = build_justificativa_document_context(oficio)
+
+        self.assertTrue(context['justificativa']['exigida'])
+        self.assertEqual(context['justificativa']['dias_antecedencia'], 5)
+        self.assertEqual(context['conteudo']['justificativa_texto'], 'Justificativa documental.')
+        self.assertEqual(len(context['assinaturas']), 1)
+
+    def test_contexto_documental_do_termo_autorizacao(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        destino = self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        context = build_termo_autorizacao_document_context(oficio)
+
+        self.assertEqual(context['termo']['destinos_texto'], f'{destino.nome}/{self.estado.sigla}')
+        self.assertIn('10/10/2026', context['termo']['periodo_viagem'])
+        self.assertEqual(context['assinaturas'], [])
+
+    def test_contexto_documental_do_plano_trabalho(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        context = build_plano_trabalho_document_context(oficio)
+
+        self.assertEqual(context['plano_trabalho']['objetivo'], 'Motivo documental')
+        self.assertTrue(context['plano_trabalho']['roteiro_resumo'])
+        self.assertIn('UNIDADE', context['plano_trabalho']['custeio_resumo'])
+
+    def test_contexto_documental_da_ordem_servico(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        destino = self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        context = build_ordem_servico_document_context(oficio)
+
+        self.assertEqual(context['ordem_servico']['finalidade'], 'Motivo documental')
+        self.assertIn(destino.nome, context['ordem_servico']['destinos_texto'])
+        self.assertEqual(context['ordem_servico']['participantes_texto'], self.viajante.nome)
+
+    def test_validacao_documental_do_oficio_apto(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        validation = validate_oficio_for_document_generation(oficio, DocumentoOficioTipo.OFICIO)
+
+        self.assertTrue(validation['ok'])
+        self.assertEqual(validation['errors'], [])
+
+    def test_validacao_documental_bloqueia_oficio_com_pendencia(self):
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_steps_1_e_2(oficio)
+
+        validation = validate_oficio_for_document_generation(oficio, DocumentoOficioTipo.OFICIO)
+
+        self.assertFalse(validation['ok'])
+        self.assertTrue(any('Step 3' in error for error in validation['errors']))
+
+    def test_validacao_documental_do_termo_autorizacao_apto(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        validation = validate_oficio_for_document_generation(oficio, DocumentoOficioTipo.TERMO_AUTORIZACAO)
+
+        self.assertTrue(validation['ok'])
+        self.assertEqual(validation['errors'], [])
+
+    def test_validacao_documental_do_termo_nao_exige_assinatura_de_chefia(self):
+        self._criar_configuracao()
+        AssinaturaConfiguracao.objects.filter(
+            tipo=AssinaturaConfiguracao.TIPO_TERMO_AUTORIZACAO,
+        ).delete()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        validation = validate_oficio_for_document_generation(oficio, DocumentoOficioTipo.TERMO_AUTORIZACAO)
+
+        self.assertTrue(validation['ok'])
+        self.assertEqual(validation['errors'], [])
+
+    def test_validacao_documental_do_plano_trabalho_apto(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        validation = validate_oficio_for_document_generation(oficio, DocumentoOficioTipo.PLANO_TRABALHO)
+
+        self.assertTrue(validation['ok'])
+        self.assertEqual(validation['errors'], [])
+
+    def test_validacao_documental_da_ordem_servico_apta(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        validation = validate_oficio_for_document_generation(oficio, DocumentoOficioTipo.ORDEM_SERVICO)
+
+        self.assertTrue(validation['ok'])
+        self.assertEqual(validation['errors'], [])
+
+    def test_download_do_oficio_e_bloqueado_sem_justificativa_obrigatoria(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 10, 5))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        response = self.client.get(
+            reverse(
+                'eventos:oficio-documento-download',
+                kwargs={'pk': oficio.pk, 'tipo_documento': 'oficio', 'formato': 'docx'},
+            ),
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Preencha a justificativa')
+        oficio.refresh_from_db()
+        self.assertEqual(oficio.justificativa_texto, '')
+
+    def test_download_docx_do_oficio_quando_apto(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        response = self.client.get(
+            reverse(
+                'eventos:oficio-documento-download',
+                kwargs={'pk': oficio.pk, 'tipo_documento': 'oficio', 'formato': 'docx'},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response['Content-Type'],
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        )
+        self.assertIn(build_document_filename(oficio, DocumentoOficioTipo.OFICIO, 'docx'), response['Content-Disposition'])
+        text = self._extract_docx_text(response.content)
+        self.assertIn('Senhor Delegado', text)
+        self.assertIn('Motivo documental', text)
+        self.assertIn(self.viajante.nome, text)
+
+    def test_download_docx_da_justificativa_quando_apta(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 10, 5))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+        Oficio.objects.filter(pk=oficio.pk).update(justificativa_texto='Justificativa pronta para DOCX.')
+        oficio.refresh_from_db()
+
+        response = self.client.get(
+            reverse(
+                'eventos:oficio-documento-download',
+                kwargs={'pk': oficio.pk, 'tipo_documento': 'justificativa', 'formato': 'docx'},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(build_document_filename(oficio, DocumentoOficioTipo.JUSTIFICATIVA, 'docx'), response['Content-Disposition'])
+        text = self._extract_docx_text(response.content)
+        self.assertIn('JUSTIFICATIVA', text)
+        self.assertIn('Justificativa pronta para DOCX.', text)
+
+    def test_download_docx_do_termo_autorizacao_quando_apto(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        response = self.client.get(
+            reverse(
+                'eventos:oficio-documento-download',
+                kwargs={'pk': oficio.pk, 'tipo_documento': 'termo-autorizacao', 'formato': 'docx'},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            build_document_filename(oficio, DocumentoOficioTipo.TERMO_AUTORIZACAO, 'docx'),
+            response['Content-Disposition'],
+        )
+        text = self._extract_docx_text(response.content)
+        self.assertIn('TERMO DE AUTORIZA', text)
+        self.assertIn('Assessoria de Comunica', text)
+        self.assertIn(self.viajante.nome, text)
+
+    def test_download_docx_do_plano_trabalho_quando_apto(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        response = self.client.get(
+            reverse(
+                'eventos:oficio-documento-download',
+                kwargs={'pk': oficio.pk, 'tipo_documento': 'plano-trabalho', 'formato': 'docx'},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            build_document_filename(oficio, DocumentoOficioTipo.PLANO_TRABALHO, 'docx'),
+            response['Content-Disposition'],
+        )
+        text = self._extract_docx_text(response.content)
+        self.assertIn('PLANO DE TRABALHO', text)
+        self.assertIn('Objetivo / finalidade', text)
+        self.assertIn('Motivo documental', text)
+
+    def test_download_docx_da_ordem_servico_quando_apta(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        response = self.client.get(
+            reverse(
+                'eventos:oficio-documento-download',
+                kwargs={'pk': oficio.pk, 'tipo_documento': 'ordem-servico', 'formato': 'docx'},
+            )
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn(
+            build_document_filename(oficio, DocumentoOficioTipo.ORDEM_SERVICO, 'docx'),
+            response['Content-Disposition'],
+        )
+        text = self._extract_docx_text(response.content)
+        self.assertIn('ORDEM DE SERVI', text)
+        self.assertIn('O deslocamento do servidor', text)
+        self.assertIn(self.viajante.nome, text)
+
+    def test_templates_docx_versionados_estao_disponiveis(self):
+        from eventos.services.documentos.renderer import get_document_template_path
+
+        self.assertTrue(get_document_template_path(DocumentoOficioTipo.OFICIO).exists())
+        self.assertTrue(get_document_template_path(DocumentoOficioTipo.JUSTIFICATIVA).exists())
+        self.assertTrue(get_document_template_path(DocumentoOficioTipo.TERMO_AUTORIZACAO).exists())
+        self.assertTrue(get_document_template_path(DocumentoOficioTipo.ORDEM_SERVICO).exists())
+
+    def test_download_pdf_do_oficio_quando_apto(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        with patch(
+            'eventos.services.documentos.renderer.convert_docx_bytes_to_pdf_bytes',
+            return_value=b'%PDF-1.4 oficio',
+        ):
+            response = self.client.get(
+                reverse(
+                    'eventos:oficio-documento-download',
+                    kwargs={'pk': oficio.pk, 'tipo_documento': 'oficio', 'formato': 'pdf'},
+                )
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertIn(build_document_filename(oficio, DocumentoOficioTipo.OFICIO, 'pdf'), response['Content-Disposition'])
+        self.assertTrue(response.content.startswith(b'%PDF-1.4'))
+
+    def test_download_pdf_da_justificativa_quando_apta(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 10, 5))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+        Oficio.objects.filter(pk=oficio.pk).update(justificativa_texto='Justificativa pronta para PDF.')
+        oficio.refresh_from_db()
+
+        with patch(
+            'eventos.services.documentos.renderer.convert_docx_bytes_to_pdf_bytes',
+            return_value=b'%PDF-1.4 justificativa',
+        ):
+            response = self.client.get(
+                reverse(
+                    'eventos:oficio-documento-download',
+                    kwargs={'pk': oficio.pk, 'tipo_documento': 'justificativa', 'formato': 'pdf'},
+                )
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertIn(build_document_filename(oficio, DocumentoOficioTipo.JUSTIFICATIVA, 'pdf'), response['Content-Disposition'])
+        self.assertTrue(response.content.startswith(b'%PDF-1.4'))
+
+    def test_download_pdf_do_termo_autorizacao_quando_apto(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        with patch(
+            'eventos.services.documentos.renderer.convert_docx_bytes_to_pdf_bytes',
+            return_value=b'%PDF-1.4 termo',
+        ):
+            response = self.client.get(
+                reverse(
+                    'eventos:oficio-documento-download',
+                    kwargs={'pk': oficio.pk, 'tipo_documento': 'termo-autorizacao', 'formato': 'pdf'},
+                )
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertIn(
+            build_document_filename(oficio, DocumentoOficioTipo.TERMO_AUTORIZACAO, 'pdf'),
+            response['Content-Disposition'],
+        )
+        self.assertTrue(response.content.startswith(b'%PDF-1.4'))
+
+    def test_download_pdf_do_plano_trabalho_quando_apto(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        with patch(
+            'eventos.services.documentos.renderer.convert_docx_bytes_to_pdf_bytes',
+            return_value=b'%PDF-1.4 plano',
+        ):
+            response = self.client.get(
+                reverse(
+                    'eventos:oficio-documento-download',
+                    kwargs={'pk': oficio.pk, 'tipo_documento': 'plano-trabalho', 'formato': 'pdf'},
+                )
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertIn(
+            build_document_filename(oficio, DocumentoOficioTipo.PLANO_TRABALHO, 'pdf'),
+            response['Content-Disposition'],
+        )
+        self.assertTrue(response.content.startswith(b'%PDF-1.4'))
+
+    def test_download_pdf_da_ordem_servico_quando_apta(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        with patch(
+            'eventos.services.documentos.renderer.convert_docx_bytes_to_pdf_bytes',
+            return_value=b'%PDF-1.4 ordem',
+        ):
+            response = self.client.get(
+                reverse(
+                    'eventos:oficio-documento-download',
+                    kwargs={'pk': oficio.pk, 'tipo_documento': 'ordem-servico', 'formato': 'pdf'},
+                )
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertIn(
+            build_document_filename(oficio, DocumentoOficioTipo.ORDEM_SERVICO, 'pdf'),
+            response['Content-Disposition'],
+        )
+        self.assertTrue(response.content.startswith(b'%PDF-1.4'))
+
+    def test_download_do_termo_autorizacao_e_bloqueado_com_oficio_incompleto(self):
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_steps_1_e_2(oficio)
+
+        response = self.client.get(
+            reverse(
+                'eventos:oficio-documento-download',
+                kwargs={'pk': oficio.pk, 'tipo_documento': 'termo-autorizacao', 'formato': 'docx'},
+            ),
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Preencha e salve o Step 3')
+
+    def test_download_do_plano_trabalho_e_bloqueado_com_oficio_incompleto(self):
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_steps_1_e_2(oficio)
+
+        response = self.client.get(
+            reverse(
+                'eventos:oficio-documento-download',
+                kwargs={'pk': oficio.pk, 'tipo_documento': 'plano-trabalho', 'formato': 'docx'},
+            ),
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Preencha e salve o Step 3')
+
+    def test_download_da_ordem_servico_e_bloqueado_com_oficio_incompleto(self):
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_steps_1_e_2(oficio)
+
+        response = self.client.get(
+            reverse(
+                'eventos:oficio-documento-download',
+                kwargs={'pk': oficio.pk, 'tipo_documento': 'ordem-servico', 'formato': 'docx'},
+            ),
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Preencha e salve o Step 3')
+
+    def test_tela_de_documentos_mostra_status_corretos(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 10, 5))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        response = self.client.get(reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Justificativa')
+        self.assertContains(response, 'Documentos principais')
+        self.assertContains(response, 'Documentos complementares')
+        self.assertContains(response, 'Termo de autoriza')
+        self.assertContains(response, 'Plano de trabalho')
+        self.assertContains(response, 'Ordem de servi')
+        self.assertContains(response, 'Pendente')
+        self.assertContains(response, 'Preencha a justificativa')
+        self.assertContains(response, 'PDF pendente')
+        self.assertTrue(all(item['status'] != 'planned' for item in response.context['documentos']))
+        self.assertTrue(all(item['status'] == 'pending' for item in response.context['documentos_complementares']))
+
+    def test_tela_de_documentos_mostra_acoes_docx_e_pdf_quando_apto(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+        Oficio.objects.filter(pk=oficio.pk).update(justificativa_texto='Justificativa liberada.')
+        oficio.refresh_from_db()
+
+        response = self.client.get(reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Baixar DOCX')
+        self.assertContains(response, 'Baixar PDF')
+        self.assertTrue(any(item['docx'] and item['docx']['status'] == 'available' for item in response.context['documentos']))
+        self.assertTrue(any(item['pdf'] and item['pdf']['status'] == 'available' for item in response.context['documentos']))
+
+    def test_leitura_de_configuracoes_e_assinaturas_nao_quebra_sem_dados(self):
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        context = build_oficio_document_context(oficio)
+
+        self.assertEqual(context['institucional']['orgao'], '')
+        self.assertEqual(get_assinaturas_documento(DocumentoOficioTipo.OFICIO), [])
+        self.assertEqual(context['assinaturas'], [])
+
+    def test_import_das_urls_nao_quebra_sem_python_docx(self):
+        import eventos.services.documentos as documentos_package
+        import eventos.urls as eventos_urls
+        import eventos.views as eventos_views
+
+        real_import = builtins.__import__
+
+        def guarded_import(name, globals=None, locals=None, fromlist=(), level=0):
+            if name == 'docx' or name.startswith('docx.'):
+                raise ImportError('docx ausente para teste')
+            return real_import(name, globals, locals, fromlist, level)
+
+        with patch('builtins.__import__', side_effect=guarded_import):
+            importlib.reload(documentos_package)
+            importlib.reload(eventos_views)
+            importlib.reload(eventos_urls)
+
+        importlib.reload(documentos_package)
+        importlib.reload(eventos_views)
+        importlib.reload(eventos_urls)
+
+    def test_capabilities_separam_docx_e_pdf_quando_docx2pdf_falta(self):
+        def module_status_side_effect(module_name, *, label, install_hint=''):
+            if module_name == 'docx2pdf':
+                return {
+                    'available': False,
+                    'module': None,
+                    'reason': 'docx2pdf não está instalado neste ambiente. Instale docx2pdf.',
+                    'exception': ImportError('docx2pdf ausente'),
+                }
+            return {
+                'available': True,
+                'module': object(),
+                'reason': '',
+                'exception': None,
+            }
+
+        with patch(
+            'eventos.services.documentos.backends._module_status',
+            side_effect=module_status_side_effect,
+        ), patch(
+            'eventos.services.documentos.backends._check_word_com_availability',
+            return_value={'available': True, 'reason': ''},
+        ):
+            reset_document_backend_capabilities_cache()
+            capabilities = get_document_backend_capabilities()
+            docx_status = get_docx_backend_availability()
+            pdf_status = get_pdf_backend_availability()
+
+        self.assertTrue(capabilities['docx_available'])
+        self.assertFalse(capabilities['pdf_available'])
+        self.assertTrue(docx_status['available'])
+        self.assertFalse(pdf_status['available'])
+        self.assertIn('docx2pdf', pdf_status['message'])
+
+    def test_capabilities_reportam_pywin32_indisponivel_para_pdf(self):
+        def module_status_side_effect(module_name, *, label, install_hint=''):
+            if module_name == 'win32com.client':
+                return {
+                    'available': False,
+                    'module': None,
+                    'reason': 'pywin32 / win32com.client não está disponível neste ambiente. Instale pywin32.',
+                    'exception': ImportError('win32com ausente'),
+                }
+            return {
+                'available': True,
+                'module': object(),
+                'reason': '',
+                'exception': None,
+            }
+
+        with patch(
+            'eventos.services.documentos.backends._module_status',
+            side_effect=module_status_side_effect,
+        ):
+            reset_document_backend_capabilities_cache()
+            pdf_status = get_pdf_backend_availability()
+
+        self.assertFalse(pdf_status['available'])
+        self.assertIn('pywin32', pdf_status['message'])
+
+    def test_capabilities_reportam_word_com_indisponivel_para_pdf(self):
+        def module_status_side_effect(module_name, *, label, install_hint=''):
+            return {
+                'available': True,
+                'module': object(),
+                'reason': '',
+                'exception': None,
+            }
+
+        with patch(
+            'eventos.services.documentos.backends._module_status',
+            side_effect=module_status_side_effect,
+        ), patch(
+            'eventos.services.documentos.backends._check_word_com_availability',
+            return_value={
+                'available': False,
+                'reason': 'Microsoft Word / COM não está disponível para conversão PDF neste ambiente Windows (RuntimeError).',
+            },
+        ):
+            reset_document_backend_capabilities_cache()
+            pdf_status = get_pdf_backend_availability()
+
+        self.assertFalse(pdf_status['available'])
+        self.assertIn('Microsoft Word / COM', pdf_status['message'])
+
+    def test_download_docx_continua_funcionando_mesmo_quando_pdf_esta_indisponivel(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        def backend_side_effect(formato):
+            if getattr(formato, 'value', str(formato)) == 'pdf':
+                return {'available': False, 'message': 'Backend PDF indisponível neste ambiente atual.', 'reasons': []}
+            return {'available': True, 'message': '', 'reasons': []}
+
+        with patch(
+            'eventos.services.documentos.validators.get_document_backend_availability',
+            side_effect=backend_side_effect,
+        ):
+            response = self.client.get(
+                reverse(
+                    'eventos:oficio-documento-download',
+                    kwargs={'pk': oficio.pk, 'tipo_documento': 'oficio', 'formato': 'docx'},
+                )
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response['Content-Type'],
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        )
+
+    def test_tela_documentos_mostra_status_separados_por_formato(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        def backend_side_effect(formato):
+            if getattr(formato, 'value', str(formato)) == 'pdf':
+                return {
+                    'available': False,
+                    'message': 'docx2pdf não está instalado neste ambiente. Instale docx2pdf.',
+                    'reasons': ['docx2pdf não está instalado neste ambiente. Instale docx2pdf.'],
+                }
+            return {'available': True, 'message': '', 'reasons': []}
+
+        with patch(
+            'eventos.views.get_pdf_backend_availability',
+            return_value={
+                'available': False,
+                'message': 'docx2pdf não está instalado neste ambiente. Instale docx2pdf.',
+                'reasons': ['docx2pdf não está instalado neste ambiente. Instale docx2pdf.'],
+            },
+        ), patch(
+            'eventos.services.documentos.validators.get_document_backend_availability',
+            side_effect=backend_side_effect,
+        ):
+            response = self.client.get(reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        oficio_item = next(item for item in response.context['documentos'] if item['slug'] == 'oficio')
+        self.assertEqual(oficio_item['docx']['status'], 'available')
+        self.assertEqual(oficio_item['pdf']['status'], 'unavailable')
+        self.assertContains(response, 'DOCX: Dispon')
+        self.assertContains(response, 'PDF: Indispon')
+        self.assertContains(response, 'docx2pdf não está instalado')
+
+    def test_tela_documentos_abre_com_backend_docx_indisponivel(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        with patch(
+            'eventos.views.get_docx_backend_availability',
+            return_value={'available': False, 'message': 'Backend DOCX n?o instalado neste ambiente atual.'},
+        ), patch(
+            'eventos.services.documentos.validators.get_document_backend_availability',
+            return_value={'available': False, 'message': 'Backend DOCX n?o instalado neste ambiente atual.'},
+        ):
+            response = self.client.get(reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Backend DOCX')
+        self.assertContains(response, 'DOCX indispon')
+
+    def test_download_redireciona_com_mensagem_quando_backend_docx_indisponivel(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        with patch(
+            'eventos.services.documentos.validators.get_document_backend_availability',
+            return_value={'available': False, 'message': 'Backend DOCX n?o instalado neste ambiente atual.'},
+        ):
+            response = self.client.get(
+                reverse(
+                    'eventos:oficio-documento-download',
+                    kwargs={'pk': oficio.pk, 'tipo_documento': 'oficio', 'formato': 'docx'},
+                ),
+                follow=True,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Backend DOCX')
+        self.assertContains(response, 'Documentos do of')
+
+    def test_tela_documentos_abre_com_backend_pdf_indisponivel(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        def backend_side_effect(formato):
+            if getattr(formato, 'value', str(formato)) == 'pdf':
+                return {'available': False, 'message': 'Backend PDF indispon?vel neste ambiente atual.'}
+            return {'available': True, 'message': ''}
+
+        with patch(
+            'eventos.views.get_pdf_backend_availability',
+            return_value={'available': False, 'message': 'Backend PDF indispon?vel neste ambiente atual.'},
+        ), patch(
+            'eventos.services.documentos.validators.get_document_backend_availability',
+            side_effect=backend_side_effect,
+        ):
+            response = self.client.get(reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Backend PDF indispon')
+        self.assertContains(response, 'PDF indispon')
+
+    def test_download_pdf_redireciona_com_mensagem_quando_backend_pdf_indisponivel(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        def backend_side_effect(formato):
+            if getattr(formato, 'value', str(formato)) == 'pdf':
+                return {'available': False, 'message': 'Backend PDF indispon?vel neste ambiente atual.'}
+            return {'available': True, 'message': ''}
+
+        with patch(
+            'eventos.services.documentos.validators.get_document_backend_availability',
+            side_effect=backend_side_effect,
+        ):
+            response = self.client.get(
+                reverse(
+                    'eventos:oficio-documento-download',
+                    kwargs={'pk': oficio.pk, 'tipo_documento': 'oficio', 'formato': 'pdf'},
+                ),
+                follow=True,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Backend PDF indispon')
+        self.assertContains(response, 'Documentos do of')
+
+    def test_tela_documentos_abre_quando_schema_local_da_0018_ainda_nao_foi_aplicado(self):
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        status_schema = {
+            'available': False,
+            'message': 'Banco local desatualizado: aplique a migration 0018 do app eventos.',
+        }
+
+        with patch('eventos.views.get_oficio_justificativa_schema_status', return_value=status_schema), patch(
+            'eventos.services.documentos.validators.get_oficio_justificativa_schema_status',
+            return_value=status_schema,
+        ):
+            response = self.client.get(reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk}))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Banco local desatualizado')
+        self.assertContains(response, 'Indispon')
 
 
 class OficioStep1AjustesFinosTest(TestCase):
@@ -2899,7 +6283,12 @@ class OficioStep1AjustesFinosTest(TestCase):
         viajante = Viajante.objects.get(nome='VIAJANTE FLUXO')
         response_get = self.client.get(step1_url)
         self.assertEqual(response_get.status_code, 200)
-        self.assertContains(response_get, 'VIAJANTE FLUXO')
+        api_response = self.client.get(
+            reverse('eventos:oficio-step1-viajantes-api'),
+            {'q': 'FLUXO'},
+        )
+        self.assertEqual(api_response.status_code, 200)
+        self.assertEqual(api_response.json()['results'][0]['id'], viajante.pk)
         oficio.refresh_from_db()
         response_post = self.client.post(
             step1_url,

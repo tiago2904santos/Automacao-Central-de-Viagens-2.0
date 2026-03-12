@@ -2,6 +2,7 @@ import os
 import tempfile
 from decimal import Decimal
 from pathlib import Path
+from urllib.parse import quote
 from unittest.mock import patch, Mock
 
 from django.test import TestCase, Client
@@ -1464,16 +1465,61 @@ class ImportCoordenadasCidadesTest(TestCase):
 
 
 class SidebarSemEstadosCidadesTest(TestCase):
-    """Estados e Cidades não aparecem como itens do menu cadastros."""
+    """Estados e Cidades não aparecem como itens do menu."""
 
     def setUp(self):
         from core.navigation import get_sidebar_config
         self.config = get_sidebar_config()
 
     def test_cadastros_nao_tem_estados_nem_cidades(self):
-        cadastros_group = next((g for g in self.config if g['id'] == 'cadastros'), None)
-        self.assertIsNotNone(cadastros_group)
-        ids = [item['id'] for item in cadastros_group['items']]
-        self.assertNotIn('estados', ids)
-        self.assertNotIn('cidades', ids)
-        self.assertIn('configuracoes', ids)
+        viajantes_item = next((i for i in self.config if i['id'] == 'viajantes'), None)
+        veiculos_item = next((i for i in self.config if i['id'] == 'veiculos'), None)
+        configuracoes_item = next((i for i in self.config if i['id'] == 'configuracoes'), None)
+        self.assertIsNotNone(viajantes_item)
+        self.assertIsNotNone(veiculos_item)
+        self.assertIsNotNone(configuracoes_item)
+        viajantes_ids = [c['id'] for c in (viajantes_item.get('children') or [])]
+        veiculos_ids = [c['id'] for c in (veiculos_item.get('children') or [])]
+        self.assertNotIn('estados', viajantes_ids)
+        self.assertNotIn('cidades', viajantes_ids)
+        self.assertIn('viajantes-cargos', viajantes_ids)
+        self.assertIn('veiculos-gerenciamento', veiculos_ids)
+class VeiculoStep2ReturnFlowTest(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.user = User.objects.create_user(username='veiculo-next', password='veiculo-next')
+        self.combustivel = CombustivelVeiculo.objects.create(nome='DIESEL')
+
+    def test_veiculo_cadastrar_com_next_redireciona_para_step2_do_oficio(self):
+        self.client.login(username='veiculo-next', password='veiculo-next')
+        next_url = reverse('eventos:oficio-step2', kwargs={'pk': 123})
+        response = self.client.post(
+            f"{reverse('cadastros:veiculo-cadastrar')}?next={quote(next_url)}",
+            {
+                'placa': 'RET1234',
+                'modelo': 'RETORNO',
+                'combustivel': str(self.combustivel.pk),
+                'tipo': 'DESCARACTERIZADO',
+                'next': next_url,
+            },
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, next_url)
+
+    def test_veiculo_rascunho_preserva_next_no_return_url_da_sessao(self):
+        self.client.login(username='veiculo-next', password='veiculo-next')
+        next_url = reverse('eventos:oficio-step2', kwargs={'pk': 321})
+        response = self.client.post(
+            reverse('cadastros:veiculo-rascunho-ir-combustiveis'),
+            {
+                'placa': 'NXT1234',
+                'modelo': 'RASC NEXT',
+                'combustivel': str(self.combustivel.pk),
+                'tipo': 'DESCARACTERIZADO',
+                'next': next_url,
+            },
+            follow=False,
+        )
+        self.assertRedirects(response, reverse('cadastros:combustivel-lista'))
+        return_url = self.client.session.get('veiculo_form_return_url', '')
+        self.assertIn(f'next={quote(next_url, safe="")}', return_url)

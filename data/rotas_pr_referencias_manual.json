@@ -1,0 +1,137 @@
+[
+  {
+    "origem": "Curitiba",
+    "destino": "Pontal do Paraná",
+    "distancia_referencia_km": 119.4,
+    "tempo_referencia_min": 91,
+    "fonte_referencia": "Rome2Rio (opção Drive)",
+    "fonte_link": "https://www.rome2rio.com/s/Curitiba/Pontal-do-Paran%C3%A1",
+    "data_consulta": "2026-03-11"
+  },
+  {
+    "origem": "Curitiba",
+    "destino": "Ponta Grossa",
+    "distancia_referencia_km": 113.7,
+    "tempo_referencia_min": 90,
+    "fonte_referencia": "Rome2Rio (opção Drive)",
+    "fonte_link": "https://www.rome2rio.com/s/Curitiba/Ponta-Grossa",
+    "data_consulta": "2026-03-11"
+  },
+  {
+    "origem": "Curitiba",
+    "destino": "Telêmaco Borba",
+    "distancia_referencia_km": 243.2,
+    "tempo_referencia_min": 188,
+    "fonte_referencia": "Rome2Rio (opção Drive)",
+    "fonte_link": "https://www.rome2rio.com/s/Curitiba/Tel%C3%AAmaco-Borba",
+    "data_consulta": "2026-03-11"
+  },
+  {
+    "origem": "Curitiba",
+    "destino": "Londrina",
+    "distancia_referencia_km": 383.3,
+    "tempo_referencia_min": 304,
+    "fonte_referencia": "Rome2Rio (opção Drive)",
+    "fonte_link": "https://www.rome2rio.com/s/Curitiba/Londrina",
+    "data_consulta": "2026-03-11"
+  },
+  {
+    "origem": "Curitiba",
+    "destino": "Maringá",
+    "distancia_referencia_km": 424.6,
+    "tempo_referencia_min": 320,
+    "fonte_referencia": "Rome2Rio (opção Drive)",
+    "fonte_link": "https://www.rome2rio.com/s/Curitiba/Maring%C3%A1",
+    "data_consulta": "2026-03-11"
+  },
+  {
+    "origem": "Curitiba",
+    "destino": "Cianorte",
+    "distancia_referencia_km": 503.6,
+    "tempo_referencia_min": 372,
+    "fonte_referencia": "Rome2Rio (opção Drive)",
+    "fonte_link": "https://www.rome2rio.com/s/Curitiba/Cianorte",
+    "data_consulta": "2026-03-11"
+  },
+  {
+    "origem": "Curitiba",
+    "destino": "Palotina",
+    "distancia_referencia_km": 592.1,
+    "tempo_referencia_min": 466,
+    "fonte_referencia": "Rome2Rio (opção Drive)",
+    "fonte_link": "https://www.rome2rio.com/s/Curitiba/Palotina",
+    "data_consulta": "2026-03-11"
+  },
+  {
+    "origem": "Curitiba",
+    "destino": "Cascavel",
+    "distancia_referencia_km": 496.2,
+    "tempo_referencia_min": 393,
+    "fonte_referencia": "Rome2Rio (opção Drive)",
+    "fonte_link": "https://www.rome2rio.com/s/Curitiba/Cascavel",
+    "data_consulta": "2026-03-11"
+  },
+  {
+    "origem": "Curitiba",
+    "destino": "Foz do Iguaçu",
+    "distancia_referencia_km": 635.8,
+    "tempo_referencia_min": 492,
+    "fonte_referencia": "Rome2Rio (opção Drive)",
+    "fonte_link": "https://www.rome2rio.com/s/Curitiba/Foz-do-Igua%C3%A7u",
+    "data_consulta": "2026-03-11"
+  },
+  {
+    "origem": "Curitiba",
+    "destino": "Cruzeiro do Sul",
+    "distancia_referencia_km": 491.0,
+    "tempo_referencia_min": 413,
+    "fonte_referencia": "DistanciaCidades (rota de condução estimada)",
+    "fonte_link": "https://br.distanciacidades.net/distancia-de-curitiba-a-cruzeiro-do-sul-parana",
+    "data_consulta": "2026-03-11"
+  },
+  {
+    "origem": "Curitiba",
+    "destino": "Guarapuava",
+    "distancia_referencia_km": 254.3,
+    "tempo_referencia_min": 204,
+    "fonte_referencia": "Rome2Rio (opção Drive)",
+    "fonte_link": "https://www.rome2rio.com/s/Curitiba/Guarapuava",
+    "data_consulta": "2026-03-11"
+  },
+  {
+    "origem": "Curitiba",
+    "destino": "Paranaguá",
+    "distancia_referencia_km": 90.5,
+    "tempo_referencia_min": 65,
+    "fonte_referencia": "Rome2Rio (opção Drive)",
+    "fonte_link": "https://www.rome2rio.com/s/Curitiba/Paranagu%C3%A1",
+    "data_consulta": "2026-03-11"
+  },
+  {
+    "origem": "Curitiba",
+    "destino": "Umuarama",
+    "distancia_referencia_km": 553.7,
+    "tempo_referencia_min": 455,
+    "fonte_referencia": "Rome2Rio (opção Drive)",
+    "fonte_link": "https://www.rome2rio.com/s/Curitiba/Umuarama",
+    "data_consulta": "2026-03-11"
+  },
+  {
+    "origem": "Curitiba",
+    "destino": "Apucarana",
+    "distancia_referencia_km": 362.4,
+    "tempo_referencia_min": 279,
+    "fonte_referencia": "Rome2Rio (opção Drive)",
+    "fonte_link": "https://www.rome2rio.com/s/Curitiba/Apucarana",
+    "data_consulta": "2026-03-11"
+  },
+  {
+    "origem": "Curitiba",
+    "destino": "Francisco Beltrão",
+    "distancia_referencia_km": 468.6,
+    "tempo_referencia_min": 373,
+    "fonte_referencia": "Rome2Rio (opção Drive)",
+    "fonte_link": "https://www.rome2rio.com/s/Curitiba/Francisco-Beltr%C3%A3o",
+    "data_consulta": "2026-03-11"
+  }
+]

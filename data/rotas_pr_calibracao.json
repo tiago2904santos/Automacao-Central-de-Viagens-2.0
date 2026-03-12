@@ -1,0 +1,68 @@
+{
+  "meta": {
+    "fonte": "benchmark_pr_2026_03_11",
+    "descricao": "Calibracao inicial do ETA tecnico do Parana baseada no benchmark local route-aware.",
+    "observacao": "Ajustes aplicados sobre a duracao do provider antes do arredondamento final."
+  },
+  "ajuste_corredor_macro_min": {
+    "BR277_LITORAL": 5,
+    "BR277_OESTE": -25,
+    "NORTE_CAFE": -25,
+    "NOROESTE_INTERIOR": -15,
+    "CAMPOS_GERAIS": -15,
+    "PADRAO": 0
+  },
+  "ajuste_corredor_fino_min": {
+    "PONTAL_LITORAL": 11,
+    "PARANAGUA": -10,
+    "MATINHOS": 0,
+    "GUARATUBA": 0,
+    "PONTA_GROSSA": 5,
+    "CASTRO": 0,
+    "TELEMACO_BORBA": -7,
+    "IRATI": 0,
+    "UNIAO_DA_VITORIA": 0,
+    "MARINGA": 0,
+    "LONDRINA": -1,
+    "APUCARANA": -1,
+    "JACAREZINHO": 0,
+    "CAMPO_MOURAO": 0,
+    "PARANAVAI": 0,
+    "CIANORTE": -18,
+    "UMUARAMA": 5,
+    "CRUZEIRO_DO_SUL": 18,
+    "PALOTINA": 1,
+    "TOLEDO": 0,
+    "CASCAVEL": 8,
+    "FOZ_DO_IGUACU": -3,
+    "GUARAPUAVA": 4,
+    "FRANCISCO_BELTRAO": 8,
+    "PATO_BRANCO": 0,
+    "PADRAO": 0
+  },
+  "ajuste_faixa_distancia_min": {
+    "ate_60": 0,
+    "61_120": 0,
+    "121_250": -5,
+    "251_400": -5,
+    "401_700": -10,
+    "acima_700": 0
+  },
+  "ajuste_atributos_min": {
+    "serra": 5,
+    "travessia_urbana": 0,
+    "pedagio": 0
+  },
+  "ajuste_ref_predominante_min": {
+    "BR-277": -5,
+    "BR-376": 0,
+    "BR-369": 0,
+    "BR-487": 0,
+    "BR-373": 0,
+    "PR-407": 0,
+    "PR-160": 0,
+    "PR-323": 0,
+    "PR-317": 0,
+    "PR-483": 0
+  }
+}

@@ -1,0 +1,133 @@
+{% extends 'base.html' %}
+
+{% block title %}Oficios - Central de Viagens{% endblock %}
+{% block page_title %}Oficios{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+    <div class="page-header-cadastro">
+        <div>
+            <h1 class="mb-1">Lista global de oficios</h1>
+            <p class="text-muted mb-0">Acompanhe todos os oficios do sistema, com acesso direto ao wizard, documentos e evento vinculado.</p>
+        </div>
+        <div class="d-flex gap-2 flex-wrap">
+            <a href="{% url 'eventos:lista' %}" class="btn btn-outline-secondary">Ir para eventos</a>
+            <a href="{% url 'eventos:documentos-hub' %}" class="btn btn-outline-secondary">Central documental</a>
+        </div>
+    </div>
+
+    <div class="card filter-card">
+        <div class="card-body py-3">
+            <form method="get" class="row g-2 align-items-end">
+                <div class="col-12 col-xl-3">
+                    <label class="form-label small text-muted">Busca ampla</label>
+                    <input type="text" name="q" class="form-control form-control-sm" value="{{ filters.q }}" placeholder="Evento, motivo, viajante ou destino">
+                </div>
+                <div class="col-6 col-md-3 col-xl-2">
+                    <label class="form-label small text-muted">Evento</label>
+                    <select name="evento_id" class="form-select form-select-sm">
+                        <option value="">Todos</option>
+                        {% for evento in eventos_choices %}
+                        <option value="{{ evento.pk }}" {% if filters.evento_id == evento.pk|stringformat:"s" %}selected{% endif %}>{{ evento.titulo|default:"(sem titulo)" }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-6 col-md-3 col-xl-1">
+                    <label class="form-label small text-muted">Status</label>
+                    <select name="status" class="form-select form-select-sm">
+                        <option value="">Todos</option>
+                        {% for value, label in status_choices %}
+                        <option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-6 col-md-2 col-xl-1">
+                    <label class="form-label small text-muted">Ano</label>
+                    <input type="text" name="ano" class="form-control form-control-sm" value="{{ filters.ano }}" placeholder="2026">
+                </div>
+                <div class="col-6 col-md-2 col-xl-1">
+                    <label class="form-label small text-muted">Numero</label>
+                    <input type="text" name="numero" class="form-control form-control-sm" value="{{ filters.numero }}" placeholder="15">
+                </div>
+                <div class="col-6 col-md-3 col-xl-2">
+                    <label class="form-label small text-muted">Protocolo</label>
+                    <input type="text" name="protocolo" class="form-control form-control-sm" value="{{ filters.protocolo }}" placeholder="12.345.678-9">
+                </div>
+                <div class="col-6 col-md-3 col-xl-2">
+                    <label class="form-label small text-muted">Destino</label>
+                    <input type="text" name="destino" class="form-control form-control-sm" value="{{ filters.destino }}" placeholder="Curitiba, Capital, DF...">
+                </div>
+                <div class="col-12 col-md-auto">
+                    <button type="submit" class="btn btn-outline-primary btn-sm">Filtrar</button>
+                    <a href="{% url 'eventos:oficios-global' %}" class="btn btn-outline-secondary btn-sm">Limpar</a>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="table-responsive">
+            <table class="table table-hover table-cadastro mb-0 align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>Oficio</th>
+                        <th>Protocolo</th>
+                        <th>Evento</th>
+                        <th>Destino</th>
+                        <th>Status</th>
+                        <th>Atualizado</th>
+                        <th class="text-end" width="300">Acoes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for oficio in object_list %}
+                    <tr>
+                        <td>
+                            <div class="fw-semibold">{{ oficio.numero_formatado }}</div>
+                            <div class="small text-muted">{{ oficio.data_criacao_formatada_br }}</div>
+                        </td>
+                        <td>{{ oficio.protocolo_formatado|default:"—" }}</td>
+                        <td>
+                            {% if oficio.evento %}
+                            <a href="{{ oficio.evento_url }}" class="text-decoration-none">{{ oficio.evento.titulo|default:"(sem titulo)" }}</a>
+                            {% else %}
+                            <span class="text-muted">Sem evento</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <div>{{ oficio.destinos_display }}</div>
+                            <div class="small text-muted">{{ oficio.get_tipo_destino_display|default:"Tipo nao definido" }}</div>
+                        </td>
+                        <td>
+                            {% if oficio.status == 'FINALIZADO' %}
+                            <span class="badge bg-success">Finalizado</span>
+                            {% else %}
+                            <span class="badge bg-warning text-dark">Rascunho</span>
+                            {% endif %}
+                            <div class="small mt-1 text-muted">Justificativa: {{ oficio.justificativa_info.status_label|lower }}</div>
+                        </td>
+                        <td>{{ oficio.updated_at|date:"d/m/Y H:i" }}</td>
+                        <td class="text-end">
+                            <a href="{{ oficio.edicao_url }}" class="btn btn-sm btn-outline-primary">Abrir</a>
+                            <a href="{{ oficio.documentos_url }}" class="btn btn-sm btn-outline-secondary">Documentos</a>
+                            {% if oficio.evento %}
+                            <a href="{{ oficio.evento_url }}" class="btn btn-sm btn-outline-secondary">Evento</a>
+                            {% endif %}
+                            <a href="{{ oficio.excluir_url }}" class="btn btn-sm btn-outline-danger">Excluir</a>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="7" class="text-center text-muted py-5">
+                            Nenhum oficio encontrado com os filtros atuais.
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    {% include 'includes/pagination.html' %}
+</div>
+{% endblock %}

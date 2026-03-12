@@ -1,0 +1,121 @@
+{% extends 'base.html' %}
+
+{% block title %}Justificativa do ofício — Central de Viagens{% endblock %}
+{% block page_title %}Justificativa do ofício{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <h1 class="h4 mb-0">Justificativa do ofício {{ oficio.numero_formatado|default:"—" }}</h1>
+    <div class="d-flex gap-2">
+      <a href="{{ voltar_step4_url }}" class="btn btn-outline-secondary btn-sm">Voltar ao Step 4</a>
+      {% if evento %}
+      <a href="{% url 'eventos:guiado-etapa-3' evento.pk %}" class="btn btn-outline-secondary btn-sm">Voltar ao evento</a>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card mb-4">
+    <div class="card-body">
+      <dl class="row mb-0">
+        <dt class="col-sm-3">Número / Ano</dt><dd class="col-sm-9">{{ oficio.numero_formatado|default:"—" }}</dd>
+        <dt class="col-sm-3">Protocolo</dt><dd class="col-sm-9">{{ oficio.protocolo_formatado|default:"—" }}</dd>
+        <dt class="col-sm-3">Data de criação</dt><dd class="col-sm-9">{{ oficio.data_criacao_formatada_br|default:"—" }}</dd>
+        <dt class="col-sm-3">Obrigatoriedade</dt>
+        <dd class="col-sm-9">
+          {% if justificativa_info.required %}
+          <span class="badge bg-danger">Obrigatória</span>
+          {% else %}
+          <span class="badge bg-secondary">Opcional</span>
+          {% endif %}
+        </dd>
+        <dt class="col-sm-3">Prazo mínimo</dt><dd class="col-sm-9">{{ justificativa_info.prazo_minimo_dias }} dia(s)</dd>
+        <dt class="col-sm-3">Antecedência</dt>
+        <dd class="col-sm-9">
+          {% if justificativa_info.dias_antecedencia is not None %}
+          {{ justificativa_info.dias_antecedencia }} dia(s)
+          {% else %}
+          Aguardando dados válidos do Step 3
+          {% endif %}
+        </dd>
+        <dt class="col-sm-3">Primeira saída</dt><dd class="col-sm-9">{{ justificativa_info.primeira_saida_display|default:"—" }}</dd>
+        <dt class="col-sm-3">Resumo da viagem</dt>
+        <dd class="col-sm-9">
+          {% if step3_preview.tem_trechos %}
+            {% for trecho in step3_preview.trechos %}
+            <div>{{ trecho.rota }}{% if trecho.saida %} — Saída: {{ trecho.saida }}{% endif %}{% if trecho.chegada %} — Chegada: {{ trecho.chegada }}{% endif %}</div>
+            {% endfor %}
+            {% if step3_preview.retorno.show %}
+            <div>Retorno: {{ step3_preview.retorno.rota }}{% if step3_preview.retorno.saida %} — Saída: {{ step3_preview.retorno.saida }}{% endif %}{% if step3_preview.retorno.chegada %} — Chegada: {{ step3_preview.retorno.chegada }}{% endif %}</div>
+            {% endif %}
+          {% else %}
+          Ainda não há trechos válidos salvos no Step 3.
+          {% endif %}
+        </dd>
+      </dl>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-body">
+      <form method="post">
+        {% csrf_token %}
+        <input type="hidden" name="next" value="{{ next_url }}">
+        <div class="row g-3">
+          <div class="col-lg-6">
+            <label for="id_modelo_justificativa" class="form-label">{{ form.modelo_justificativa.label }}</label>
+            <div class="d-flex gap-2">
+              {{ form.modelo_justificativa }}
+              <button type="button" class="btn btn-outline-secondary" id="btnAplicarModelo">Aplicar modelo</button>
+            </div>
+            {% if form.modelo_justificativa.errors %}<div class="invalid-feedback d-block">{{ form.modelo_justificativa.errors.0 }}</div>{% endif %}
+            <div class="form-text">Use um modelo pronto e ajuste o texto final como necessário.</div>
+          </div>
+          <div class="col-lg-6 d-flex align-items-end justify-content-lg-end">
+            <a href="{{ modelos_justificativa_url }}" class="btn btn-outline-primary">Gerenciar modelos de justificativa</a>
+          </div>
+          <div class="col-12">
+            <label for="id_justificativa_texto" class="form-label">{{ form.justificativa_texto.label }}</label>
+            {{ form.justificativa_texto }}
+            {% if form.justificativa_texto.errors %}<div class="invalid-feedback d-block">{{ form.justificativa_texto.errors.0 }}</div>{% endif %}
+          </div>
+        </div>
+        <div class="d-flex gap-2 flex-wrap mt-4">
+          <button type="submit" class="btn btn-primary">Salvar justificativa</button>
+          <a href="{{ voltar_step4_url }}" class="btn btn-outline-secondary">Voltar ao Step 4</a>
+          {% if evento %}
+          <a href="{% url 'eventos:guiado-etapa-3' evento.pk %}" class="btn btn-outline-secondary">Voltar ao evento</a>
+          {% endif %}
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  (function() {
+    const select = document.getElementById('id_modelo_justificativa');
+    const textarea = document.getElementById('id_justificativa_texto');
+    const button = document.getElementById('btnAplicarModelo');
+    const template = "{% url 'eventos:modelos-justificativa-texto-api' 0 %}";
+
+    async function aplicarModelo() {
+      if (!select || !textarea || !select.value) {
+        return;
+      }
+      const response = await fetch(template.replace('/0/texto/', '/' + select.value + '/texto/'));
+      if (!response.ok) {
+        return;
+      }
+      const payload = await response.json();
+      if (payload.ok) {
+        textarea.value = payload.texto || '';
+      }
+    }
+
+    button?.addEventListener('click', aplicarModelo);
+  })();
+</script>
+{% endblock %}

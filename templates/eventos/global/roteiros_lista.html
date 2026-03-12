@@ -1,0 +1,109 @@
+{% extends 'base.html' %}
+
+{% block title %}Roteiros - Central de Viagens{% endblock %}
+{% block page_title %}Roteiros{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+    <div class="page-header-cadastro">
+        <div>
+            <h1 class="mb-1">Lista global de roteiros</h1>
+            <p class="text-muted mb-0">Biblioteca operacional dos roteiros criados na etapa 2 dos eventos.</p>
+        </div>
+        <div class="d-flex gap-2 flex-wrap">
+            {% if novo_roteiro_url %}
+            <a href="{{ novo_roteiro_url }}" class="btn btn-primary">Novo roteiro neste evento</a>
+            {% else %}
+            <span class="btn btn-outline-secondary disabled" aria-disabled="true">Selecione um evento para criar</span>
+            {% endif %}
+            <a href="{% url 'eventos:lista' %}" class="btn btn-outline-secondary">Eventos</a>
+        </div>
+    </div>
+
+    <div class="card filter-card">
+        <div class="card-body py-3">
+            <form method="get" class="row g-2 align-items-end">
+                <div class="col-12 col-lg-4">
+                    <label class="form-label small text-muted">Busca</label>
+                    <input type="text" name="q" class="form-control form-control-sm" value="{{ filters.q }}" placeholder="Evento, sede ou destino">
+                </div>
+                <div class="col-12 col-md-4 col-lg-4">
+                    <label class="form-label small text-muted">Evento</label>
+                    <select name="evento_id" class="form-select form-select-sm">
+                        <option value="">Todos</option>
+                        {% for evento in eventos_choices %}
+                        <option value="{{ evento.pk }}" {% if filters.evento_id == evento.pk|stringformat:"s" %}selected{% endif %}>{{ evento.titulo|default:"(sem titulo)" }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-6 col-md-3 col-lg-2">
+                    <label class="form-label small text-muted">Status</label>
+                    <select name="status" class="form-select form-select-sm">
+                        <option value="">Todos</option>
+                        {% for value, label in status_choices %}
+                        <option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-6 col-md-auto">
+                    <button type="submit" class="btn btn-outline-primary btn-sm">Filtrar</button>
+                    <a href="{% url 'eventos:roteiros-global' %}" class="btn btn-outline-secondary btn-sm">Limpar</a>
+                </div>
+            </form>
+            {% if selected_event %}
+            <div class="small text-muted mt-2">O botao de novo roteiro usa o evento atualmente filtrado.</div>
+            {% endif %}
+        </div>
+    </div>
+
+    <div class="card">
+        <div class="table-responsive">
+            <table class="table table-hover table-cadastro mb-0 align-middle">
+                <thead class="table-light">
+                    <tr>
+                        <th>Evento</th>
+                        <th>Sede</th>
+                        <th>Destinos</th>
+                        <th>Status</th>
+                        <th>Oficios ligados</th>
+                        <th class="text-end" width="260">Acoes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for roteiro in object_list %}
+                    <tr>
+                        <td><a href="{{ roteiro.evento_url }}" class="text-decoration-none">{{ roteiro.evento.titulo|default:"(sem titulo)" }}</a></td>
+                        <td>{{ roteiro.origem_cidade.nome|default:roteiro.origem_estado.sigla|default:"—" }}</td>
+                        <td>
+                            <div>{{ roteiro.destinos_display }}</div>
+                            <div class="small text-muted">
+                                {% if roteiro.saida_dt %}{{ roteiro.saida_dt|date:"d/m/Y H:i" }}{% else %}Sem horario inicial{% endif %}
+                            </div>
+                        </td>
+                        <td>
+                            {% if roteiro.status == 'FINALIZADO' %}
+                            <span class="badge bg-success">Finalizado</span>
+                            {% else %}
+                            <span class="badge bg-warning text-dark">Rascunho</span>
+                            {% endif %}
+                        </td>
+                        <td>{{ roteiro.oficios_count }}</td>
+                        <td class="text-end">
+                            <a href="{{ roteiro.editar_url }}" class="btn btn-sm btn-outline-primary">Editar</a>
+                            <a href="{{ roteiro.etapa_url }}" class="btn btn-sm btn-outline-secondary">Etapa 2</a>
+                            <a href="{{ roteiro.oficios_url }}" class="btn btn-sm btn-outline-secondary">Usar no oficio</a>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr>
+                        <td colspan="6" class="text-center text-muted py-5">Nenhum roteiro encontrado.</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    {% include 'includes/pagination.html' %}
+</div>
+{% endblock %}

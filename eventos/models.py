@@ -1,3 +1,4 @@
+from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, models, transaction
 from django.utils import timezone
@@ -181,6 +182,202 @@ class EventoParticipante(models.Model):
         return f'{self.evento_id} - {self.viajante}'
 
 
+class EventoFundamentacao(models.Model):
+    """
+    Dados da Etapa 4 do evento: Fundamentação / PT-OS.
+    Um registro por evento (1:1).
+    Pendente: sem registro; Em andamento: registro com tipo ou texto incompleto; OK: tipo + texto preenchidos.
+    """
+    TIPO_PT = 'PT'
+    TIPO_OS = 'OS'
+    TIPO_CHOICES = [
+        (TIPO_PT, 'Plano de Trabalho'),
+        (TIPO_OS, 'Ordem de Serviço'),
+    ]
+
+    evento = models.OneToOneField(
+        Evento,
+        on_delete=models.CASCADE,
+        related_name='fundamentacao',
+        verbose_name='Evento',
+    )
+    tipo_documento = models.CharField(
+        'Tipo do documento',
+        max_length=2,
+        choices=TIPO_CHOICES,
+        blank=True,
+        default='',
+    )
+    texto_fundamentacao = models.TextField(
+        'Texto da fundamentação',
+        blank=True,
+        default='',
+        help_text='Fundamentação do evento para fins de Plano de Trabalho ou Ordem de Serviço.',
+    )
+    observacoes_pt_os = models.TextField(
+        'Observações (PT-OS)',
+        blank=True,
+        default='',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Fundamentação do evento'
+        verbose_name_plural = 'Fundamentações do evento'
+
+    def __str__(self):
+        return f'Fundamentação — {self.evento}'
+
+    @property
+    def concluido(self):
+        """True quando tipo e texto da fundamentação estiverem preenchidos."""
+        tipo_ok = bool((self.tipo_documento or '').strip())
+        texto_ok = bool((self.texto_fundamentacao or '').strip())
+        return tipo_ok and texto_ok
+
+    @property
+    def em_andamento(self):
+        """True quando existe registro mas ainda não está concluído (salvo incompleto)."""
+        return not self.concluido and (
+            bool((self.tipo_documento or '').strip()) or bool((self.texto_fundamentacao or '').strip())
+        )
+
+
+class EventoTermoParticipante(models.Model):
+    """
+    Situação do termo (Etapa 5) por participante do evento.
+    Participantes = viajantes que constam em algum ofício do evento.
+    Um registro por (evento, viajante). Status: pendente, dispensado, gerado ou concluído.
+    """
+    STATUS_PENDENTE = 'PENDENTE'
+    STATUS_DISPENSADO = 'DISPENSADO'
+    STATUS_GERADO = 'GERADO'
+    STATUS_CONCLUIDO = 'CONCLUIDO'
+    STATUS_CHOICES = [
+        (STATUS_PENDENTE, 'Pendente'),
+        (STATUS_DISPENSADO, 'Dispensado'),
+        (STATUS_GERADO, 'Gerado'),
+        (STATUS_CONCLUIDO, 'Concluído'),
+    ]
+    STATUS_FINALIZADORES = {STATUS_DISPENSADO, STATUS_CONCLUIDO}
+
+    MODALIDADE_COMPLETO = 'COMPLETO'
+    MODALIDADE_SEMIPREENCHIDO = 'SEMIPREENCHIDO'
+    MODALIDADE_CHOICES = [
+        (MODALIDADE_COMPLETO, 'Completo'),
+        (MODALIDADE_SEMIPREENCHIDO, 'Semipreenchido'),
+    ]
+
+    FORMATO_DOCX = 'docx'
+    FORMATO_PDF = 'pdf'
+    FORMATO_CHOICES = [
+        (FORMATO_DOCX, 'DOCX'),
+        (FORMATO_PDF, 'PDF'),
+    ]
+
+    evento = models.ForeignKey(
+        Evento,
+        on_delete=models.CASCADE,
+        related_name='termos_participantes',
+        verbose_name='Evento',
+    )
+    viajante = models.ForeignKey(
+        'cadastros.Viajante',
+        on_delete=models.CASCADE,
+        related_name='eventos_termo_status',
+        verbose_name='Viajante',
+    )
+    status = models.CharField(
+        'Status do termo',
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_PENDENTE,
+    )
+    modalidade = models.CharField(
+        'Modalidade do termo',
+        max_length=20,
+        choices=MODALIDADE_CHOICES,
+        default=MODALIDADE_COMPLETO,
+    )
+    ultima_geracao_em = models.DateTimeField(
+        'Última geração em',
+        null=True,
+        blank=True,
+    )
+    ultimo_formato_gerado = models.CharField(
+        'Último formato gerado',
+        max_length=10,
+        choices=FORMATO_CHOICES,
+        blank=True,
+        default='',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['evento', 'viajante__nome']
+        verbose_name = 'Termo do participante (evento)'
+        verbose_name_plural = 'Termos dos participantes (evento)'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['evento', 'viajante'],
+                name='eventos_eventotermoparticipante_evento_viajante_unique',
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f'{self.evento_id} — {self.viajante} — '
+            f'{self.get_status_display()} — {self.get_modalidade_display()}'
+        )
+
+
+class EventoFinalizacao(models.Model):
+    """
+    Dados da Etapa 6 do evento: Finalização.
+    Um registro por evento (1:1). Concluído quando finalizado_em estiver preenchido.
+    """
+    evento = models.OneToOneField(
+        Evento,
+        on_delete=models.CASCADE,
+        related_name='finalizacao',
+        verbose_name='Evento',
+    )
+    observacoes_finais = models.TextField(
+        'Observações finais',
+        blank=True,
+        default='',
+    )
+    finalizado_em = models.DateTimeField(
+        'Finalizado em',
+        null=True,
+        blank=True,
+    )
+    finalizado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='eventos_finalizados',
+        verbose_name='Finalizado por',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Finalização do evento'
+        verbose_name_plural = 'Finalizações do evento'
+
+    def __str__(self):
+        return f'Finalização — {self.evento}'
+
+    @property
+    def concluido(self):
+        """True quando o evento foi marcado como finalizado (finalizado_em preenchido)."""
+        return self.finalizado_em is not None
+
+
 class ModeloMotivoViagem(models.Model):
     """
     Modelos reutilizáveis de motivo de viagem.
@@ -230,6 +427,31 @@ class ModeloMotivoViagem(models.Model):
         super().save(*args, **kwargs)
 
 
+class ModeloJustificativa(models.Model):
+    """Modelos reutilizáveis de justificativa do ofício."""
+
+    nome = models.CharField('Nome do modelo', max_length=200)
+    texto = models.TextField('Texto da justificativa')
+    padrao = models.BooleanField('Padrão', default=False)
+    ativo = models.BooleanField('Ativo', default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['nome']
+        verbose_name = 'Modelo de justificativa'
+        verbose_name_plural = 'Modelos de justificativa'
+
+    def __str__(self):
+        return self.nome
+
+    def save(self, *args, **kwargs):
+        self.nome = (self.nome or '').strip()
+        if self.padrao:
+            ModeloJustificativa.objects.exclude(pk=self.pk).update(padrao=False)
+        super().save(*args, **kwargs)
+
+
 class Oficio(models.Model):
     """
     Ofício vinculado a um evento.
@@ -267,11 +489,25 @@ class Oficio(models.Model):
         (TIPO_VIATURA_CARACTERIZADA, 'Caracterizada'),
         (TIPO_VIATURA_DESCARACTERIZADA, 'Descaracterizada'),
     ]
+    ROTEIRO_MODO_EVENTO = 'EVENTO_EXISTENTE'
+    ROTEIRO_MODO_PROPRIO = 'ROTEIRO_PROPRIO'
+    ROTEIRO_MODO_CHOICES = [
+        (ROTEIRO_MODO_EVENTO, 'Usar roteiro existente do evento'),
+        (ROTEIRO_MODO_PROPRIO, 'Criar novo roteiro para este ofício'),
+    ]
 
     # Vínculos
     evento = models.ForeignKey(
         Evento, on_delete=models.CASCADE, related_name='oficios',
         verbose_name='Evento', null=True, blank=True
+    )
+    roteiro_evento = models.ForeignKey(
+        'RoteiroEvento',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='oficios',
+        verbose_name='Roteiro do evento selecionado',
     )
     viajantes = models.ManyToManyField(
         'cadastros.Viajante', related_name='oficios', blank=True,
@@ -299,7 +535,16 @@ class Oficio(models.Model):
         ModeloMotivoViagem, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='oficios', verbose_name='Modelo de motivo'
     )
+    justificativa_modelo = models.ForeignKey(
+        ModeloJustificativa,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='oficios',
+        verbose_name='Modelo de justificativa',
+    )
     motivo = models.TextField('Motivo', blank=True, default='')
+    justificativa_texto = models.TextField('Justificativa', blank=True, default='')
     custeio_tipo = models.CharField(
         'Custeio', max_length=30, choices=CUSTEIO_CHOICES, default=CUSTEIO_UNIDADE, blank=True
     )
@@ -308,6 +553,29 @@ class Oficio(models.Model):
     )
     tipo_destino = models.CharField(
         'Tipo destino', max_length=20, choices=TIPO_DESTINO_CHOICES, blank=True, default=''
+    )
+    roteiro_modo = models.CharField(
+        'Modo do roteiro',
+        max_length=20,
+        choices=ROTEIRO_MODO_CHOICES,
+        default=ROTEIRO_MODO_PROPRIO,
+        blank=True,
+    )
+    estado_sede = models.ForeignKey(
+        Estado,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='oficios_sede',
+        verbose_name='Estado sede',
+    )
+    cidade_sede = models.ForeignKey(
+        Cidade,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='oficios_sede',
+        verbose_name='Cidade sede',
     )
 
     # Transporte (Step 2) - texto/cópia além do FK veículo
@@ -318,6 +586,7 @@ class Oficio(models.Model):
         'Tipo viatura', max_length=20, choices=TIPO_VIATURA_CHOICES,
         default=TIPO_VIATURA_DESCARACTERIZADA, blank=True
     )
+    porte_transporte_armas = models.BooleanField('Porte/transporte de armas', default=True)
 
     # Motorista
     motorista = models.CharField('Motorista (nome)', max_length=120, blank=True, default='')
@@ -326,6 +595,15 @@ class Oficio(models.Model):
     motorista_oficio_numero = models.PositiveIntegerField('Nº ofício motorista', null=True, blank=True)
     motorista_oficio_ano = models.PositiveIntegerField('Ano ofício motorista', null=True, blank=True)
     motorista_protocolo = models.CharField('Protocolo motorista', max_length=80, blank=True, default='')
+    retorno_saida_cidade = models.CharField('Retorno - cidade de saída', max_length=120, blank=True, default='')
+    retorno_saida_data = models.DateField('Retorno - data de saída', null=True, blank=True)
+    retorno_saida_hora = models.TimeField('Retorno - hora de saída', null=True, blank=True)
+    retorno_chegada_cidade = models.CharField('Retorno - cidade de chegada', max_length=120, blank=True, default='')
+    retorno_chegada_data = models.DateField('Retorno - data de chegada', null=True, blank=True)
+    retorno_chegada_hora = models.TimeField('Retorno - hora de chegada', null=True, blank=True)
+    quantidade_diarias = models.CharField('Quantidade de diárias', max_length=120, blank=True, default='')
+    valor_diarias = models.CharField('Valor das diárias', max_length=80, blank=True, default='')
+    valor_diarias_extenso = models.TextField('Valor das diárias por extenso', blank=True, default='')
 
     status = models.CharField(
         'Status', max_length=20, choices=STATUS_CHOICES, default=STATUS_RASCUNHO, db_index=True
@@ -401,6 +679,17 @@ class Oficio(models.Model):
         self.protocolo = self.normalize_protocolo(self.protocolo)
         if self.protocolo and len(self.protocolo) != 9:
             raise ValidationError({'protocolo': 'Protocolo deve estar no formato XX.XXX.XXX-X.'})
+        # Normalizar e validar protocolo do motorista quando motorista carona
+        self.motorista_protocolo = self.normalize_protocolo(self.motorista_protocolo)
+        if self.motorista_carona:
+            if not (self.motorista_protocolo or '').strip():
+                raise ValidationError({
+                    'motorista_protocolo': 'Informe o protocolo do motorista (formato XX.XXX.XXX-X).',
+                })
+            if len(self.motorista_protocolo) != 9:
+                raise ValidationError({
+                    'motorista_protocolo': 'Protocolo do motorista deve ter 9 dígitos (formato XX.XXX.XXX-X).',
+                })
         if not self.data_criacao:
             self.data_criacao = timezone.localdate()
         if self.numero and not self.ano:
@@ -415,6 +704,11 @@ class Oficio(models.Model):
         self.protocolo = self.normalize_protocolo(self.protocolo)
         if self.protocolo and len(self.protocolo) != 9:
             raise ValidationError({'protocolo': 'Protocolo deve estar no formato XX.XXX.XXX-X.'})
+        self.motorista_protocolo = self.normalize_protocolo(self.motorista_protocolo)
+        if self.motorista_carona and self.motorista_protocolo and len(self.motorista_protocolo) != 9:
+            raise ValidationError({
+                'motorista_protocolo': 'Protocolo do motorista deve ter 9 dígitos (formato XX.XXX.XXX-X).',
+            })
         if not self.data_criacao:
             self.data_criacao = timezone.localdate()
         if self.numero and not self.ano:
@@ -444,6 +738,91 @@ class Oficio(models.Model):
         if not self.data_criacao:
             return EMPTY_MASK_DISPLAY
         return self.data_criacao.strftime('%d/%m/%Y')
+
+
+class OficioTrecho(models.Model):
+    """Trecho de ida do ofício. O retorno permanece separado no próprio Ofício."""
+
+    oficio = models.ForeignKey(
+        Oficio,
+        on_delete=models.CASCADE,
+        related_name='trechos',
+        verbose_name='Ofício',
+    )
+    ordem = models.PositiveIntegerField('Ordem', default=0)
+    origem_estado = models.ForeignKey(
+        Estado,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='oficio_trechos_origem',
+        verbose_name='Estado origem',
+    )
+    origem_cidade = models.ForeignKey(
+        Cidade,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='oficio_trechos_origem',
+        verbose_name='Cidade origem',
+    )
+    destino_estado = models.ForeignKey(
+        Estado,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='oficio_trechos_destino',
+        verbose_name='Estado destino',
+    )
+    destino_cidade = models.ForeignKey(
+        Cidade,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='oficio_trechos_destino',
+        verbose_name='Cidade destino',
+    )
+    saida_data = models.DateField('Saída - data', null=True, blank=True)
+    saida_hora = models.TimeField('Saída - hora', null=True, blank=True)
+    chegada_data = models.DateField('Chegada - data', null=True, blank=True)
+    chegada_hora = models.TimeField('Chegada - hora', null=True, blank=True)
+    distancia_km = models.DecimalField(
+        'Distância (km)',
+        max_digits=8,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    duracao_estimada_min = models.PositiveIntegerField('Duração estimada (min)', null=True, blank=True)
+    tempo_cru_estimado_min = models.PositiveIntegerField('Tempo cru estimado (min)', null=True, blank=True)
+    tempo_adicional_min = models.IntegerField('Tempo adicional (min)', null=True, blank=True, default=0)
+    rota_fonte = models.CharField('Fonte da rota', max_length=30, blank=True, default='')
+    rota_calculada_em = models.DateTimeField('Rota calculada em', null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['ordem', 'id']
+        verbose_name = 'Trecho do ofício'
+        verbose_name_plural = 'Trechos do ofício'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['oficio', 'ordem'],
+                name='eventos_oficiotrecho_oficio_ordem_unique',
+            )
+        ]
+
+    def __str__(self):
+        origem = self.origem_cidade or self.origem_estado or EMPTY_MASK_DISPLAY
+        destino = self.destino_cidade or self.destino_estado or EMPTY_MASK_DISPLAY
+        return f'Trecho {self.ordem + 1}: {origem} -> {destino}'
+
+    @property
+    def tempo_total_final_min(self):
+        cru = self.tempo_cru_estimado_min or 0
+        adicional = self.tempo_adicional_min or 0
+        total = cru + adicional
+        return total if total > 0 else (self.duracao_estimada_min or None)
 
 
 class EventoDestino(models.Model):
@@ -655,4 +1034,3 @@ class RoteiroEvento(models.Model):
             self.retorno_chegada_dt = self.retorno_saida_dt + timedelta(minutes=self.duracao_min)
         self.status = self.STATUS_FINALIZADO if self.esta_completo() else self.STATUS_RASCUNHO
         super().save(*args, **kwargs)
-

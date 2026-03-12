@@ -5,6 +5,7 @@ from . import views
 app_name = 'cadastros'
 
 urlpatterns = [
+    path('', login_required(views.cadastros_hub), name='hub'),
     path('cargos/', login_required(views.cargo_lista), name='cargo-lista'),
     path('cargos/cadastrar/', login_required(views.cargo_cadastrar), name='cargo-cadastrar'),
     path('cargos/<int:pk>/editar/', login_required(views.cargo_editar), name='cargo-editar'),

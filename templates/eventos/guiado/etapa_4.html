@@ -1,0 +1,138 @@
+{% extends 'base.html' %}
+
+{% block title %}Etapa 2 — PT / OS — {{ evento.titulo|default:"Evento" }} — Central de Viagens{% endblock %}
+{% block page_title %}Fluxo guiado — Etapa 2: PT / OS{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+    <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+        <h1 class="h4 mb-0">Etapa 2 — PT / OS</h1>
+        <div class="d-flex gap-2">
+            <a href="{% url 'eventos:guiado-painel' evento.pk %}" class="btn btn-outline-secondary btn-sm">Voltar ao painel</a>
+            {% if not evento_apenas_consulta %}
+            <form method="post" action="{% url 'eventos:excluir' evento.pk %}" class="d-inline" onsubmit="return confirm('Excluir este evento? Esta ação não pode ser desfeita.');">
+                {% csrf_token %}
+                <button type="submit" class="btn btn-outline-danger btn-sm">Excluir evento</button>
+            </form>
+            {% endif %}
+        </div>
+    </div>
+
+    {% if evento_apenas_consulta %}
+    <div class="alert alert-info" role="alert">Evento finalizado. Apenas consulta. Não é possível alterar a fundamentação.</div>
+    {% endif %}
+
+    <div class="card mb-4">
+        <div class="card-body py-3">
+            <h2 class="h6 card-title mb-2">{{ evento.titulo|default:"(sem título)" }}</h2>
+            <p class="text-muted small mb-0">
+                {% if evento.tipos_demanda.exists %}
+                Tipo(s): {% for t in evento.tipos_demanda.all %}{{ t.nome }}{% if not forloop.last %}, {% endif %}{% endfor %}
+                {% endif %}
+                — {{ evento.data_inicio|date:"d/m/Y" }}{% if not evento.data_unica and evento.data_fim %} a {{ evento.data_fim|date:"d/m/Y" }}{% endif %}
+                {% if evento.destinos.exists %} — Destinos: {% for d in evento.destinos.all %}{{ d.cidade.nome }}{% if not forloop.last %}, {% endif %}{% endfor %}{% endif %}
+            </p>
+        </div>
+    </div>
+
+    {% if oficios %}
+    <div class="card mb-4">
+        <div class="card-header py-2">
+            <h3 class="h6 mb-0">Ofícios vinculados ao evento</h3>
+        </div>
+        <div class="card-body p-0">
+            <div class="table-responsive">
+                <table class="table table-hover table-sm mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Número / Ano</th>
+                            <th>Protocolo</th>
+                            <th>Status</th>
+                            <th class="text-end">Ações</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for oficio in oficios %}
+                        <tr>
+                            <td><strong>{{ oficio.numero_formatado|default:"—" }}</strong></td>
+                            <td>{{ oficio.protocolo_formatado|default:"—" }}</td>
+                            <td>
+                                {% if oficio.status == 'FINALIZADO' %}
+                                <span class="badge bg-success">Finalizado</span>
+                                {% else %}
+                                <span class="badge bg-warning text-dark">Rascunho</span>
+                                {% endif %}
+                            </td>
+                            <td class="text-end">
+                                <a href="{% url 'eventos:oficio-editar' oficio.pk %}" class="btn btn-outline-primary btn-sm">Editar</a>
+                                <a href="{% url 'eventos:oficio-documentos' oficio.pk %}" class="btn btn-outline-secondary btn-sm">Documentos</a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+    {% else %}
+    <div class="card mb-4">
+        <div class="card-body">
+            <p class="text-muted small mb-0">Nenhum ofício vinculado a este evento. Crie ofícios na Etapa 5.</p>
+        </div>
+    </div>
+    {% endif %}
+
+    {% if form.non_field_errors %}
+    <div class="alert alert-danger" role="alert">
+        {% for err in form.non_field_errors %}{{ err }}{% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="card form-card">
+        <div class="card-header py-2">
+            <h3 class="h6 mb-0">Dados do PT / OS (documento único do evento)</h3>
+        </div>
+        <div class="card-body">
+            <form method="post" id="form-etapa4">
+                {% csrf_token %}
+                {% if evento_apenas_consulta %}<fieldset disabled>{% endif %}
+                <div class="mb-3">
+                    <label for="id_tipo_documento" class="form-label">Tipo do documento</label>
+                    <select name="tipo_documento" id="id_tipo_documento" class="form-select">
+                        <option value="">---------</option>
+                        <option value="PT" {% if form.tipo_documento.value == 'PT' or fundamentacao.tipo_documento == 'PT' %}selected{% endif %}>Plano de Trabalho</option>
+                        <option value="OS" {% if form.tipo_documento.value == 'OS' or fundamentacao.tipo_documento == 'OS' %}selected{% endif %}>Ordem de Serviço</option>
+                    </select>
+                    {% if form.tipo_documento.errors %}
+                    <div class="invalid-feedback d-block">{{ form.tipo_documento.errors.0 }}</div>
+                    {% endif %}
+                    <div class="form-text">Selecione Plano de Trabalho ou Ordem de Serviço. Pode salvar em andamento e preencher depois.</div>
+                </div>
+                <div class="mb-3">
+                    <label for="id_texto_fundamentacao" class="form-label">Texto da fundamentação</label>
+                    <textarea name="texto_fundamentacao" id="id_texto_fundamentacao" class="form-control" rows="6" placeholder="Descreva a fundamentação do evento para fins de Plano de Trabalho e Ordem de Serviço.">{{ form.texto_fundamentacao.value|default:fundamentacao.texto_fundamentacao|default:'' }}</textarea>
+                    {% if form.texto_fundamentacao.errors %}
+                    <div class="invalid-feedback d-block">{{ form.texto_fundamentacao.errors.0 }}</div>
+                    {% endif %}
+                    <div class="form-text">Preencha para concluir a etapa. Pode salvar em rascunho (vazio) e completar depois.</div>
+                </div>
+                <div class="mb-4">
+                    <label for="id_observacoes_pt_os" class="form-label">Observações (PT-OS)</label>
+                    <textarea name="observacoes_pt_os" id="id_observacoes_pt_os" class="form-control" rows="3" placeholder="Observações adicionais (opcional).">{{ form.observacoes_pt_os.value|default:fundamentacao.observacoes_pt_os|default:'' }}</textarea>
+                    {% if form.observacoes_pt_os.errors %}
+                    <div class="invalid-feedback d-block">{{ form.observacoes_pt_os.errors.0 }}</div>
+                    {% endif %}
+                </div>
+                {% if evento_apenas_consulta %}</fieldset>{% endif %}
+                <div class="d-flex flex-wrap gap-2 mt-2">
+                    {% if not evento_apenas_consulta %}
+                    <button type="submit" name="salvar" class="btn btn-primary">Salvar</button>
+                    <button type="submit" name="voltar_painel" value="1" class="btn btn-outline-primary">Salvar e voltar ao painel</button>
+                    {% endif %}
+                    <a href="{% url 'eventos:guiado-painel' evento.pk %}" class="btn btn-outline-secondary">Cancelar</a>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+{% endblock %}

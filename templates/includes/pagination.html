@@ -1,0 +1,31 @@
+{% if page_obj and page_obj.paginator.num_pages > 1 %}
+<nav aria-label="Paginacao" class="mt-3">
+    <ul class="pagination pagination-sm mb-0">
+        <li class="page-item {% if not page_obj.has_previous %}disabled{% endif %}">
+            <a
+                class="page-link"
+                href="{% if page_obj.has_previous %}?page={{ page_obj.previous_page_number }}{% if pagination_query %}&{{ pagination_query }}{% endif %}{% else %}#{% endif %}"
+            >
+                Anterior
+            </a>
+        </li>
+        {% for number in page_obj.paginator.page_range %}
+            {% if number == page_obj.number %}
+            <li class="page-item active" aria-current="page"><span class="page-link">{{ number }}</span></li>
+            {% elif number >= page_obj.number|add:-2 and number <= page_obj.number|add:2 %}
+            <li class="page-item">
+                <a class="page-link" href="?page={{ number }}{% if pagination_query %}&{{ pagination_query }}{% endif %}">{{ number }}</a>
+            </li>
+            {% endif %}
+        {% endfor %}
+        <li class="page-item {% if not page_obj.has_next %}disabled{% endif %}">
+            <a
+                class="page-link"
+                href="{% if page_obj.has_next %}?page={{ page_obj.next_page_number }}{% if pagination_query %}&{{ pagination_query }}{% endif %}{% else %}#{% endif %}"
+            >
+                Proxima
+            </a>
+        </li>
+    </ul>
+</nav>
+{% endif %}

@@ -10,9 +10,11 @@ from .veiculos import (
     combustivel_lista, combustivel_cadastrar, combustivel_editar, combustivel_excluir, combustivel_definir_padrao,
 )
 from .configuracoes import configuracoes_editar
+from .hubs import cadastros_hub
 from .api import api_cidades_por_estado, api_consulta_cep
 
 __all__ = [
+    'cadastros_hub',
     'cargo_lista', 'cargo_cadastrar', 'cargo_editar', 'cargo_excluir', 'cargo_definir_padrao',
     'viajante_lista', 'viajante_cadastrar', 'viajante_editar', 'viajante_excluir',
     'viajante_salvar_rascunho_ir_cargos', 'viajante_salvar_rascunho_ir_unidades',

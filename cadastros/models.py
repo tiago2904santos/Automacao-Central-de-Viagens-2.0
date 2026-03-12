@@ -366,11 +366,13 @@ class AssinaturaConfiguracao(models.Model):
     TIPO_JUSTIFICATIVA = 'JUSTIFICATIVA'
     TIPO_PLANO_TRABALHO = 'PLANO_TRABALHO'
     TIPO_ORDEM_SERVICO = 'ORDEM_SERVICO'
+    TIPO_TERMO_AUTORIZACAO = 'TERMO_AUTORIZACAO'
     TIPO_CHOICES = [
         (TIPO_OFICIO, 'Ofício'),
         (TIPO_JUSTIFICATIVA, 'Justificativa'),
         (TIPO_PLANO_TRABALHO, 'Plano de Trabalho'),
         (TIPO_ORDEM_SERVICO, 'Ordem de Serviço'),
+        (TIPO_TERMO_AUTORIZACAO, 'Termo de Autorização'),
     ]
 
     configuracao = models.ForeignKey(

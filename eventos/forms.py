@@ -1,8 +1,22 @@
 from django import forms
+from django.db.models import Q
+from django.utils import timezone
+
 from cadastros.models import Viajante, Veiculo
-from .models import Evento, EventoParticipante, ModeloMotivoViagem, Oficio, RoteiroEvento, TipoDemandaEvento
-from core.utils.masks import format_protocolo
-from .utils import normalize_protocolo
+from eventos.services.oficio_schema import oficio_justificativa_schema_available
+from .models import (
+    Evento,
+    EventoFundamentacao,
+    EventoFinalizacao,
+    EventoParticipante,
+    ModeloJustificativa,
+    ModeloMotivoViagem,
+    Oficio,
+    RoteiroEvento,
+    TipoDemandaEvento,
+)
+from core.utils.masks import format_placa, format_protocolo, normalize_placa
+from .utils import buscar_veiculo_finalizado_por_placa, mapear_tipo_viatura_para_oficio, normalize_protocolo
 
 
 class FormComErroInvalidMixin:
@@ -109,6 +123,53 @@ class EventoEtapa1Form(FormComErroInvalidMixin, forms.ModelForm):
         return data
 
 
+class EventoFundamentacaoForm(FormComErroInvalidMixin, forms.ModelForm):
+    """Formulário da Etapa 4 do evento: Fundamentação / PT-OS (tipo PT ou OS, texto, observações)."""
+    class Meta:
+        model = EventoFundamentacao
+        fields = ['tipo_documento', 'texto_fundamentacao', 'observacoes_pt_os']
+        widgets = {
+            'tipo_documento': forms.Select(attrs={
+                'class': 'form-select',
+            }),
+            'texto_fundamentacao': forms.Textarea(attrs={
+                'class': 'form-control',
+                'rows': 6,
+                'placeholder': 'Descreva a fundamentação do evento para fins de Plano de Trabalho ou Ordem de Serviço.',
+            }),
+            'observacoes_pt_os': forms.Textarea(attrs={
+                'class': 'form-control',
+                'rows': 3,
+                'placeholder': 'Observações adicionais (opcional).',
+            }),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['tipo_documento'].required = False  # pode salvar em andamento sem tipo
+        self.fields['tipo_documento'].choices = [('', '---------')] + list(EventoFundamentacao.TIPO_CHOICES)
+        self.fields['texto_fundamentacao'].required = False
+        self.fields['observacoes_pt_os'].required = False
+
+
+class EventoFinalizacaoForm(FormComErroInvalidMixin, forms.ModelForm):
+    """Formulário da Etapa 6 do evento: observações finais (finalizado_em/por são definidos na ação de finalizar)."""
+    class Meta:
+        model = EventoFinalizacao
+        fields = ['observacoes_finais']
+        widgets = {
+            'observacoes_finais': forms.Textarea(attrs={
+                'class': 'form-control',
+                'rows': 4,
+                'placeholder': 'Observações finais do evento (opcional).',
+            }),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['observacoes_finais'].required = False
+
+
 class TipoDemandaEventoForm(FormComErroInvalidMixin, forms.ModelForm):
     """CRUD de tipos de demanda para eventos."""
     class Meta:
@@ -133,6 +194,69 @@ class ModeloMotivoViagemForm(FormComErroInvalidMixin, forms.ModelForm):
             'nome': forms.TextInput(attrs={'class': 'form-control', 'maxlength': 200}),
             'texto': forms.Textarea(attrs={'class': 'form-control', 'rows': 6}),
         }
+
+
+class ModeloJustificativaForm(FormComErroInvalidMixin, forms.ModelForm):
+    """CRUD simples de modelos de justificativa do ofício."""
+
+    class Meta:
+        model = ModeloJustificativa
+        fields = ['nome', 'texto']
+        widgets = {
+            'nome': forms.TextInput(attrs={'class': 'form-control', 'maxlength': 200}),
+            'texto': forms.Textarea(attrs={'class': 'form-control', 'rows': 8}),
+        }
+
+
+class OficioJustificativaForm(FormComErroInvalidMixin, forms.Form):
+    """Tela própria da justificativa do ofício."""
+
+    modelo_justificativa = forms.ModelChoiceField(
+        queryset=ModeloJustificativa.objects.none(),
+        required=False,
+        label='Modelo de justificativa',
+        empty_label='---------',
+        widget=forms.Select(attrs={'class': 'form-select'}),
+    )
+    justificativa_texto = forms.CharField(
+        required=False,
+        label='Texto final da justificativa',
+        widget=forms.Textarea(attrs={'class': 'form-control', 'rows': 10}),
+    )
+
+    def __init__(self, *args, **kwargs):
+        self.oficio = kwargs.pop('oficio')
+        super().__init__(*args, **kwargs)
+        if not oficio_justificativa_schema_available():
+            self.fields['modelo_justificativa'].queryset = ModeloJustificativa.objects.none()
+            return
+        queryset = ModeloJustificativa.objects.filter(
+            Q(ativo=True) | Q(pk=self.oficio.justificativa_modelo_id)
+        ).order_by('nome').distinct()
+        self.fields['modelo_justificativa'].queryset = queryset
+        if self.is_bound:
+            return
+
+        modelo_inicial = self.oficio.justificativa_modelo
+        if not modelo_inicial:
+            modelo_inicial = queryset.filter(padrao=True).first()
+        if modelo_inicial:
+            self.initial.setdefault('modelo_justificativa', modelo_inicial.pk)
+        if (self.oficio.justificativa_texto or '').strip():
+            self.initial.setdefault('justificativa_texto', self.oficio.justificativa_texto)
+        elif modelo_inicial:
+            self.initial.setdefault('justificativa_texto', modelo_inicial.texto)
+
+    def clean_justificativa_texto(self):
+        return (self.cleaned_data.get('justificativa_texto') or '').strip()
+
+    def clean(self):
+        data = super().clean()
+        modelo = data.get('modelo_justificativa')
+        texto = (data.get('justificativa_texto') or '').strip()
+        if modelo and not texto:
+            data['justificativa_texto'] = (modelo.texto or '').strip()
+        return data
 
 
 class RoteiroEventoForm(FormComErroInvalidMixin, forms.ModelForm):
@@ -270,13 +394,24 @@ class OficioStep1Form(FormComErroInvalidMixin, forms.Form):
         queryset=Viajante.objects.none(),
         required=False,
         label='Viajantes',
-        widget=forms.CheckboxSelectMultiple(attrs={'class': 'form-check-input'}),
+        widget=forms.MultipleHiddenInput(),
     )
 
     def __init__(self, *args, **kwargs):
+        selected_viajantes_ids = kwargs.pop('selected_viajantes_ids', None) or []
         super().__init__(*args, **kwargs)
         self.fields['modelo_motivo'].queryset = ModeloMotivoViagem.objects.all().order_by('nome')
-        self.fields['viajantes'].queryset = Viajante.objects.filter(status=Viajante.STATUS_FINALIZADO).order_by('nome')
+        selected_ids = []
+        for raw_value in selected_viajantes_ids:
+            value = str(raw_value).strip()
+            if value.isdigit():
+                selected_ids.append(int(value))
+        viajantes_qs = Viajante.objects.filter(status=Viajante.STATUS_FINALIZADO)
+        if selected_ids:
+            viajantes_qs = Viajante.objects.filter(
+                Q(status=Viajante.STATUS_FINALIZADO) | Q(pk__in=selected_ids)
+            )
+        self.fields['viajantes'].queryset = viajantes_qs.select_related('cargo').distinct().order_by('nome')
         if not self.initial.get('custeio_tipo'):
             self.initial['custeio_tipo'] = Oficio.CUSTEIO_UNIDADE
         custeio_value = (
@@ -324,7 +459,7 @@ class OficioStep1Form(FormComErroInvalidMixin, forms.Form):
         return data
 
 
-class OficioStep2Form(FormComErroInvalidMixin, forms.Form):
+class LegacyOficioStep2Form(FormComErroInvalidMixin, forms.Form):
     """Step 2 — Transporte. Regras: placa, modelo e combustível obrigatórios; motorista carona exige ofício e protocolo."""
     placa = forms.CharField(required=False, max_length=10, label='Placa', widget=forms.TextInput(attrs={'class': 'form-control'}))
     modelo = forms.CharField(required=False, max_length=120, label='Modelo', widget=forms.TextInput(attrs={'class': 'form-control'}))
@@ -393,4 +528,313 @@ class OficioStep2Form(FormComErroInvalidMixin, forms.Form):
                 self.add_error('motorista_oficio_ano', 'Informe o ano do ofício do motorista.')
             if not prot:
                 self.add_error('motorista_protocolo', 'Informe o protocolo do motorista.')
+        return data
+class OficioStep2Form(FormComErroInvalidMixin, forms.Form):
+    """Step 2 — Transporte do ofício."""
+
+    MOTORISTA_SEM_CADASTRO = '__manual__'
+    SIM_NAO_CHOICES = [('1', 'Sim'), ('0', 'N\u00e3o')]
+
+    placa = forms.CharField(
+        required=False,
+        max_length=10,
+        label='Placa',
+        widget=forms.TextInput(
+            attrs={
+                'class': 'form-control',
+                'data-mask': 'placa',
+                'maxlength': 8,
+                'placeholder': 'ABC-1234 ou ABC1D23',
+                'autocomplete': 'off',
+            }
+        ),
+    )
+    modelo = forms.CharField(
+        required=False,
+        max_length=120,
+        label='Modelo',
+        widget=forms.TextInput(attrs={'class': 'form-control'}),
+    )
+    combustivel = forms.CharField(
+        required=False,
+        max_length=80,
+        label='Combustível',
+        widget=forms.TextInput(attrs={'class': 'form-control', 'list': 'combustivel-opcoes'}),
+    )
+    tipo_viatura = forms.ChoiceField(
+        required=False,
+        choices=[('', '---------')] + list(Oficio.TIPO_VIATURA_CHOICES),
+        label='Tipo viatura',
+        widget=forms.Select(attrs={'class': 'form-select'}),
+    )
+    porte_transporte_armas = forms.TypedChoiceField(
+        required=False,
+        label='Porte/transporte de armas',
+        choices=SIM_NAO_CHOICES,
+        coerce=lambda value: str(value) == '1',
+        empty_value=True,
+        widget=forms.Select(attrs={'class': 'form-select'}),
+    )
+    motorista_viajante = forms.ChoiceField(
+        required=False,
+        label='Motorista',
+        choices=(),
+        widget=forms.HiddenInput(),
+    )
+    motorista_nome = forms.CharField(
+        required=False,
+        max_length=120,
+        label='Motorista (nome manual)',
+        widget=forms.TextInput(attrs={'class': 'form-control', 'maxlength': 120}),
+    )
+    motorista_oficio_numero = forms.IntegerField(
+        required=False,
+        min_value=1,
+        label='Nº ofício motorista',
+        widget=forms.NumberInput(attrs={'class': 'form-control', 'min': 1, 'inputmode': 'numeric'}),
+    )
+    motorista_oficio_ano = forms.IntegerField(
+        required=False,
+        widget=forms.HiddenInput(),
+    )
+    motorista_protocolo = forms.CharField(
+        required=False,
+        max_length=80,
+        label='Protocolo do motorista',
+        widget=forms.TextInput(attrs={'class': 'form-control', 'data-mask': 'protocolo', 'inputmode': 'numeric'}),
+    )
+
+    def __init__(self, *args, **kwargs):
+        self.oficio = kwargs.pop('oficio', None)
+        super().__init__(*args, **kwargs)
+        self.current_year = timezone.localdate().year
+        self.oficio_viajante_ids = set()
+        if self.oficio:
+            self.oficio_viajante_ids = set(self.oficio.viajantes.values_list('pk', flat=True))
+
+        qs_motoristas = Viajante.objects.filter(status=Viajante.STATUS_FINALIZADO).order_by('nome')
+        if self.oficio and self.oficio.motorista_viajante_id:
+            qs_motoristas = (
+                Viajante.objects.filter(pk=self.oficio.motorista_viajante_id) | qs_motoristas
+            ).distinct().order_by('nome')
+        self.motoristas_queryset = qs_motoristas
+        self.motoristas_map = {obj.pk: obj for obj in qs_motoristas}
+
+        if not self.initial.get('tipo_viatura'):
+            self.initial['tipo_viatura'] = Oficio.TIPO_VIATURA_DESCARACTERIZADA
+        porte_inicial = self.initial.get('porte_transporte_armas', True)
+        if not self.is_bound:
+            self.initial['porte_transporte_armas'] = '1' if bool(porte_inicial) else '0'
+        if not self.initial.get('motorista_oficio_ano'):
+            self.initial['motorista_oficio_ano'] = self.current_year
+
+        if not self.is_bound:
+            placa = self.initial.get('placa')
+            protocolo = self.initial.get('motorista_protocolo')
+            motorista_viajante = self.initial.get('motorista_viajante')
+            if placa:
+                self.initial['placa'] = format_placa(placa)
+            if protocolo:
+                self.initial['motorista_protocolo'] = format_protocolo(protocolo)
+            if motorista_viajante:
+                self.initial['motorista_viajante'] = str(motorista_viajante)
+            elif self.initial.get('motorista_nome'):
+                self.initial['motorista_viajante'] = self.MOTORISTA_SEM_CADASTRO
+
+        self.motorista_choices_payload = self._build_motorista_choice_payloads()
+        self.fields['motorista_viajante'].choices = self._build_motorista_choices()
+        self.selected_motorista_value = self._raw_motorista_value()
+        self.selected_motorista_payload = self._build_selected_motorista_payload()
+        self.motorista_manual_selected = self._resolve_manual_selected()
+        self.motorista_carona_selected = self._resolve_carona_preview()
+        self.motorista_oficio_ano_display = self._resolve_motorista_oficio_ano_display()
+
+    def _build_motorista_choice_payloads(self):
+        payload = [
+            {
+                'value': '',
+                'label': '---------',
+                'nome': '',
+                'cpf': '',
+                'rg': '',
+                'cargo': '',
+                'is_carona': False,
+            },
+            {
+                'value': self.MOTORISTA_SEM_CADASTRO,
+                'label': 'Motorista sem cadastro',
+                'nome': '',
+                'cpf': '',
+                'rg': '',
+                'cargo': '',
+                'is_carona': True,
+            },
+        ]
+        for motorista in self.motoristas_queryset:
+            is_carona = motorista.pk not in self.oficio_viajante_ids
+            label = motorista.nome
+            if is_carona:
+                label = f'{label} (carona)'
+            payload.append(
+                {
+                    'value': str(motorista.pk),
+                    'label': label,
+                    'nome': motorista.nome,
+                    'cpf': motorista.cpf_formatado,
+                    'rg': motorista.rg_formatado,
+                    'cargo': motorista.cargo.nome if motorista.cargo_id and motorista.cargo else '',
+                    'is_carona': is_carona,
+                }
+            )
+        return payload
+
+    def _build_motorista_choices(self):
+        return [
+            (item['value'], item['label'])
+            for item in getattr(self, 'motorista_choices_payload', self._build_motorista_choice_payloads())
+        ]
+
+    def _build_selected_motorista_payload(self):
+        selected_value = self._raw_motorista_value()
+        if not selected_value or not selected_value.isdigit():
+            return None
+        for item in getattr(self, 'motorista_choices_payload', []):
+            if item.get('value') == selected_value:
+                payload = dict(item)
+                payload['id'] = int(selected_value)
+                return payload
+        return None
+
+    def _raw_motorista_value(self):
+        if self.is_bound:
+            return (self.data.get('motorista_viajante') or '').strip()
+        return str(self.initial.get('motorista_viajante') or '').strip()
+
+    def _raw_motorista_nome(self):
+        if self.is_bound:
+            return (self.data.get('motorista_nome') or '').strip()
+        return (self.initial.get('motorista_nome') or '').strip()
+
+    def _resolve_manual_selected(self):
+        motorista_value = self._raw_motorista_value()
+        if motorista_value == self.MOTORISTA_SEM_CADASTRO:
+            return True
+        return not motorista_value and bool(self._raw_motorista_nome())
+
+    def _resolve_carona_preview(self):
+        motorista_value = self._raw_motorista_value()
+        if motorista_value == self.MOTORISTA_SEM_CADASTRO:
+            return True
+        if motorista_value.isdigit():
+            return int(motorista_value) not in self.oficio_viajante_ids
+        return bool(self.initial.get('motorista_carona'))
+
+    def _resolve_motorista_oficio_ano_display(self):
+        if self.is_bound:
+            ano = self.data.get('motorista_oficio_ano')
+        else:
+            ano = self.initial.get('motorista_oficio_ano')
+        try:
+            return int(ano)
+        except (TypeError, ValueError):
+            return self.current_year
+
+    def clean_placa(self):
+        return normalize_placa(self.cleaned_data.get('placa'))
+
+    def clean_modelo(self):
+        value = (self.cleaned_data.get('modelo') or '').strip()
+        return ' '.join(value.upper().split()) if value else ''
+
+    def clean_combustivel(self):
+        value = (self.cleaned_data.get('combustivel') or '').strip()
+        return ' '.join(value.upper().split()) if value else ''
+
+    def clean_motorista_nome(self):
+        value = (self.cleaned_data.get('motorista_nome') or '').strip()
+        return ' '.join(value.upper().split()) if value else ''
+
+    def clean_motorista_viajante(self):
+        value = (self.cleaned_data.get('motorista_viajante') or '').strip()
+        if not value:
+            return None
+        if value == self.MOTORISTA_SEM_CADASTRO:
+            return self.MOTORISTA_SEM_CADASTRO
+        if not value.isdigit():
+            raise forms.ValidationError('Selecione um motorista válido.')
+        motorista = self.motoristas_map.get(int(value))
+        if not motorista:
+            raise forms.ValidationError('Selecione um motorista válido.')
+        return motorista
+
+    def clean_motorista_protocolo(self):
+        protocolo = normalize_protocolo(self.cleaned_data.get('motorista_protocolo'))
+        if protocolo and len(protocolo) != 9:
+            raise forms.ValidationError('Informe o protocolo do motorista no formato XX.XXX.XXX-X.')
+        return protocolo
+
+    def clean(self):
+        data = super().clean()
+        placa = (data.get('placa') or '').strip()
+        modelo = (data.get('modelo') or '').strip()
+        combustivel = (data.get('combustivel') or '').strip()
+        tipo_viatura = data.get('tipo_viatura') or Oficio.TIPO_VIATURA_DESCARACTERIZADA
+        porte_transporte_armas = data.get('porte_transporte_armas')
+        if porte_transporte_armas in (None, ''):
+            porte_transporte_armas = True
+
+        veiculo = buscar_veiculo_finalizado_por_placa(placa)
+        if veiculo:
+            if not modelo:
+                modelo = veiculo.modelo or ''
+                data['modelo'] = modelo
+            if not combustivel and veiculo.combustivel_id:
+                combustivel = veiculo.combustivel.nome or ''
+                data['combustivel'] = combustivel
+            if not data.get('tipo_viatura'):
+                tipo_viatura = mapear_tipo_viatura_para_oficio(veiculo.tipo)
+                data['tipo_viatura'] = tipo_viatura
+        data['veiculo_cadastrado'] = veiculo
+        data['tipo_viatura'] = tipo_viatura
+        data['porte_transporte_armas'] = bool(porte_transporte_armas)
+
+        if not placa:
+            self.add_error('placa', 'Informe a placa.')
+        if not modelo:
+            self.add_error('modelo', 'Informe o modelo.')
+        if not combustivel:
+            self.add_error('combustivel', 'Informe o combustível.')
+
+        motorista_value = data.get('motorista_viajante')
+        manual_selected = motorista_value == self.MOTORISTA_SEM_CADASTRO or (
+            motorista_value is None and bool(data.get('motorista_nome'))
+        )
+        motorista_obj = motorista_value if isinstance(motorista_value, Viajante) else None
+        motorista_nome = (data.get('motorista_nome') or '').strip()
+
+        if manual_selected and not motorista_nome:
+            self.add_error('motorista_nome', 'Informe o nome do motorista sem cadastro.')
+
+        motorista_nome_final = motorista_obj.nome if motorista_obj else motorista_nome
+        motorista_carona = bool(manual_selected or (motorista_obj and motorista_obj.pk not in self.oficio_viajante_ids))
+        data['motorista_carona'] = motorista_carona
+        data['motorista_viajante_obj'] = motorista_obj
+        data['motorista_nome_final'] = motorista_nome_final
+
+        if motorista_carona:
+            ano = data.get('motorista_oficio_ano') or self.current_year
+            protocolo = (data.get('motorista_protocolo') or '').strip()
+            numero = data.get('motorista_oficio_numero')
+            data['motorista_oficio_ano'] = ano
+            if not numero:
+                self.add_error('motorista_oficio_numero', 'Informe o número do ofício do motorista.')
+            if not protocolo:
+                self.add_error('motorista_protocolo', 'Informe o protocolo do motorista.')
+            data['motorista_oficio'] = f'{numero}/{ano}' if numero else ''
+        else:
+            data['motorista_oficio_numero'] = None
+            data['motorista_oficio_ano'] = None
+            data['motorista_oficio'] = ''
+            data['motorista_protocolo'] = ''
+
         return data

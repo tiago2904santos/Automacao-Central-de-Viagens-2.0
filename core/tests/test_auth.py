@@ -17,17 +17,17 @@ class LoginViewTests(TestCase):
         self.assertContains(response, 'Usuário')
         self.assertContains(response, 'Senha')
 
-    def test_login_redirects_authenticated_user_to_dashboard(self):
+    def test_login_redirects_authenticated_user_to_central_documentos(self):
         self.client.login(username='testuser', password='testpass123')
         response = self.client.get(reverse('core:login'))
-        self.assertRedirects(response, reverse('core:dashboard'))
+        self.assertRedirects(response, reverse('eventos:documentos-hub'))
 
-    def test_login_success_redirects_to_dashboard(self):
+    def test_login_success_redirects_to_central_documentos(self):
         response = self.client.post(reverse('core:login'), {
             'username': 'testuser',
             'password': 'testpass123',
         })
-        self.assertRedirects(response, reverse('core:dashboard'))
+        self.assertRedirects(response, reverse('eventos:documentos-hub'))
 
     def test_login_invalid_credentials_shows_form(self):
         response = self.client.post(reverse('core:login'), {
