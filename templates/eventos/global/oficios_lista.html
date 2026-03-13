@@ -1,22 +1,20 @@
 {% extends 'base.html' %}
 
-{% block title %}Oficios - Central de Viagens{% endblock %}
-{% block page_title %}Oficios{% endblock %}
+{% block title %}Lista de ofícios - Central de Viagens{% endblock %}
+{% block page_title %}Lista de ofícios{% endblock %}
 
 {% block content %}
 <div class="container-fluid py-4">
     <div class="page-header-cadastro">
         <div>
-            <h1 class="mb-1">Lista global de oficios</h1>
-            <p class="text-muted mb-0">Acompanhe todos os oficios do sistema, com acesso direto ao wizard, documentos e evento vinculado.</p>
+            <h1 class="mb-1">Lista de ofícios</h1>
+            <p class="text-muted mb-0">Acompanhe cada processo em um card único, com os documentos relacionados organizados em subcards.</p>
         </div>
         <div class="d-flex gap-2 flex-wrap">
             <a href="{% url 'eventos:oficio-novo' %}" class="btn btn-primary">
                 <i class="bi bi-plus-lg me-1"></i>
-                Novo ofício avulso
+                Cadastro de ofício
             </a>
-            <a href="{% url 'eventos:lista' %}" class="btn btn-outline-secondary">Ir para eventos</a>
-            <a href="{% url 'eventos:documentos-hub' %}" class="btn btn-outline-secondary">Central documental</a>
         </div>
     </div>
 
@@ -32,7 +30,7 @@
                     <select name="evento_id" class="form-select form-select-sm">
                         <option value="">Todos</option>
                         {% for evento in eventos_choices %}
-                        <option value="{{ evento.pk }}" {% if filters.evento_id == evento.pk|stringformat:"s" %}selected{% endif %}>{{ evento.titulo|default:"(sem titulo)" }}</option>
+                        <option value="{{ evento.pk }}" {% if filters.evento_id == evento.pk|stringformat:"s" %}selected{% endif %}>{{ evento.titulo|default:"(sem título)" }}</option>
                         {% endfor %}
                     </select>
                 </div>
@@ -50,7 +48,7 @@
                     <input type="text" name="ano" class="form-control form-control-sm" value="{{ filters.ano }}" placeholder="2026">
                 </div>
                 <div class="col-6 col-md-2 col-xl-1">
-                    <label class="form-label small text-muted">Numero</label>
+                    <label class="form-label small text-muted">Número</label>
                     <input type="text" name="numero" class="form-control form-control-sm" value="{{ filters.numero }}" placeholder="15">
                 </div>
                 <div class="col-6 col-md-3 col-xl-2">
@@ -69,67 +67,85 @@
         </div>
     </div>
 
-    <div class="card">
-        <div class="table-responsive">
-            <table class="table table-hover table-cadastro mb-0 align-middle">
-                <thead class="table-light">
-                    <tr>
-                        <th>Oficio</th>
-                        <th>Protocolo</th>
-                        <th>Evento</th>
-                        <th>Destino</th>
-                        <th>Status</th>
-                        <th>Atualizado</th>
-                        <th class="text-end" width="300">Acoes</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for oficio in object_list %}
-                    <tr>
-                        <td>
-                            <div class="fw-semibold">{{ oficio.numero_formatado }}</div>
-                            <div class="small text-muted">{{ oficio.data_criacao_formatada_br }}</div>
-                        </td>
-                        <td>{{ oficio.protocolo_formatado|default:"—" }}</td>
-                        <td>
-                            {% if oficio.evento %}
-                            <a href="{{ oficio.evento_url }}" class="text-decoration-none">{{ oficio.evento.titulo|default:"(sem titulo)" }}</a>
-                            {% else %}
-                            <span class="text-muted">Sem evento</span>
-                            {% endif %}
-                        </td>
-                        <td>
-                            <div>{{ oficio.destinos_display }}</div>
-                            <div class="small text-muted">{{ oficio.get_tipo_destino_display|default:"Tipo nao definido" }}</div>
-                        </td>
-                        <td>
-                            {% if oficio.status == 'FINALIZADO' %}
-                            <span class="badge bg-success">Finalizado</span>
-                            {% else %}
-                            <span class="badge bg-warning text-dark">Rascunho</span>
-                            {% endif %}
-                            <div class="small mt-1 text-muted">Justificativa: {{ oficio.justificativa_info.status_label|lower }}</div>
-                        </td>
-                        <td>{{ oficio.updated_at|date:"d/m/Y H:i" }}</td>
-                        <td class="text-end">
-                            <a href="{{ oficio.edicao_url }}" class="btn btn-sm btn-outline-primary">Abrir</a>
-                            <a href="{{ oficio.documentos_url }}" class="btn btn-sm btn-outline-secondary">Documentos</a>
-                            {% if oficio.evento %}
-                            <a href="{{ oficio.evento_url }}" class="btn btn-sm btn-outline-secondary">Evento</a>
-                            {% endif %}
-                            <a href="{{ oficio.excluir_url }}" class="btn btn-sm btn-outline-danger">Excluir</a>
-                        </td>
-                    </tr>
-                    {% empty %}
-                    <tr>
-                        <td colspan="7" class="text-center text-muted py-5">
-                            Nenhum oficio encontrado com os filtros atuais.
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+    <div class="oficio-process-list">
+        {% for oficio in object_list %}
+        <article class="oficio-process-card {{ oficio.process_status.css_class }}">
+            <div class="oficio-process-card__header">
+                <div class="oficio-process-card__title-block">
+                    <h2 class="oficio-process-card__title">{{ oficio.numero_formatado }}</h2>
+                    <div class="oficio-process-card__subtitle">
+                        {% if oficio.evento_url %}
+                        <a href="{{ oficio.evento_url }}" class="text-decoration-none">{{ oficio.evento_titulo_display }}</a>
+                        {% else %}
+                        <span>{{ oficio.evento_titulo_display }}</span>
+                        {% endif %}
+                    </div>
+                </div>
+                <span class="oficio-process-status {{ oficio.process_status.css_class }}">{{ oficio.process_status.label }}</span>
+            </div>
+
+            <div class="oficio-process-card__meta">
+                <div class="oficio-process-meta-item">
+                    <span class="oficio-process-meta-label">Protocolo</span>
+                    <span class="oficio-process-meta-value">{{ oficio.protocolo_formatado|default:"—" }}</span>
+                </div>
+                <div class="oficio-process-meta-item">
+                    <span class="oficio-process-meta-label">Destino principal</span>
+                    <span class="oficio-process-meta-value">{{ oficio.destinos_display|default:"—" }}</span>
+                </div>
+                <div class="oficio-process-meta-item">
+                    <span class="oficio-process-meta-label">Período</span>
+                    <span class="oficio-process-meta-value">{{ oficio.periodo_display|default:"—" }}</span>
+                </div>
+                <div class="oficio-process-meta-item">
+                    <span class="oficio-process-meta-label">Atualizado</span>
+                    <span class="oficio-process-meta-value">{{ oficio.updated_at|date:"d/m/Y H:i" }}</span>
+                </div>
+            </div>
+
+            <div class="oficio-document-grid">
+                {% for documento in oficio.card_documents %}
+                <section class="oficio-document-card">
+                    <div class="oficio-document-card__header">
+                        <h3 class="oficio-document-card__title">{{ documento.title }}</h3>
+                        <span class="oficio-document-status {{ documento.status_css_class }}">{{ documento.status_label }}</span>
+                    </div>
+
+                    <div class="oficio-document-card__summary">
+                        {% for item in documento.summary_items %}
+                        <div class="oficio-document-summary-item">
+                            <span class="oficio-document-summary-label">{{ item.label }}</span>
+                            <span class="oficio-document-summary-value">{{ item.value|default:"—" }}</span>
+                        </div>
+                        {% endfor %}
+                    </div>
+
+                    {% if documento.detail %}
+                    <p class="oficio-document-card__detail">{{ documento.detail }}</p>
+                    {% endif %}
+
+                    <div class="oficio-document-card__actions">
+                        <a href="{{ documento.edit_url }}" class="btn btn-sm btn-outline-primary">Editar</a>
+                        {% for action in documento.actions %}
+                        <a href="{{ action.url }}" class="btn btn-sm btn-outline-secondary{% if not action.available %} opacity-75{% endif %}">{{ action.label }}</a>
+                        {% endfor %}
+                    </div>
+                </section>
+                {% endfor %}
+            </div>
+
+            <div class="oficio-process-card__footer">
+                <a href="{{ oficio.edicao_url }}" class="btn btn-sm btn-outline-primary">Abrir wizard</a>
+                <a href="{{ oficio.excluir_url }}" class="btn btn-sm btn-outline-danger">Excluir</a>
+            </div>
+        </article>
+        {% empty %}
+        <div class="card">
+            <div class="card-body text-center text-muted py-5">
+                Nenhum ofício encontrado com os filtros atuais.
+            </div>
         </div>
+        {% endfor %}
     </div>
 
     {% include 'includes/pagination.html' %}

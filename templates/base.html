@@ -77,7 +77,7 @@
     {% endif %}
 
     <div class="main-wrapper flex-grow-1">
-        {% if user.is_authenticated %}
+        {% if user.is_authenticated and not hide_page_header %}
         <header class="main-header">
             <div class="container-fluid">
                 <h1 class="page-title mb-0">{% block page_title %}{% endblock %}</h1>

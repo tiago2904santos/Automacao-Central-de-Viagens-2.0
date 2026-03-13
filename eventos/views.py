@@ -11,6 +11,7 @@ from django.db.models import Max, Q
 from django.http import Http404, HttpResponse, JsonResponse
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
+from django.utils.html import format_html, format_html_join
 from django.utils.http import url_has_allowed_host_and_scheme
 from django.utils import timezone
 from django.utils.text import slugify
@@ -18,7 +19,7 @@ from django.views.decorators.http import require_http_methods
 from urllib.parse import quote, urlencode
 
 from cadastros.models import ConfiguracaoSistema, Cidade, Estado, Veiculo, Viajante
-from core.utils.masks import format_placa, format_protocolo, only_digits
+from core.utils.masks import format_placa, format_protocolo, normalize_placa, only_digits
 
 from .models import (
     Evento,
@@ -311,6 +312,51 @@ def _salvar_trechos_roteiro(roteiro, destinos_list, trechos_data):
         distancia_km=dist_km_r, duracao_estimada_min=dur_min_r,
         tempo_cru_estimado_min=t_cru_r, tempo_adicional_min=t_adic_r,
     )
+
+
+def _atualizar_datas_roteiro_apos_salvar_trechos(roteiro):
+    trechos_salvos = list(roteiro.trechos.order_by('ordem'))
+    if not trechos_salvos:
+        return
+    update_fields = []
+    primeira_saida = trechos_salvos[0].saida_dt
+    if primeira_saida is not None:
+        roteiro.saida_dt = primeira_saida
+        update_fields.append('saida_dt')
+    if trechos_salvos[-1].tipo == RoteiroEventoTrecho.TIPO_RETORNO:
+        ultima_saida_retorno = trechos_salvos[-1].saida_dt
+        if ultima_saida_retorno is not None:
+            roteiro.retorno_saida_dt = ultima_saida_retorno
+            update_fields.append('retorno_saida_dt')
+        if len(trechos_salvos) >= 2 and trechos_salvos[-2].chegada_dt is not None:
+            roteiro.chegada_dt = trechos_salvos[-2].chegada_dt
+            update_fields.append('chegada_dt')
+        if trechos_salvos[-1].chegada_dt is not None:
+            roteiro.retorno_chegada_dt = trechos_salvos[-1].chegada_dt
+            update_fields.append('retorno_chegada_dt')
+    else:
+        if trechos_salvos[-1].chegada_dt is not None:
+            roteiro.chegada_dt = trechos_salvos[-1].chegada_dt
+            update_fields.append('chegada_dt')
+    if update_fields:
+        update_fields.append('status')
+        roteiro.save(update_fields=update_fields)
+
+
+def _salvar_roteiro_com_destinos_e_trechos(roteiro, destinos_post, trechos_times):
+    if roteiro.pk is None:
+        roteiro.save()
+    roteiro.destinos.all().delete()
+    for ordem, (estado_id, cidade_id) in enumerate(destinos_post):
+        RoteiroEventoDestino.objects.create(
+            roteiro=roteiro,
+            estado_id=estado_id,
+            cidade_id=cidade_id,
+            ordem=ordem,
+        )
+    _salvar_trechos_roteiro(roteiro, destinos_post, trechos_times)
+    _atualizar_datas_roteiro_apos_salvar_trechos(roteiro)
+    return roteiro
 
 
 def _parse_trechos_times_post(request, num_trechos):
@@ -1823,10 +1869,14 @@ def _get_oficio_or_404_for_user(pk, user=None):
     """
     queryset = Oficio.objects.prefetch_related('viajantes', 'trechos').select_related(
         'evento',
+        'evento__fundamentacao__coordenador_operacional',
+        'evento__fundamentacao__coordenador_administrativo',
+        'evento__fundamentacao__solicitante',
         'veiculo',
         'motorista_viajante',
         'modelo_motivo',
         'roteiro_evento',
+        'carona_oficio_referencia',
     )
     if get_oficio_justificativa_schema_status()['available']:
         queryset = queryset.select_related('justificativa_modelo')
@@ -1841,6 +1891,94 @@ def _save_oficio_preserving_status(oficio, update_fields):
     """
     fields = [field for field in update_fields if field != 'status']
     oficio.save(update_fields=list(dict.fromkeys([*fields, 'updated_at'])))
+
+
+def _is_autosave_request(request):
+    return (
+        request.method == 'POST'
+        and request.POST.get('autosave') == '1'
+        and request.headers.get('X-Requested-With') == 'XMLHttpRequest'
+    )
+
+
+def _autosave_success_response(extra=None):
+    payload = {
+        'ok': True,
+        'saved_at': timezone.localtime().strftime('%H:%M:%S'),
+    }
+    if extra:
+        payload.update(extra)
+    return JsonResponse(payload)
+
+
+def _build_oficio_wizard_steps(oficio, current_key, justificativa_info=None):
+    justificativa_info = justificativa_info or _build_oficio_justificativa_info(oficio)
+    resumo_url = reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk})
+    steps = [
+        {
+            'key': 'step1',
+            'number': 1,
+            'label': 'Dados e viajantes',
+            'url': reverse('eventos:oficio-step1', kwargs={'pk': oficio.pk}),
+        },
+        {
+            'key': 'step2',
+            'number': 2,
+            'label': 'Transporte',
+            'url': reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}),
+        },
+        {
+            'key': 'step3',
+            'number': 3,
+            'label': 'Roteiro e diárias',
+            'url': reverse('eventos:oficio-step3', kwargs={'pk': oficio.pk}),
+        },
+    ]
+    include_justificativa = bool(justificativa_info.get('required')) or current_key == 'justificativa'
+    if include_justificativa:
+        steps.append(
+            {
+                'key': 'justificativa',
+                'number': 4,
+                'label': 'Justificativa',
+                'url': reverse('eventos:oficio-justificativa', kwargs={'pk': oficio.pk}),
+            }
+        )
+        steps.append(
+            {
+                'key': 'summary',
+                'number': 5,
+                'label': 'Resumo',
+                'url': resumo_url,
+            }
+        )
+    else:
+        steps.append(
+            {
+                'key': 'summary',
+                'number': 4,
+                'label': 'Resumo',
+                'url': resumo_url,
+            }
+        )
+    for item in steps:
+        item['active'] = item['key'] == current_key
+    return steps
+
+
+def _apply_oficio_wizard_context(context, oficio, current_key, page_title, justificativa_info=None):
+    context.update(
+        {
+            'hide_page_header': True,
+            'wizard_page_title': page_title,
+            'wizard_steps': _build_oficio_wizard_steps(
+                oficio,
+                current_key,
+                justificativa_info=justificativa_info,
+            ),
+        }
+    )
+    return context
 
 
 def _normalizar_ids_inteiros(raw_values):
@@ -1938,6 +2076,54 @@ def _viajantes_step1_ids_para_contexto(request, oficio):
     return list(oficio.viajantes.values_list('pk', flat=True))
 
 
+def _autosave_oficio_step1(oficio, request):
+    modelo_motivo = None
+    modelo_motivo_id = _parse_int(request.POST.get('modelo_motivo'))
+    if modelo_motivo_id:
+        modelo_motivo = ModeloMotivoViagem.objects.filter(pk=modelo_motivo_id).first()
+    custeio_tipo = request.POST.get('custeio_tipo') or Oficio.CUSTEIO_UNIDADE
+    if custeio_tipo not in dict(Oficio.CUSTEIO_CHOICES):
+        custeio_tipo = Oficio.CUSTEIO_UNIDADE
+    data_criacao = request.POST.get('data_criacao') or ''
+    try:
+        data_criacao_value = datetime.strptime(data_criacao, '%d/%m/%Y').date() if data_criacao else None
+    except ValueError:
+        try:
+            data_criacao_value = datetime.strptime(data_criacao, '%Y-%m-%d').date() if data_criacao else None
+        except ValueError:
+            data_criacao_value = None
+    viajantes_ids = _normalizar_ids_inteiros(request.POST.getlist('viajantes'))
+    viajantes = list(Viajante.objects.filter(pk__in=viajantes_ids))
+
+    oficio.protocolo = Oficio.normalize_protocolo(request.POST.get('protocolo') or '')
+    oficio.data_criacao = data_criacao_value or oficio.data_criacao or timezone.localdate()
+    oficio.modelo_motivo = modelo_motivo
+    oficio.motivo = (request.POST.get('motivo') or '').strip()
+    oficio.custeio_tipo = custeio_tipo
+    oficio.nome_instituicao_custeio = (
+        (request.POST.get('nome_instituicao_custeio') or '').strip()
+        if custeio_tipo == Oficio.CUSTEIO_OUTRA_INSTITUICAO
+        else ''
+    )
+    _save_oficio_preserving_status(
+        oficio,
+        [
+            'protocolo',
+            'data_criacao',
+            'modelo_motivo',
+            'motivo',
+            'custeio_tipo',
+            'nome_instituicao_custeio',
+        ],
+    )
+    oficio.viajantes.set(viajantes)
+    if oficio.evento_id:
+        _evento_sincronizar_participantes(
+            oficio.evento,
+            viajantes_ids=[viajante.pk for viajante in viajantes],
+        )
+
+
 @login_required
 @require_http_methods(['GET'])
 def oficio_step1_viajantes_api(request):
@@ -1992,6 +2178,9 @@ def oficio_step1(request, pk):
     if _bloquear_edicao_oficio_se_evento_finalizado(request, oficio):
         return redirect('eventos:oficio-documentos', pk=oficio.pk)
     evento = oficio.evento
+    if _is_autosave_request(request):
+        _autosave_oficio_step1(oficio, request)
+        return _autosave_success_response()
     initial = _build_oficio_step1_initial(oficio)
     selected_viajantes_ids = _viajantes_step1_ids_para_contexto(request, oficio)
     if selected_viajantes_ids:
@@ -2085,7 +2274,11 @@ def oficio_step1(request, pk):
         'selected_viajantes': selected_viajantes,
         'selected_viajantes_payload': selected_viajantes_payload,
     }
-    return render(request, 'eventos/oficio/wizard_step1.html', context)
+    return render(
+        request,
+        'eventos/oficio/wizard_step1.html',
+        _apply_oficio_wizard_context(context, oficio, 'step1', 'Dados e viajantes'),
+    )
 
 
 @login_required
@@ -2437,12 +2630,11 @@ def _build_step3_empty_state(oficio, roteiro_modo=None, seed_source_label='', ro
     }
 
 
-def _get_step3_event_routes(oficio):
-    if not oficio.evento_id:
-        return []
-    return list(
-        RoteiroEvento.objects.filter(evento=oficio.evento)
-        .select_related('origem_estado', 'origem_cidade', 'origem_cidade__estado')
+def _get_step3_saved_routes(oficio, include_ids=None):
+    include_ids = {int(value) for value in (include_ids or []) if value}
+    queryset = (
+        RoteiroEvento.objects.filter(Q(status=RoteiroEvento.STATUS_FINALIZADO) | Q(pk__in=include_ids))
+        .select_related('evento', 'origem_estado', 'origem_cidade', 'origem_cidade__estado')
         .prefetch_related(
             'destinos',
             'destinos__estado',
@@ -2455,11 +2647,21 @@ def _get_step3_event_routes(oficio):
             'trechos__destino_cidade',
             'trechos__destino_cidade__estado',
         )
-        .order_by('-created_at')
+        .distinct()
+    )
+    routes = list(queryset)
+    return sorted(
+        routes,
+        key=lambda roteiro: (
+            0 if roteiro.pk == oficio.roteiro_evento_id else 1,
+            0 if oficio.evento_id and roteiro.evento_id == oficio.evento_id else 1,
+            0 if roteiro.tipo == RoteiroEvento.TIPO_AVULSO else 1,
+            -(roteiro.created_at.timestamp() if roteiro.created_at else 0),
+        ),
     )
 
 
-def _build_step3_state_from_roteiro_evento(roteiro, seed_source_label='Pré-preenchido com o roteiro do evento.'):
+def _build_step3_state_from_roteiro_evento(roteiro, seed_source_label='Pré-preenchido com o roteiro salvo.'):
     state = _build_step3_state_from_estrutura(
         _estrutura_trechos(roteiro),
         _destinos_roteiro_para_template(roteiro),
@@ -2480,7 +2682,8 @@ def _build_step3_state_from_roteiro_evento(roteiro, seed_source_label='Pré-pree
 def _build_step3_route_options(oficio):
     options = []
     state_map = {}
-    for roteiro in _get_step3_event_routes(oficio):
+    include_ids = [oficio.roteiro_evento_id] if oficio.roteiro_evento_id else []
+    for roteiro in _get_step3_saved_routes(oficio, include_ids=include_ids):
         destinos = [
             _step3_local_label(destino.cidade, destino.estado)
             for destino in roteiro.destinos.select_related('cidade', 'estado').order_by('ordem', 'id')
@@ -2490,12 +2693,16 @@ def _build_step3_route_options(oficio):
             resumo += ' -> ...'
         state = _build_step3_state_from_roteiro_evento(roteiro)
         state_map[roteiro.pk] = state
+        tipo_label = 'Avulso' if roteiro.tipo == RoteiroEvento.TIPO_AVULSO else 'Evento'
+        if roteiro.evento_id and roteiro.evento:
+            tipo_label = f'{tipo_label}: {roteiro.evento.titulo}'
         options.append(
             {
                 'id': roteiro.pk,
                 'label': state['roteiro_evento_label'],
                 'resumo': resumo,
                 'status': roteiro.status,
+                'tipo_label': tipo_label,
                 'state': _serialize_step3_state(state),
             }
         )
@@ -2503,19 +2710,6 @@ def _build_step3_route_options(oficio):
 
 
 def _get_oficio_step3_saved_state(oficio):
-    def _retorno_tempo_salvo():
-        if not (
-            oficio.retorno_saida_data
-            and oficio.retorno_saida_hora
-            and oficio.retorno_chegada_data
-            and oficio.retorno_chegada_hora
-        ):
-            return ''
-        saida_dt = datetime.combine(oficio.retorno_saida_data, oficio.retorno_saida_hora)
-        chegada_dt = datetime.combine(oficio.retorno_chegada_data, oficio.retorno_chegada_hora)
-        total_min = int((chegada_dt - saida_dt).total_seconds() // 60)
-        return total_min if total_min >= 0 else ''
-
     trechos_salvos = list(
         OficioTrecho.objects.filter(oficio=oficio)
         .select_related(
@@ -2563,8 +2757,8 @@ def _get_oficio_step3_saved_state(oficio):
                     'rota_fonte': trecho.rota_fonte or '',
                 }
             )
-        sede_cidade = oficio.cidade_sede or (trechos_salvos[0].origem_cidade if trechos_salvos else None)
-        sede_estado = oficio.estado_sede or getattr(sede_cidade, 'estado', None) or (trechos_salvos[0].origem_estado if trechos_salvos else None)
+        sede_cidade = oficio.cidade_sede or trechos_salvos[0].origem_cidade
+        sede_estado = oficio.estado_sede or getattr(sede_cidade, 'estado', None) or trechos_salvos[0].origem_estado
         ultimo_trecho = trechos_salvos[-1]
         retorno_saida = oficio.retorno_saida_cidade or _step3_local_label(ultimo_trecho.destino_cidade, ultimo_trecho.destino_estado)
         retorno_chegada = oficio.retorno_chegada_cidade or _step3_local_label(sede_cidade, sede_estado)
@@ -2585,15 +2779,52 @@ def _get_oficio_step3_saved_state(oficio):
                 'saida_hora': _step3_time_input(oficio.retorno_saida_hora),
                 'chegada_data': _step3_date_input(oficio.retorno_chegada_data),
                 'chegada_hora': _step3_time_input(oficio.retorno_chegada_hora),
-                'distancia_km': '',
-                'duracao_estimada_min': _retorno_tempo_salvo(),
-                'tempo_cru_estimado_min': _retorno_tempo_salvo(),
-                'tempo_adicional_min': 0,
-                'rota_fonte': '',
+                'distancia_km': _step3_decimal_input(oficio.retorno_distancia_km),
+                'duracao_estimada_min': oficio.retorno_duracao_estimada_min or '',
+                'tempo_cru_estimado_min': oficio.retorno_tempo_cru_estimado_min or '',
+                'tempo_adicional_min': oficio.retorno_tempo_adicional_min or 0,
+                'rota_fonte': oficio.retorno_rota_fonte or '',
             },
             'seed_source_label': '',
         }
-    return None
+    if oficio.roteiro_evento_id:
+        base_state = _build_step3_state_from_roteiro_evento(oficio.roteiro_evento, seed_source_label='')
+    elif (
+        oficio.estado_sede_id
+        or oficio.cidade_sede_id
+        or oficio.retorno_saida_data
+        or oficio.retorno_chegada_data
+    ):
+        base_state = _build_step3_empty_state(
+            oficio,
+            roteiro_modo=oficio.roteiro_modo or Oficio.ROTEIRO_MODO_PROPRIO,
+            roteiro_evento_id=oficio.roteiro_evento_id,
+            roteiro_evento_label=_build_step3_roteiro_label(oficio.roteiro_evento) if oficio.roteiro_evento_id else '',
+        )
+        base_state['sede_estado_id'] = oficio.estado_sede_id
+        base_state['sede_cidade_id'] = oficio.cidade_sede_id
+    else:
+        return None
+
+    base_state['retorno'].update(
+        {
+            'origem_nome': oficio.retorno_saida_cidade or base_state['retorno'].get('origem_nome') or '',
+            'destino_nome': oficio.retorno_chegada_cidade or base_state['retorno'].get('destino_nome') or '',
+            'saida_cidade': oficio.retorno_saida_cidade or base_state['retorno'].get('saida_cidade') or '',
+            'chegada_cidade': oficio.retorno_chegada_cidade or base_state['retorno'].get('chegada_cidade') or '',
+            'saida_data': _step3_date_input(oficio.retorno_saida_data),
+            'saida_hora': _step3_time_input(oficio.retorno_saida_hora),
+            'chegada_data': _step3_date_input(oficio.retorno_chegada_data),
+            'chegada_hora': _step3_time_input(oficio.retorno_chegada_hora),
+            'distancia_km': _step3_decimal_input(oficio.retorno_distancia_km),
+            'duracao_estimada_min': oficio.retorno_duracao_estimada_min or '',
+            'tempo_cru_estimado_min': oficio.retorno_tempo_cru_estimado_min or '',
+            'tempo_adicional_min': oficio.retorno_tempo_adicional_min or 0,
+            'rota_fonte': oficio.retorno_rota_fonte or '',
+        }
+    )
+    base_state['seed_source_label'] = ''
+    return base_state
 
 
 # Step 3 overrides - escolha de roteiro do evento, roteiro próprio e diárias legadas
@@ -2610,7 +2841,7 @@ def _get_oficio_step3_seed_state(oficio, route_options, route_state_map):
         return _build_step3_empty_state(
             oficio,
             roteiro_modo=Oficio.ROTEIRO_MODO_EVENTO,
-            seed_source_label='Selecione um roteiro do evento para carregar os trechos.',
+            seed_source_label='Selecione um roteiro salvo para carregar os trechos.',
         )
     if oficio.evento_id and oficio.evento.destinos.exists():
         sede_cidade = oficio.evento.cidade_base or oficio.evento.cidade_principal
@@ -2729,6 +2960,176 @@ def _build_step3_state_from_post(request, oficio=None, route_state_map=None, for
     return state
 
 
+def _autosave_oficio_step3(oficio, state):
+    roteiro_evento = None
+    roteiro_evento_id = _parse_int(state.get('roteiro_evento_id'))
+    if roteiro_evento_id:
+        roteiro_evento = RoteiroEvento.objects.filter(pk=roteiro_evento_id).first()
+    roteiro_modo = state.get('roteiro_modo') or Oficio.ROTEIRO_MODO_PROPRIO
+    if roteiro_modo not in {Oficio.ROTEIRO_MODO_EVENTO, Oficio.ROTEIRO_MODO_PROPRIO}:
+        roteiro_modo = Oficio.ROTEIRO_MODO_PROPRIO
+    if roteiro_modo != Oficio.ROTEIRO_MODO_EVENTO:
+        roteiro_evento = None
+
+    sede_estado = Estado.objects.filter(pk=_parse_int(state.get('sede_estado_id')), ativo=True).first()
+    sede_cidade = Cidade.objects.select_related('estado').filter(pk=_parse_int(state.get('sede_cidade_id')), ativo=True).first()
+    if sede_cidade and not sede_estado:
+        sede_estado = getattr(sede_cidade, 'estado', None)
+
+    cleaned_trechos = []
+    for idx, trecho in enumerate(state.get('trechos', [])):
+        if not any(
+            [
+                trecho.get('origem_estado_id'),
+                trecho.get('origem_cidade_id'),
+                trecho.get('destino_estado_id'),
+                trecho.get('destino_cidade_id'),
+                trecho.get('saida_data'),
+                trecho.get('saida_hora'),
+                trecho.get('chegada_data'),
+                trecho.get('chegada_hora'),
+                trecho.get('distancia_km'),
+                trecho.get('tempo_cru_estimado_min'),
+                trecho.get('tempo_adicional_min'),
+                trecho.get('rota_fonte'),
+            ]
+        ):
+            continue
+        origem_cidade = Cidade.objects.select_related('estado').filter(pk=_parse_int(trecho.get('origem_cidade_id')), ativo=True).first()
+        destino_cidade = Cidade.objects.select_related('estado').filter(pk=_parse_int(trecho.get('destino_cidade_id')), ativo=True).first()
+        origem_estado = Estado.objects.filter(
+            pk=_parse_int(trecho.get('origem_estado_id')) or getattr(origem_cidade, 'estado_id', None),
+            ativo=True,
+        ).first()
+        destino_estado = Estado.objects.filter(
+            pk=_parse_int(trecho.get('destino_estado_id')) or getattr(destino_cidade, 'estado_id', None),
+            ativo=True,
+        ).first()
+        tempo_cru = _parse_int(trecho.get('tempo_cru_estimado_min'))
+        tempo_adicional = _parse_int(trecho.get('tempo_adicional_min')) or 0
+        if tempo_adicional < 0:
+            tempo_adicional = 0
+        duracao_estimada = _parse_int(trecho.get('duracao_estimada_min'))
+        if duracao_estimada is None and ((tempo_cru or 0) + tempo_adicional) > 0:
+            duracao_estimada = (tempo_cru or 0) + tempo_adicional
+        cleaned_trechos.append(
+            {
+                'ordem': idx,
+                'origem_estado_id': getattr(origem_estado, 'pk', None),
+                'origem_cidade_id': getattr(origem_cidade, 'pk', None),
+                'destino_estado_id': getattr(destino_estado, 'pk', None),
+                'destino_cidade_id': getattr(destino_cidade, 'pk', None),
+                'saida_data': _parse_step3_date(trecho.get('saida_data')),
+                'saida_hora': _parse_step3_time(trecho.get('saida_hora')),
+                'chegada_data': _parse_step3_date(trecho.get('chegada_data')),
+                'chegada_hora': _parse_step3_time(trecho.get('chegada_hora')),
+                'distancia_km': _parse_step3_decimal(trecho.get('distancia_km')),
+                'tempo_cru_estimado_min': tempo_cru,
+                'tempo_adicional_min': tempo_adicional,
+                'duracao_estimada_min': duracao_estimada,
+                'rota_fonte': (trecho.get('rota_fonte') or '').strip(),
+            }
+        )
+
+    retorno = state.get('retorno') or {}
+    retorno_tempo_cru = _parse_int(retorno.get('tempo_cru_estimado_min'))
+    retorno_tempo_adicional = _parse_int(retorno.get('tempo_adicional_min')) or 0
+    if retorno_tempo_adicional < 0:
+        retorno_tempo_adicional = 0
+    retorno_duracao = _parse_int(retorno.get('duracao_estimada_min'))
+    if retorno_duracao is None and ((retorno_tempo_cru or 0) + retorno_tempo_adicional) > 0:
+        retorno_duracao = (retorno_tempo_cru or 0) + retorno_tempo_adicional
+
+    diarias_resultado = None
+    tipo_destino = ''
+    validated = _validate_step3_state(state, oficio=oficio)
+    if validated['ok']:
+        try:
+            _, paradas, _ = _collect_step3_markers_payload(state, oficio=oficio)
+            tipo_destino = infer_tipo_destino_from_paradas(paradas)
+            diarias_resultado = _calculate_step3_diarias_from_state(oficio, state)
+        except ValueError:
+            diarias_resultado = None
+            tipo_destino = ''
+
+    oficio.roteiro_modo = roteiro_modo
+    oficio.roteiro_evento = roteiro_evento
+    oficio.estado_sede = sede_estado
+    oficio.cidade_sede = sede_cidade
+    oficio.tipo_destino = tipo_destino
+    oficio.retorno_saida_cidade = (retorno.get('saida_cidade') or retorno.get('origem_nome') or '').strip()
+    oficio.retorno_saida_data = _parse_step3_date(retorno.get('saida_data'))
+    oficio.retorno_saida_hora = _parse_step3_time(retorno.get('saida_hora'))
+    oficio.retorno_chegada_cidade = (retorno.get('chegada_cidade') or retorno.get('destino_nome') or '').strip()
+    oficio.retorno_chegada_data = _parse_step3_date(retorno.get('chegada_data'))
+    oficio.retorno_chegada_hora = _parse_step3_time(retorno.get('chegada_hora'))
+    oficio.retorno_distancia_km = _parse_step3_decimal(retorno.get('distancia_km'))
+    oficio.retorno_duracao_estimada_min = retorno_duracao
+    oficio.retorno_tempo_cru_estimado_min = retorno_tempo_cru
+    oficio.retorno_tempo_adicional_min = retorno_tempo_adicional
+    oficio.retorno_rota_fonte = (retorno.get('rota_fonte') or '').strip()
+    oficio.retorno_rota_calculada_em = (
+        timezone.now()
+        if oficio.retorno_distancia_km is not None or oficio.retorno_tempo_cru_estimado_min is not None
+        else None
+    )
+    oficio.quantidade_diarias = (diarias_resultado or {}).get('totais', {}).get('total_diarias', '')
+    oficio.valor_diarias = (diarias_resultado or {}).get('totais', {}).get('total_valor', '')
+    oficio.valor_diarias_extenso = (diarias_resultado or {}).get('totais', {}).get('valor_extenso', '')
+
+    with transaction.atomic():
+        _save_oficio_preserving_status(
+            oficio,
+            [
+                'roteiro_modo',
+                'roteiro_evento',
+                'estado_sede',
+                'cidade_sede',
+                'tipo_destino',
+                'retorno_saida_cidade',
+                'retorno_saida_data',
+                'retorno_saida_hora',
+                'retorno_chegada_cidade',
+                'retorno_chegada_data',
+                'retorno_chegada_hora',
+                'retorno_distancia_km',
+                'retorno_duracao_estimada_min',
+                'retorno_tempo_cru_estimado_min',
+                'retorno_tempo_adicional_min',
+                'retorno_rota_fonte',
+                'retorno_rota_calculada_em',
+                'quantidade_diarias',
+                'valor_diarias',
+                'valor_diarias_extenso',
+            ],
+        )
+        oficio.trechos.all().delete()
+        if cleaned_trechos:
+            OficioTrecho.objects.bulk_create(
+                [
+                    OficioTrecho(
+                        oficio=oficio,
+                        ordem=trecho['ordem'],
+                        origem_estado_id=trecho.get('origem_estado_id'),
+                        origem_cidade_id=trecho.get('origem_cidade_id'),
+                        destino_estado_id=trecho.get('destino_estado_id'),
+                        destino_cidade_id=trecho.get('destino_cidade_id'),
+                        saida_data=trecho.get('saida_data'),
+                        saida_hora=trecho.get('saida_hora'),
+                        chegada_data=trecho.get('chegada_data'),
+                        chegada_hora=trecho.get('chegada_hora'),
+                        distancia_km=trecho.get('distancia_km'),
+                        duracao_estimada_min=trecho.get('duracao_estimada_min'),
+                        tempo_cru_estimado_min=trecho.get('tempo_cru_estimado_min'),
+                        tempo_adicional_min=trecho.get('tempo_adicional_min'),
+                        rota_fonte=trecho.get('rota_fonte') or '',
+                        rota_calculada_em=timezone.now() if trecho.get('distancia_km') is not None or trecho.get('tempo_cru_estimado_min') is not None else None,
+                    )
+                    for trecho in cleaned_trechos
+                ]
+            )
+
+
 def _validate_step3_state(state, oficio=None):
     errors = []
     roteiro_modo = state.get('roteiro_modo') or Oficio.ROTEIRO_MODO_PROPRIO
@@ -2736,14 +3137,11 @@ def _validate_step3_state(state, oficio=None):
     roteiro_evento = None
     if roteiro_modo == Oficio.ROTEIRO_MODO_EVENTO:
         if not roteiro_evento_id:
-            errors.append('Selecione um roteiro do evento para usar neste ofício.')
+            errors.append('Selecione um roteiro salvo para usar neste ofício.')
         else:
-            roteiro_qs = RoteiroEvento.objects.filter(pk=roteiro_evento_id)
-            if oficio and oficio.evento_id:
-                roteiro_qs = roteiro_qs.filter(evento=oficio.evento)
-            roteiro_evento = roteiro_qs.first()
+            roteiro_evento = RoteiroEvento.objects.filter(pk=roteiro_evento_id).first()
             if not roteiro_evento:
-                errors.append('O roteiro selecionado não pertence a este evento.')
+                errors.append('O roteiro salvo selecionado não está mais disponível.')
 
     sede_estado_id = state.get('sede_estado_id')
     sede_cidade_id = state.get('sede_cidade_id')
@@ -2871,7 +3269,7 @@ def _collect_step3_markers_payload(state, oficio=None):
     roteiro_modo = state.get('roteiro_modo') or Oficio.ROTEIRO_MODO_PROPRIO
     roteiro_evento_id = state.get('roteiro_evento_id')
     if roteiro_modo == Oficio.ROTEIRO_MODO_EVENTO and not roteiro_evento_id:
-        raise ValueError('Selecione um roteiro do evento para usar neste ofício.')
+        raise ValueError('Selecione um roteiro salvo para usar neste ofício.')
     trechos = state.get('trechos') or []
     if not trechos:
         raise ValueError('Preencha datas e horas para calcular.')
@@ -2949,10 +3347,156 @@ def _build_step3_diarias_fallback(oficio):
     }
 
 
+def _step3_combine_date_time(data_value, hora_value):
+    if not data_value or not hora_value:
+        return None
+    return datetime.combine(data_value, hora_value)
+
+
+def _build_step3_trechos_para_roteiro(validated, state):
+    trechos = []
+    for trecho in validated['trechos']:
+        trechos.append(
+            {
+                'saida_dt': _step3_combine_date_time(trecho.get('saida_data'), trecho.get('saida_hora')),
+                'chegada_dt': _step3_combine_date_time(trecho.get('chegada_data'), trecho.get('chegada_hora')),
+                'distancia_km': trecho.get('distancia_km'),
+                'duracao_estimada_min': trecho.get('duracao_estimada_min'),
+                'tempo_cru_estimado_min': trecho.get('tempo_cru_estimado_min'),
+                'tempo_adicional_min': trecho.get('tempo_adicional_min') or 0,
+            }
+        )
+    retorno_state = state.get('retorno') or {}
+    retorno_tempo_cru = _parse_int(retorno_state.get('tempo_cru_estimado_min'))
+    retorno_tempo_adicional = _parse_int(retorno_state.get('tempo_adicional_min')) or 0
+    if retorno_tempo_adicional < 0:
+        retorno_tempo_adicional = 0
+    retorno_duracao = _parse_int(retorno_state.get('duracao_estimada_min'))
+    if retorno_duracao is None and ((retorno_tempo_cru or 0) + retorno_tempo_adicional) > 0:
+        retorno_duracao = (retorno_tempo_cru or 0) + retorno_tempo_adicional
+    trechos.append(
+        {
+            'saida_dt': _step3_combine_date_time(validated.get('retorno_saida_data'), validated.get('retorno_saida_hora')),
+            'chegada_dt': _step3_combine_date_time(validated.get('retorno_chegada_data'), validated.get('retorno_chegada_hora')),
+            'distancia_km': _parse_step3_decimal(retorno_state.get('distancia_km')),
+            'duracao_estimada_min': retorno_duracao,
+            'tempo_cru_estimado_min': retorno_tempo_cru,
+            'tempo_adicional_min': retorno_tempo_adicional,
+        }
+    )
+    return trechos
+
+
+def _step3_signature_datetime(value):
+    if not value:
+        return ''
+    if getattr(value, 'tzinfo', None):
+        value = timezone.localtime(value)
+    return value.strftime('%Y-%m-%dT%H:%M')
+
+
+def _step3_signature_decimal(value):
+    decimal_value = _parse_step3_decimal(value)
+    if decimal_value is None:
+        return ''
+    return f'{decimal_value.quantize(Decimal("0.01")):.2f}'
+
+
+def _build_step3_signature_from_state(validated, state):
+    destinos = tuple(
+        (item.get('estado_id'), item.get('cidade_id'))
+        for item in state.get('destinos_atuais', [])
+        if item.get('estado_id') and item.get('cidade_id')
+    )
+    trechos = tuple(
+        (
+            _step3_signature_datetime(trecho.get('saida_dt')),
+            _step3_signature_datetime(trecho.get('chegada_dt')),
+            _step3_signature_decimal(trecho.get('distancia_km')),
+            trecho.get('duracao_estimada_min') or '',
+            trecho.get('tempo_cru_estimado_min') or '',
+            trecho.get('tempo_adicional_min') or 0,
+        )
+        for trecho in _build_step3_trechos_para_roteiro(validated, state)
+    )
+    return (
+        getattr(validated.get('sede_estado'), 'pk', None),
+        getattr(validated.get('sede_cidade'), 'pk', None),
+        destinos,
+        trechos,
+    )
+
+
+def _build_step3_signature_from_roteiro(roteiro):
+    destinos = tuple(
+        (destino.estado_id, destino.cidade_id)
+        for destino in roteiro.destinos.select_related('estado', 'cidade').order_by('ordem', 'id')
+    )
+    trechos = tuple(
+        (
+            _step3_signature_datetime(trecho.saida_dt),
+            _step3_signature_datetime(trecho.chegada_dt),
+            _step3_signature_decimal(trecho.distancia_km),
+            trecho.duracao_estimada_min or '',
+            trecho.tempo_cru_estimado_min or '',
+            trecho.tempo_adicional_min or 0,
+        )
+        for trecho in roteiro.trechos.order_by('ordem', 'id')
+    )
+    return (
+        roteiro.origem_estado_id,
+        roteiro.origem_cidade_id,
+        destinos,
+        trechos,
+    )
+
+
+def _find_existing_step3_route(oficio, state, validated):
+    signature = _build_step3_signature_from_state(validated, state)
+    include_ids = [validated['roteiro_evento'].pk] if validated.get('roteiro_evento') else []
+    for roteiro in _get_step3_saved_routes(oficio, include_ids=include_ids):
+        if _build_step3_signature_from_roteiro(roteiro) == signature:
+            return roteiro
+    return None
+
+
+def _salvar_roteiro_reutilizavel_oficio(oficio, state, validated):
+    destinos_post = [
+        (item.get('estado_id'), item.get('cidade_id'))
+        for item in state.get('destinos_atuais', [])
+        if item.get('estado_id') and item.get('cidade_id')
+    ]
+    roteiro = RoteiroEvento(
+        evento=oficio.evento if oficio.evento_id else None,
+        origem_estado=validated['sede_estado'],
+        origem_cidade=validated['sede_cidade'],
+        tipo=RoteiroEvento.TIPO_EVENTO if oficio.evento_id else RoteiroEvento.TIPO_AVULSO,
+        observacoes='',
+    )
+    trechos_times = _build_step3_trechos_para_roteiro(validated, state)
+    return _salvar_roteiro_com_destinos_e_trechos(roteiro, destinos_post, trechos_times)
+
+
+def _ensure_reusable_step3_route(oficio, state, validated):
+    existente = _find_existing_step3_route(oficio, state, validated)
+    if existente:
+        return existente, False
+    return _salvar_roteiro_reutilizavel_oficio(oficio, state, validated), True
+
+
+def _apply_saved_route_reference_to_step3(state, validated, roteiro_salvo):
+    if validated.get('roteiro_modo') != Oficio.ROTEIRO_MODO_EVENTO or not roteiro_salvo:
+        return
+    state['roteiro_evento_id'] = roteiro_salvo.pk
+    state['roteiro_evento_label'] = _build_step3_roteiro_label(roteiro_salvo)
+    validated['roteiro_evento'] = roteiro_salvo
+
+
 def _salvar_step3_oficio(oficio, state, validated):
     trechos_data = validated['trechos']
     sede_estado = validated['sede_estado']
     sede_cidade = validated['sede_cidade']
+    retorno_state = state.get('retorno') or {}
     ultimo_trecho = trechos_data[-1] if trechos_data else None
     retorno_saida_cidade = (
         _step3_local_label(
@@ -2983,6 +3527,22 @@ def _salvar_step3_oficio(oficio, state, validated):
     oficio.retorno_chegada_cidade = retorno_chegada_cidade
     oficio.retorno_chegada_data = validated['retorno_chegada_data']
     oficio.retorno_chegada_hora = validated['retorno_chegada_hora']
+    oficio.retorno_distancia_km = _parse_step3_decimal(retorno_state.get('distancia_km'))
+    oficio.retorno_tempo_cru_estimado_min = _parse_int(retorno_state.get('tempo_cru_estimado_min'))
+    oficio.retorno_tempo_adicional_min = _parse_int(retorno_state.get('tempo_adicional_min')) or 0
+    oficio.retorno_duracao_estimada_min = _parse_int(retorno_state.get('duracao_estimada_min'))
+    if oficio.retorno_duracao_estimada_min is None and (
+        (oficio.retorno_tempo_cru_estimado_min or 0) + (oficio.retorno_tempo_adicional_min or 0)
+    ) > 0:
+        oficio.retorno_duracao_estimada_min = (
+            (oficio.retorno_tempo_cru_estimado_min or 0) + (oficio.retorno_tempo_adicional_min or 0)
+        )
+    oficio.retorno_rota_fonte = (retorno_state.get('rota_fonte') or '').strip()
+    oficio.retorno_rota_calculada_em = (
+        timezone.now()
+        if oficio.retorno_distancia_km is not None or oficio.retorno_tempo_cru_estimado_min is not None
+        else None
+    )
     oficio.quantidade_diarias = (diarias_resultado or {}).get('totais', {}).get('total_diarias', '')
     oficio.valor_diarias = (diarias_resultado or {}).get('totais', {}).get('total_valor', '')
     oficio.valor_diarias_extenso = (diarias_resultado or {}).get('totais', {}).get('valor_extenso', '')
@@ -3002,6 +3562,12 @@ def _salvar_step3_oficio(oficio, state, validated):
                 'retorno_chegada_cidade',
                 'retorno_chegada_data',
                 'retorno_chegada_hora',
+                'retorno_distancia_km',
+                'retorno_tempo_cru_estimado_min',
+                'retorno_tempo_adicional_min',
+                'retorno_duracao_estimada_min',
+                'retorno_rota_fonte',
+                'retorno_rota_calculada_em',
                 'quantidade_diarias',
                 'valor_diarias',
                 'valor_diarias_extenso',
@@ -3086,6 +3652,8 @@ def _build_oficio_step3_preview(oficio, state=None, diarias_resultado=None):
         ),
         'roteiro_evento_label': current_state.get('roteiro_evento_label') or '',
         'tipo_destino': (diarias_resultado or {}).get('tipo_destino') or oficio.tipo_destino or '',
+        'periodo_display': _build_step3_periodo_display_from_state(current_state),
+        'destino_principal': _build_step3_destino_principal_from_state(current_state),
         'trechos': trechos_preview,
         'retorno': retorno_preview,
         'tem_trechos': bool(trechos_preview),
@@ -3249,17 +3817,94 @@ def _build_oficio_step4_context(oficio, finalize_validation=None):
     else:
         diarias_resultado = _build_step3_diarias_fallback(oficio)
     justificativa_info = _build_oficio_justificativa_info(oficio)
+    step1_preview = _build_oficio_step1_preview(oficio)
+    step2_form = OficioStep2Form(initial=_build_oficio_step2_initial(oficio), oficio=oficio)
+    step2_preview = _build_step2_preview_data(oficio, step2_form)
+    step3_preview = _build_oficio_step3_preview(oficio, saved_state, diarias_resultado=diarias_resultado)
     return {
         'oficio': oficio,
         'evento': oficio.evento,
         'step': 4,
-        'step3_preview': _build_oficio_step3_preview(oficio, saved_state, diarias_resultado=diarias_resultado),
+        'step1_preview': step1_preview,
+        'selected_viajantes': step1_preview['viajantes'],
+        'step2_preview': step2_preview,
+        'step3_preview': step3_preview,
         'finalize_validation': finalize_validation,
         'justificativa_info': justificativa_info,
+        'oficio_downloads': _build_oficio_document_download_context(oficio, DocumentoOficioTipo.OFICIO),
+        'termo_autorizacao': _build_oficio_termo_autorizacao_context(oficio),
         'justificativa_url': _oficio_justificativa_url(
             oficio,
             next_url=reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk}),
         ),
+    }
+
+
+def _build_oficio_document_download_context(oficio, tipo_documento):
+    meta = get_document_type_meta(tipo_documento)
+    actions = []
+    errors = []
+    for formato in (DocumentoFormato.DOCX, DocumentoFormato.PDF):
+        if not meta.supports(formato):
+            continue
+        status_info = get_document_generation_status(oficio, meta.tipo, formato)
+        actions.append(
+            {
+                'label': formato.value.upper(),
+                'download_label': f'Baixar {formato.value.upper()}',
+                'url': reverse(
+                    'eventos:oficio-documento-download',
+                    kwargs={
+                        'pk': oficio.pk,
+                        'tipo_documento': meta.slug,
+                        'formato': formato.value,
+                    },
+                ),
+                'status': status_info['status'],
+                'available': status_info['status'] == 'available',
+                'errors': status_info.get('errors') or [],
+            }
+        )
+        if status_info['status'] != 'available':
+            errors.extend(status_info.get('errors') or [])
+    return {
+        'label': meta.label,
+        'slug': meta.slug,
+        'available': any(action['available'] for action in actions),
+        'actions': actions,
+        'errors': list(dict.fromkeys([error for error in errors if error])),
+    }
+
+
+def _build_oficio_termo_autorizacao_context(oficio):
+    meta = get_document_type_meta(DocumentoOficioTipo.TERMO_AUTORIZACAO)
+    actions = []
+    errors = []
+    for formato in (DocumentoFormato.DOCX, DocumentoFormato.PDF):
+        if not meta.supports(formato):
+            continue
+        status_info = get_document_generation_status(oficio, meta.tipo, formato)
+        if status_info['status'] == 'available':
+            actions.append(
+                {
+                    'label': formato.value.upper(),
+                    'url': reverse(
+                        'eventos:oficio-documento-download',
+                        kwargs={
+                            'pk': oficio.pk,
+                            'tipo_documento': meta.slug,
+                            'formato': formato.value,
+                        },
+                    ),
+                }
+            )
+        else:
+            errors.extend(status_info.get('errors') or [])
+    return {
+        'label': meta.label,
+        'available': bool(actions),
+        'actions': actions,
+        'errors': list(dict.fromkeys([error for error in errors if error])),
     }
 
 
@@ -3272,11 +3917,26 @@ def _build_oficio_justificativa_context(oficio, next_url=''):
             diarias_resultado = _build_step3_diarias_fallback(oficio)
     else:
         diarias_resultado = _build_step3_diarias_fallback(oficio)
+    step1_preview = _build_oficio_step1_preview(oficio)
+    step2_form = OficioStep2Form(initial=_build_oficio_step2_initial(oficio), oficio=oficio)
+    step2_preview = _build_step2_preview_data(oficio, step2_form)
+    step3_preview = _build_oficio_step3_preview(oficio, saved_state, diarias_resultado=diarias_resultado)
+    justificativa_info = _build_oficio_justificativa_info(oficio)
     return {
         'oficio': oficio,
         'evento': oficio.evento,
-        'step3_preview': _build_oficio_step3_preview(oficio, saved_state, diarias_resultado=diarias_resultado),
-        'justificativa_info': _build_oficio_justificativa_info(oficio),
+        'step1_preview': step1_preview,
+        'selected_viajantes': step1_preview['viajantes'],
+        'step2_preview': step2_preview,
+        'step3_preview': step3_preview,
+        'justificativa_info': justificativa_info,
+        'quick_report': _build_oficio_quick_report_data(
+            oficio,
+            step1_preview,
+            step2_preview,
+            step3_preview=step3_preview,
+            justificativa_info=justificativa_info,
+        ),
         'next_url': next_url,
         'voltar_step4_url': next_url or reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk}),
         'modelos_justificativa_url': _append_query_params(
@@ -3421,6 +4081,15 @@ def oficio_step3(request, pk):
     validation_errors = []
     route_options, route_state_map = _build_step3_route_options(oficio)
     destino_estado_fixo = _get_parana_estado()
+    if _is_autosave_request(request):
+        step3_state = _build_step3_state_from_post(
+            request,
+            oficio=oficio,
+            route_state_map=route_state_map,
+            forced_destino_estado_id=getattr(destino_estado_fixo, 'pk', None),
+        )
+        _autosave_oficio_step3(oficio, step3_state)
+        return _autosave_success_response()
     if request.method == 'POST':
         step3_state = _build_step3_state_from_post(
             request,
@@ -3430,8 +4099,23 @@ def oficio_step3(request, pk):
         )
         validated = _validate_step3_state(step3_state, oficio=oficio)
         if validated['ok']:
+            if request.POST.get('salvar_roteiro'):
+                roteiro_salvo, _created = _ensure_reusable_step3_route(oficio, step3_state, validated)
+                _apply_saved_route_reference_to_step3(step3_state, validated, roteiro_salvo)
+                with transaction.atomic():
+                    _salvar_step3_oficio(oficio, step3_state, validated)
+                messages.success(request, 'Roteiro salvo para reutilização.')
+                justificativa_info = _build_oficio_justificativa_info(oficio)
+                if justificativa_info['required'] and not justificativa_info['filled']:
+                    return redirect(
+                        _oficio_justificativa_url(
+                            oficio,
+                            next_url=reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk}),
+                        )
+                    )
+                return redirect('eventos:oficio-step4', pk=oficio.pk)
             _salvar_step3_oficio(oficio, step3_state, validated)
-            messages.success(request, 'Step 3 do ofÃ­cio salvo.')
+            messages.success(request, 'Step 3 do ofício salvo.')
             if request.POST.get('avancar'):
                 return redirect('eventos:oficio-step4', pk=oficio.pk)
             return redirect('eventos:oficio-step3', pk=oficio.pk)
@@ -3456,6 +4140,7 @@ def oficio_step3(request, pk):
     step2_form = OficioStep2Form(initial=_build_oficio_step2_initial(oficio), oficio=oficio)
     step2_preview = _build_step2_preview_data(oficio, step2_form)
     step3_preview = _build_oficio_step3_preview(oficio, step3_state, diarias_resultado=diarias_resultado)
+    justificativa_info = _build_oficio_justificativa_info(oficio)
     context = {
         'oficio': oficio,
         'evento': evento,
@@ -3478,6 +4163,14 @@ def oficio_step3(request, pk):
         'selected_viajantes': step1_preview['viajantes'],
         'step2_preview': step2_preview,
         'step3_preview': step3_preview,
+        'quick_report': _build_oficio_quick_report_data(
+            oficio,
+            step1_preview,
+            step2_preview,
+            step3_preview=step3_preview,
+            justificativa_info=justificativa_info,
+        ),
+        'justificativa_info': justificativa_info,
         'step3_diarias_resultado': diarias_resultado,
         'roteiros_evento': route_options,
         'roteiros_evento_json': route_options,
@@ -3491,7 +4184,47 @@ def oficio_step3(request, pk):
             else 'Paraná (PR)'
         ),
     }
-    return render(request, 'eventos/oficio/wizard_step3.html', context)
+    wizard_key = 'step3'
+    wizard_title = 'Roteiro e diárias'
+    return render(
+        request,
+        'eventos/oficio/wizard_step3.html',
+        _apply_oficio_wizard_context(
+            context,
+            oficio,
+            wizard_key,
+            wizard_title,
+            justificativa_info=justificativa_info,
+        ),
+    )
+
+
+def _autosave_oficio_justificativa(oficio, request):
+    modelo_id = _parse_int(request.POST.get('modelo_justificativa'))
+    oficio.justificativa_modelo = (
+        ModeloJustificativa.objects.filter(pk=modelo_id).first()
+        if modelo_id
+        else None
+    )
+    oficio.justificativa_texto = (request.POST.get('justificativa_texto') or '').strip()
+    _save_oficio_preserving_status(
+        oficio,
+        ['justificativa_modelo', 'justificativa_texto'],
+    )
+    return None
+
+
+def _parse_step4_termo_choice(request, oficio):
+    raw_value = (request.POST.get('gerar_termo_preenchido') or '').strip()
+    if raw_value not in {'0', '1'}:
+        return bool(oficio.gerar_termo_preenchido)
+    return raw_value == '1'
+
+
+def _autosave_oficio_step4(oficio, request):
+    oficio.gerar_termo_preenchido = _parse_step4_termo_choice(request, oficio)
+    _save_oficio_preserving_status(oficio, ['gerar_termo_preenchido'])
+    return None
 
 
 @login_required
@@ -3506,12 +4239,45 @@ def oficio_step3_calcular_diarias(request, pk):
         route_state_map=route_state_map,
         forced_destino_estado_id=getattr(destino_estado_fixo, 'pk', None),
     )
+    validated = _validate_step3_state(step3_state, oficio=oficio)
+    if not validated['ok']:
+        return JsonResponse(
+            {
+                'ok': False,
+                'error': 'Revise os dados do roteiro antes de calcular as diárias.',
+                'errors': validated['errors'],
+            },
+            status=400,
+        )
+    roteiro_salvo, roteiro_criado = _ensure_reusable_step3_route(oficio, step3_state, validated)
+    _apply_saved_route_reference_to_step3(step3_state, validated, roteiro_salvo)
+    with transaction.atomic():
+        _salvar_step3_oficio(oficio, step3_state, validated)
     try:
         resultado = _calculate_step3_diarias_from_state(oficio, step3_state)
     except ValueError as exc:
         return JsonResponse({'ok': False, 'error': str(exc)}, status=400)
+    justificativa_info = _build_oficio_justificativa_info(oficio)
     payload = {'ok': True}
     payload.update(resultado)
+    payload.update(
+        {
+            'roteiro_salvo_id': roteiro_salvo.pk if roteiro_salvo else None,
+            'roteiro_salvo_criado': roteiro_criado,
+            'justificativa_required': justificativa_info['required'],
+            'justificativa_filled': justificativa_info['filled'],
+            'justificativa_status_label': justificativa_info['status_label'],
+            'justificativa_url': (
+                _oficio_justificativa_url(
+                    oficio,
+                    next_url=reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk}),
+                )
+                if justificativa_info['required'] and not justificativa_info['filled']
+                else ''
+            ),
+            'step3_url': reverse('eventos:oficio-step3', kwargs={'pk': oficio.pk}),
+        }
+    )
     return JsonResponse(payload)
 
 
@@ -3555,6 +4321,9 @@ def oficio_justificativa(request, pk):
     if not schema_status['available']:
         messages.error(request, schema_status['message'])
         return redirect(next_url)
+    if _is_autosave_request(request):
+        _autosave_oficio_justificativa(oficio, request)
+        return _autosave_success_response()
     form = OficioJustificativaForm(request.POST or None, oficio=oficio)
     if request.method == 'POST' and form.is_valid():
         oficio.justificativa_modelo = form.cleaned_data.get('modelo_justificativa')
@@ -3567,7 +4336,17 @@ def oficio_justificativa(request, pk):
         return redirect(next_url)
     context = _build_oficio_justificativa_context(oficio, next_url=next_url)
     context['form'] = form
-    return render(request, 'eventos/oficio/justificativa.html', context)
+    return render(
+        request,
+        'eventos/oficio/justificativa.html',
+        _apply_oficio_wizard_context(
+            context,
+            oficio,
+            'justificativa',
+            'Justificativa',
+            justificativa_info=context.get('justificativa_info'),
+        ),
+    )
 
 
 @login_required
@@ -3623,7 +4402,20 @@ def oficio_step4(request, pk):
         return redirect('eventos:oficio-documentos', pk=oficio.pk)
     evento = oficio.evento
     step4_url = reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk})
+    if _is_autosave_request(request):
+        _autosave_oficio_step4(oficio, request)
+        return _autosave_success_response()
     if request.method == 'POST':
+        gerar_termo_preenchido = _parse_step4_termo_choice(request, oficio)
+        termo_changed = oficio.gerar_termo_preenchido != gerar_termo_preenchido
+        if termo_changed:
+            oficio.gerar_termo_preenchido = gerar_termo_preenchido
+        if request.POST.get('salvar_oficio'):
+            _save_oficio_preserving_status(oficio, ['gerar_termo_preenchido'])
+            messages.success(request, 'Ofício salvo.')
+            return redirect(step4_url)
+        if termo_changed:
+            _save_oficio_preserving_status(oficio, ['gerar_termo_preenchido'])
         if request.POST.get('voltar_etapa3') and evento:
             return redirect('eventos:guiado-etapa-5', evento_id=evento.pk)
         if request.POST.get('finalizar'):
@@ -3636,16 +4428,53 @@ def oficio_step4(request, pk):
                     messages.error(request, 'Preencha a justificativa antes de finalizar o ofício.')
                     return redirect(_oficio_justificativa_url(oficio, next_url=step4_url))
                 messages.error(request, 'O ofício não pode ser finalizado enquanto houver pendências.')
+                context = _build_oficio_step4_context(oficio, finalize_validation=finalize_validation)
                 return render(
                     request,
                     'eventos/oficio/wizard_step4.html',
-                    _build_oficio_step4_context(oficio, finalize_validation=finalize_validation),
+                    _apply_oficio_wizard_context(
+                        context,
+                        oficio,
+                        'summary',
+                        'Resumo',
+                        justificativa_info=context.get('justificativa_info'),
+                    ),
                 )
             oficio.status = Oficio.STATUS_FINALIZADO
             oficio.save(update_fields=['status', 'updated_at'])
             messages.success(request, 'Ofício finalizado.')
-        return redirect('eventos:oficio-step4', pk=oficio.pk)
-    return render(request, 'eventos/oficio/wizard_step4.html', _build_oficio_step4_context(oficio))
+            if gerar_termo_preenchido:
+                termo_context = _build_oficio_termo_autorizacao_context(oficio)
+                if termo_context['actions']:
+                    links = format_html_join(
+                        ' ',
+                        '<a href="{}" class="alert-link">Baixar {}</a>',
+                        ((action['url'], action['label']) for action in termo_context['actions']),
+                    )
+                    messages.info(
+                        request,
+                        format_html('Termo de autorização pronto para geração: {}.', links),
+                    )
+                else:
+                    motivo = (
+                        termo_context['errors'][0]
+                        if termo_context['errors']
+                        else 'O termo de autorização ainda não está disponível para este ofício.'
+                    )
+                    messages.warning(request, motivo)
+        return redirect('eventos:oficios-global')
+    context = _build_oficio_step4_context(oficio)
+    return render(
+        request,
+        'eventos/oficio/wizard_step4.html',
+        _apply_oficio_wizard_context(
+            context,
+            oficio,
+            'summary',
+            'Resumo',
+            justificativa_info=context.get('justificativa_info'),
+        ),
+    )
 
 
 # ---------- Roteiros do evento (etapa 2 no fluxo de negócio) ----------
@@ -3782,43 +4611,9 @@ def guiado_etapa_2_cadastrar(request, evento_id):
         ok_destinos, msg_destinos = _validar_destinos(destinos_post)
         if form.is_valid() and ok_destinos:
             roteiro = form.save()
-            roteiro.destinos.all().delete()
-            for ordem, (estado_id, cidade_id) in enumerate(destinos_post):
-                RoteiroEventoDestino.objects.create(
-                    roteiro=roteiro,
-                    estado_id=estado_id,
-                    cidade_id=cidade_id,
-                    ordem=ordem,
-                )
-            roteiro.save()
             num_trechos = len(destinos_post) + 1
             trechos_times = _parse_trechos_times_post(request, num_trechos)
-            _salvar_trechos_roteiro(roteiro, destinos_post, trechos_times)
-            trechos_salvos = list(roteiro.trechos.order_by('ordem'))
-            if trechos_salvos:
-                update_fields = []
-                primeira_saida = trechos_salvos[0].saida_dt
-                if primeira_saida is not None:
-                    roteiro.saida_dt = primeira_saida
-                    update_fields.append('saida_dt')
-                if trechos_salvos[-1].tipo == RoteiroEventoTrecho.TIPO_RETORNO:
-                    ultima_saida_retorno = trechos_salvos[-1].saida_dt
-                    if ultima_saida_retorno is not None:
-                        roteiro.retorno_saida_dt = ultima_saida_retorno
-                        update_fields.append('retorno_saida_dt')
-                    if len(trechos_salvos) >= 2 and trechos_salvos[-2].chegada_dt is not None:
-                        roteiro.chegada_dt = trechos_salvos[-2].chegada_dt
-                        update_fields.append('chegada_dt')
-                    if trechos_salvos[-1].chegada_dt is not None:
-                        roteiro.retorno_chegada_dt = trechos_salvos[-1].chegada_dt
-                        update_fields.append('retorno_chegada_dt')
-                else:
-                    if trechos_salvos[-1].chegada_dt is not None:
-                        roteiro.chegada_dt = trechos_salvos[-1].chegada_dt
-                        update_fields.append('chegada_dt')
-                if update_fields:
-                    update_fields.append('status')
-                    roteiro.save(update_fields=update_fields)
+            _salvar_roteiro_com_destinos_e_trechos(roteiro, destinos_post, trechos_times)
             return redirect('eventos:guiado-etapa-2', evento_id=evento.pk)
         if not ok_destinos:
             form.add_error(None, msg_destinos)
@@ -3872,38 +4667,9 @@ def guiado_etapa_2_editar(request, evento_id, pk):
         ok_destinos, msg_destinos = _validar_destinos(destinos_post)
         if form.is_valid() and ok_destinos:
             form.save()
-            roteiro.destinos.all().delete()
-            for ordem, (estado_id, cidade_id) in enumerate(destinos_post):
-                RoteiroEventoDestino.objects.create(roteiro=roteiro, estado_id=estado_id, cidade_id=cidade_id, ordem=ordem)
-            roteiro.save()
             num_trechos = len(destinos_post) + 1
             trechos_times = _parse_trechos_times_post(request, num_trechos)
-            _salvar_trechos_roteiro(roteiro, destinos_post, trechos_times)
-            trechos_salvos = list(roteiro.trechos.order_by('ordem'))
-            if trechos_salvos:
-                update_fields = []
-                primeira_saida = trechos_salvos[0].saida_dt
-                if primeira_saida is not None:
-                    roteiro.saida_dt = primeira_saida
-                    update_fields.append('saida_dt')
-                if trechos_salvos[-1].tipo == RoteiroEventoTrecho.TIPO_RETORNO:
-                    ultima_saida_retorno = trechos_salvos[-1].saida_dt
-                    if ultima_saida_retorno is not None:
-                        roteiro.retorno_saida_dt = ultima_saida_retorno
-                        update_fields.append('retorno_saida_dt')
-                    if len(trechos_salvos) >= 2 and trechos_salvos[-2].chegada_dt is not None:
-                        roteiro.chegada_dt = trechos_salvos[-2].chegada_dt
-                        update_fields.append('chegada_dt')
-                    if trechos_salvos[-1].chegada_dt is not None:
-                        roteiro.retorno_chegada_dt = trechos_salvos[-1].chegada_dt
-                        update_fields.append('retorno_chegada_dt')
-                else:
-                    if trechos_salvos[-1].chegada_dt is not None:
-                        roteiro.chegada_dt = trechos_salvos[-1].chegada_dt
-                        update_fields.append('chegada_dt')
-                if update_fields:
-                    update_fields.append('status')
-                    roteiro.save(update_fields=update_fields)
+            _salvar_roteiro_com_destinos_e_trechos(roteiro, destinos_post, trechos_times)
             return redirect('eventos:guiado-etapa-2', evento_id=evento.pk)
         if not ok_destinos:
             form.add_error(None, msg_destinos)
@@ -3984,42 +4750,9 @@ def roteiro_avulso_cadastrar(request):
             roteiro.evento = None
             roteiro.tipo = RoteiroEvento.TIPO_AVULSO
             roteiro.save()
-            roteiro.destinos.all().delete()
-            for ordem, (estado_id, cidade_id) in enumerate(destinos_post):
-                RoteiroEventoDestino.objects.create(
-                    roteiro=roteiro,
-                    estado_id=estado_id,
-                    cidade_id=cidade_id,
-                    ordem=ordem,
-                )
             num_trechos = len(destinos_post) + 1
             trechos_times = _parse_trechos_times_post(request, num_trechos)
-            _salvar_trechos_roteiro(roteiro, destinos_post, trechos_times)
-            trechos_salvos = list(roteiro.trechos.order_by('ordem'))
-            if trechos_salvos:
-                update_fields = []
-                primeira_saida = trechos_salvos[0].saida_dt
-                if primeira_saida is not None:
-                    roteiro.saida_dt = primeira_saida
-                    update_fields.append('saida_dt')
-                if trechos_salvos[-1].tipo == RoteiroEventoTrecho.TIPO_RETORNO:
-                    ultima_saida_retorno = trechos_salvos[-1].saida_dt
-                    if ultima_saida_retorno is not None:
-                        roteiro.retorno_saida_dt = ultima_saida_retorno
-                        update_fields.append('retorno_saida_dt')
-                    if len(trechos_salvos) >= 2 and trechos_salvos[-2].chegada_dt is not None:
-                        roteiro.chegada_dt = trechos_salvos[-2].chegada_dt
-                        update_fields.append('chegada_dt')
-                    if trechos_salvos[-1].chegada_dt is not None:
-                        roteiro.retorno_chegada_dt = trechos_salvos[-1].chegada_dt
-                        update_fields.append('retorno_chegada_dt')
-                else:
-                    if trechos_salvos[-1].chegada_dt is not None:
-                        roteiro.chegada_dt = trechos_salvos[-1].chegada_dt
-                        update_fields.append('chegada_dt')
-                if update_fields:
-                    update_fields.append('status')
-                    roteiro.save(update_fields=update_fields)
+            _salvar_roteiro_com_destinos_e_trechos(roteiro, destinos_post, trechos_times)
             return redirect('eventos:roteiros-global')
         if not ok_destinos:
             form.add_error(None, msg_destinos)
@@ -4074,43 +4807,9 @@ def roteiro_avulso_editar(request, pk):
             roteiro.evento = roteiro.evento  # preserva, mesmo se None
             roteiro.tipo = roteiro.tipo or RoteiroEvento.TIPO_AVULSO
             roteiro.save()
-            roteiro.destinos.all().delete()
-            for ordem, (estado_id, cidade_id) in enumerate(destinos_post):
-                RoteiroEventoDestino.objects.create(
-                    roteiro=roteiro,
-                    estado_id=estado_id,
-                    cidade_id=cidade_id,
-                    ordem=ordem,
-                )
-            roteiro.save()
             num_trechos = len(destinos_post) + 1
             trechos_times = _parse_trechos_times_post(request, num_trechos)
-            _salvar_trechos_roteiro(roteiro, destinos_post, trechos_times)
-            trechos_salvos = list(roteiro.trechos.order_by('ordem'))
-            if trechos_salvos:
-                update_fields = []
-                primeira_saida = trechos_salvos[0].saida_dt
-                if primeira_saida is not None:
-                    roteiro.saida_dt = primeira_saida
-                    update_fields.append('saida_dt')
-                if trechos_salvos[-1].tipo == RoteiroEventoTrecho.TIPO_RETORNO:
-                    ultima_saida_retorno = trechos_salvos[-1].saida_dt
-                    if ultima_saida_retorno is not None:
-                        roteiro.retorno_saida_dt = ultima_saida_retorno
-                        update_fields.append('retorno_saida_dt')
-                    if len(trechos_salvos) >= 2 and trechos_salvos[-2].chegada_dt is not None:
-                        roteiro.chegada_dt = trechos_salvos[-2].chegada_dt
-                        update_fields.append('chegada_dt')
-                    if trechos_salvos[-1].chegada_dt is not None:
-                        roteiro.retorno_chegada_dt = trechos_salvos[-1].chegada_dt
-                        update_fields.append('retorno_chegada_dt')
-                else:
-                    if trechos_salvos[-1].chegada_dt is not None:
-                        roteiro.chegada_dt = trechos_salvos[-1].chegada_dt
-                        update_fields.append('chegada_dt')
-                if update_fields:
-                    update_fields.append('status')
-                    roteiro.save(update_fields=update_fields)
+            _salvar_roteiro_com_destinos_e_trechos(roteiro, destinos_post, trechos_times)
             return redirect('eventos:roteiros-global')
         if not ok_destinos:
             form.add_error(None, msg_destinos)
@@ -4270,7 +4969,13 @@ def _build_motorista_preview_data(form):
     cargo = '' if is_manual else selected_option.get('cargo', '')
     rg = '' if is_manual else selected_option.get('rg', '')
     cpf = '' if is_manual else selected_option.get('cpf', '')
-    oficio = f'{numero}/{ano}' if (is_carona and numero and ano) else ''
+    if is_carona and numero and ano:
+        try:
+            oficio = f'{int(numero):02d}/{int(ano)}'
+        except (TypeError, ValueError):
+            oficio = f'{numero}/{ano}'
+    else:
+        oficio = ''
     protocolo_value = format_protocolo(protocolo) if (is_carona and protocolo) else ''
 
     return {
@@ -4344,6 +5049,207 @@ def _build_step2_preview_data(oficio, form):
     }
 
 
+def _get_evento_fundamentacao_safe(evento):
+    if not evento:
+        return None
+    try:
+        return evento.fundamentacao
+    except EventoFundamentacao.DoesNotExist:
+        return None
+
+
+def _display_name_or_str(obj):
+    if not obj:
+        return ''
+    return (getattr(obj, 'nome', '') or str(obj)).strip()
+
+
+def _build_oficio_responsavel_label(oficio):
+    fundamentacao = _get_evento_fundamentacao_safe(oficio.evento)
+    if not fundamentacao:
+        return ''
+    if fundamentacao.coordenador_operacional_id and fundamentacao.coordenador_operacional:
+        return _display_name_or_str(fundamentacao.coordenador_operacional)
+    if fundamentacao.coordenador_administrativo_id and fundamentacao.coordenador_administrativo:
+        return _display_name_or_str(fundamentacao.coordenador_administrativo)
+    if fundamentacao.solicitante_id and fundamentacao.solicitante:
+        return _display_name_or_str(fundamentacao.solicitante)
+    return (fundamentacao.solicitante_outros or '').strip()
+
+
+def _build_step3_periodo_display_from_state(state):
+    state = state or {}
+    trechos = state.get('trechos') or []
+    retorno = state.get('retorno') or {}
+    inicio = ''
+    fim = ''
+    if trechos:
+        primeiro = trechos[0]
+        inicio = _step3_format_date_time_br(primeiro.get('saida_data'), primeiro.get('saida_hora'))
+        ultimo = trechos[-1]
+        fim = _step3_format_date_time_br(ultimo.get('chegada_data'), ultimo.get('chegada_hora'))
+    fim_retorno = _step3_format_date_time_br(retorno.get('chegada_data'), retorno.get('chegada_hora'))
+    if fim_retorno:
+        fim = fim_retorno
+    if inicio and fim:
+        return f'{inicio} até {fim}'
+    return inicio or fim
+
+
+def _build_step3_destino_principal_from_state(state):
+    destinos = []
+    vistos = set()
+    for trecho in (state or {}).get('trechos') or []:
+        nome = (trecho.get('destino_nome') or '').strip()
+        if not nome or nome in vistos:
+            continue
+        vistos.add(nome)
+        destinos.append(nome)
+    if not destinos:
+        return ''
+    if len(destinos) == 1:
+        return destinos[0]
+    return f'{destinos[0]} (+{len(destinos) - 1})'
+
+
+def _build_oficio_quick_report_data(oficio, step1_preview, step2_preview, step3_preview=None, justificativa_info=None):
+    justificativa_info = justificativa_info or _build_oficio_justificativa_info(oficio)
+    motorista_preview = step2_preview.get('motorista') or {}
+    veiculo_partes = [value for value in [step2_preview.get('placa'), step2_preview.get('modelo')] if value]
+    veiculo_resumo = ' / '.join(veiculo_partes)
+    situacao_origem = ' / '.join(
+        [
+            value
+            for value in [oficio.get_status_display(), oficio.get_tipo_origem_display()]
+            if value
+        ]
+    )
+    carona_partes = []
+    if oficio.motorista_carona:
+        carona_partes.append('Sim')
+    if oficio.carona_oficio_referencia_id and oficio.carona_oficio_referencia:
+        carona_partes.append(oficio.carona_oficio_referencia.numero_formatado or '')
+    elif oficio.motorista_oficio_formatado:
+        carona_partes.append(oficio.motorista_oficio_formatado)
+    return {
+        'oficio': step1_preview.get('oficio') or '',
+        'protocolo': step1_preview.get('protocolo') or '',
+        'data_criacao': step1_preview.get('data_criacao') or '',
+        'situacao_origem': situacao_origem,
+        'motivo': step1_preview.get('motivo') or '',
+        'periodo': (step3_preview or {}).get('periodo_display') or '',
+        'destino_principal': (step3_preview or {}).get('destino_principal') or '',
+        'viajantes': str(len(step1_preview.get('viajantes') or [])) if step1_preview.get('viajantes') is not None else '',
+        'responsavel': _build_oficio_responsavel_label(oficio),
+        'motorista': motorista_preview.get('nome_display') or '',
+        'veiculo': veiculo_resumo,
+        'placa': step2_preview.get('placa') or '',
+        'modelo': step2_preview.get('modelo') or '',
+        'combustivel': step2_preview.get('combustivel') or '',
+        'tipo_viatura': step2_preview.get('tipo_viatura_label') or '',
+        'carona_oficio': ' / '.join([value for value in carona_partes if value]),
+        'roteiro_modo': (step3_preview or {}).get('roteiro_modo_label') or '',
+        'roteiro_fonte': (step3_preview or {}).get('roteiro_evento_label') or 'Roteiro próprio',
+        'justificativa': justificativa_info.get('status_label') or '',
+        'justificativa_required': 'Sim' if justificativa_info.get('required') else 'Não',
+        'diarias_qtd': ((step3_preview or {}).get('diarias') or {}).get('quantidade') or '',
+        'diarias_valor': ((step3_preview or {}).get('diarias') or {}).get('valor_total') or '',
+        'diarias_extenso': ((step3_preview or {}).get('diarias') or {}).get('valor_extenso') or '',
+    }
+
+
+def _autosave_oficio_step2(oficio, request):
+    from .utils import buscar_veiculo_finalizado_por_placa, mapear_tipo_viatura_para_oficio
+
+    placa = normalize_placa(request.POST.get('placa') or '')
+    veiculo = buscar_veiculo_finalizado_por_placa(placa) if placa else None
+    modelo = ' '.join(((request.POST.get('modelo') or '').strip().upper()).split())
+    combustivel = ' '.join(((request.POST.get('combustivel') or '').strip().upper()).split())
+    tipo_viatura = request.POST.get('tipo_viatura') or Oficio.TIPO_VIATURA_DESCARACTERIZADA
+    if tipo_viatura not in dict(Oficio.TIPO_VIATURA_CHOICES):
+        tipo_viatura = Oficio.TIPO_VIATURA_DESCARACTERIZADA
+    porte_raw = (request.POST.get('porte_transporte_armas') or '1').strip().lower()
+    porte_transporte_armas = porte_raw not in ('0', 'false', 'nao', 'não')
+    if veiculo:
+        if not modelo:
+            modelo = (veiculo.modelo or '').strip().upper()
+        if not combustivel and getattr(veiculo, 'combustivel_id', None):
+            combustivel = ((veiculo.combustivel.nome or '').strip().upper())
+        if not request.POST.get('tipo_viatura'):
+            tipo_viatura = mapear_tipo_viatura_para_oficio(veiculo.tipo)
+
+    motorista_raw = (request.POST.get('motorista_viajante') or '').strip()
+    motorista_manual = ' '.join(((request.POST.get('motorista_nome') or '').strip().upper()).split())
+    motorista_obj = None
+    if motorista_raw.isdigit():
+        motorista_obj = Viajante.objects.filter(pk=int(motorista_raw)).first()
+    manual_selected = motorista_raw == OficioStep2Form.MOTORISTA_SEM_CADASTRO or (
+        not motorista_raw and bool(motorista_manual)
+    )
+    motorista_nome_final = motorista_obj.nome if motorista_obj else motorista_manual
+    viajantes_ids = set(oficio.viajantes.values_list('pk', flat=True))
+    motorista_carona = bool(manual_selected or (motorista_obj and motorista_obj.pk not in viajantes_ids))
+    motorista_oficio_numero = _parse_int(request.POST.get('motorista_oficio_numero'))
+    motorista_oficio_ano = _parse_int(request.POST.get('motorista_oficio_ano')) or timezone.localdate().year
+    motorista_protocolo = Oficio.normalize_protocolo(request.POST.get('motorista_protocolo') or '')
+
+    oficio.veiculo = veiculo
+    oficio.placa = placa
+    oficio.modelo = modelo
+    oficio.combustivel = combustivel
+    oficio.tipo_viatura = tipo_viatura
+    oficio.porte_transporte_armas = porte_transporte_armas
+    oficio.motorista_viajante = motorista_obj
+    oficio.motorista = motorista_nome_final if motorista_nome_final else ''
+    oficio.motorista_carona = motorista_carona
+    if motorista_carona:
+        oficio.motorista_oficio_numero = motorista_oficio_numero
+        oficio.motorista_oficio_ano = motorista_oficio_ano if motorista_oficio_numero else None
+        oficio.motorista_oficio = (
+            f'{int(motorista_oficio_numero):02d}/{int(motorista_oficio_ano)}'
+            if motorista_oficio_numero and motorista_oficio_ano
+            else ''
+        )
+        oficio.motorista_protocolo = motorista_protocolo
+        if oficio.motorista_oficio_numero and oficio.motorista_oficio_ano:
+            oficio.carona_oficio_referencia = (
+                Oficio.objects.filter(
+                    numero=oficio.motorista_oficio_numero,
+                    ano=oficio.motorista_oficio_ano,
+                )
+                .exclude(pk=oficio.pk)
+                .first()
+            )
+        else:
+            oficio.carona_oficio_referencia = None
+    else:
+        oficio.motorista_oficio_numero = None
+        oficio.motorista_oficio_ano = None
+        oficio.motorista_oficio = ''
+        oficio.motorista_protocolo = ''
+        oficio.carona_oficio_referencia = None
+
+    _save_oficio_preserving_status(
+        oficio,
+        [
+            'veiculo_id',
+            'placa',
+            'modelo',
+            'combustivel',
+            'tipo_viatura',
+            'porte_transporte_armas',
+            'motorista_viajante_id',
+            'motorista',
+            'motorista_carona',
+            'motorista_oficio',
+            'motorista_oficio_numero',
+            'motorista_oficio_ano',
+            'motorista_protocolo',
+            'carona_oficio_referencia_id',
+        ],
+    )
+
+
 @login_required
 @require_http_methods(['GET'])
 def oficio_step2_veiculos_busca_api(request):
@@ -4389,6 +5295,9 @@ def oficio_step2(request, pk):
     if _bloquear_edicao_oficio_se_evento_finalizado(request, oficio):
         return redirect('eventos:oficio-documentos', pk=oficio.pk)
     evento = oficio.evento
+    if _is_autosave_request(request):
+        _autosave_oficio_step2(oficio, request)
+        return _autosave_success_response()
     initial = _build_oficio_step2_initial(oficio)
     form = OficioStep2Form(request.POST or None, initial=initial, oficio=oficio)
     if request.method == 'POST' and form.is_valid():
@@ -4461,7 +5370,11 @@ def oficio_step2(request, pk):
         'selected_viajantes': step1_preview['viajantes'],
         'step2_preview': step2_preview,
     }
-    return render(request, 'eventos/oficio/wizard_step2.html', context)
+    return render(
+        request,
+        'eventos/oficio/wizard_step2.html',
+        _apply_oficio_wizard_context(context, oficio, 'step2', 'Transporte'),
+    )
 
 
 @login_required

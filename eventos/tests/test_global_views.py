@@ -131,13 +131,31 @@ class GlobalViewsTest(TestCase):
     def test_lista_global_de_oficios_responde_200_e_filtra_por_protocolo(self):
         response = self.client.get(reverse('eventos:oficios-global'))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Lista global de oficios')
+        self.assertContains(response, 'Lista de ofícios')
         self.assertContains(response, self.oficio_pt.numero_formatado)
 
         filtered = self.client.get(reverse('eventos:oficios-global'), {'protocolo': '12.345.678-9'})
         self.assertEqual(filtered.status_code, 200)
         self.assertContains(filtered, self.oficio_pt.numero_formatado)
         self.assertNotContains(filtered, self.oficio_os.protocolo_formatado)
+
+    def test_lista_global_de_oficios_renderiza_cards_agrupados_por_documento(self):
+        Oficio.objects.filter(pk=self.oficio_pt.pk).update(
+            justificativa_texto='Justificativa global preenchida.',
+            gerar_termo_preenchido=True,
+        )
+
+        response = self.client.get(reverse('eventos:oficios-global'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Cadastro de ofício')
+        self.assertNotContains(response, 'Ir para eventos')
+        self.assertNotContains(response, 'Central documental')
+        self.assertContains(response, 'oficio-process-card')
+        self.assertContains(response, 'Ofício')
+        self.assertContains(response, 'Justificativa')
+        self.assertContains(response, 'Termo de autorização')
+        self.assertContains(response, 'Abrir wizard')
 
     def test_hubs_globais_principais_respondem_200(self):
         urls = [

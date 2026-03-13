@@ -1,31 +1,13 @@
 {% extends 'base.html' %}
+{% load static %}
 
 {% block title %}Transporte — Central de Viagens{% endblock %}
 {% block page_title %}Transporte{% endblock %}
 
 {% block content %}
-<style>
-  .oficio-sticky-header {
-    position: sticky;
-    top: 1rem;
-    z-index: 1030;
-    background: var(--bs-body-bg, #fff);
-    padding-bottom: 1rem;
-  }
-
-  .oficio-sticky-panel {
-    position: sticky;
-    top: 7rem;
-  }
-
-  @media (max-width: 1199.98px) {
-    .oficio-sticky-panel {
-      position: static;
-      top: auto;
-    }
-  }
-</style>
-<div class="container-fluid py-4">
+<div class="container-fluid py-4 oficio-wizard-page">
+  {% include 'eventos/oficio/_wizard_header.html' %}
+  {% comment %}
   <div class="oficio-sticky-header">
     <div class="card shadow-sm border-0">
       <div class="card-body py-3">
@@ -49,9 +31,10 @@
       </div>
     </div>
   </div>
+  {% endcomment %}
 
-  <div class="row g-4 align-items-start">
-    <div class="col-xl-8">
+  <div class="row g-4 oficio-wizard-layout">
+    <div class="col-xxl-7 col-xl-6">
       <div class="card">
         <div class="card-body">
           <form method="post" id="oficio-step2-form">
@@ -91,7 +74,7 @@
                 </div>
               </div>
               <div class="col-md-4">
-                <a href="{{ cadastrar_veiculo_url }}" class="btn btn-outline-secondary w-100">Cadastrar nova viatura</a>
+                <a href="{{ cadastrar_veiculo_url }}" class="btn btn-outline-secondary w-100" data-autosave-link="1">Cadastrar nova viatura</a>
               </div>
             </div>
 
@@ -134,7 +117,7 @@
                   <span id="motorista-carona-hint" class="text-muted small{% if not mostrar_campos_carona %} d-none{% endif %}">(carona)</span>
                 </label>
                 <div class="d-flex gap-2 flex-wrap">
-                  <a href="{{ cadastrar_viajante_url }}" class="btn btn-outline-secondary btn-sm">Adicionar servidor</a>
+                  <a href="{{ cadastrar_viajante_url }}" class="btn btn-outline-secondary btn-sm" data-autosave-link="1">Adicionar servidor</a>
                   <button type="button" class="btn btn-outline-primary btn-sm" id="btn-toggle-motorista-mode">Usar motorista manual</button>
                 </div>
               </div>
@@ -217,8 +200,8 @@
       </div>
     </div>
 
-    <div class="col-xl-4">
-      <div class="card oficio-sticky-panel">
+    <div class="col-xxl-5 col-xl-6 oficio-quick-report-column">
+      <div class="card oficio-quick-report">
         <div class="card-body">
           <h2 class="h6 mb-3">Relatório rápido</h2>
           <dl class="row mb-3">
@@ -305,6 +288,7 @@
 </div>
 
 {{ selected_motorista_payload|json_script:"motorista-selected-data" }}
+<script src="{% static 'js/oficio_wizard.js' %}"></script>
 <script>
 (function() {
   var form = document.getElementById('oficio-step2-form');
@@ -316,6 +300,7 @@
   }
   form.dataset.step2JsInitialized = 'true';
 
+  var autosave = window.OficioWizard ? window.OficioWizard.createAutosave({ form: form }) : null;
   var masks = window.Masks || null;
   var placaInput = document.getElementById('{{ form.placa.id_for_label }}');
   var modeloInput = document.getElementById('{{ form.modelo.id_for_label }}');
@@ -360,6 +345,12 @@
   var motoristaFetchSequence = 0;
   var motoristaDebounceTimer = null;
   var selectedMotorista = parseJsonScript('motorista-selected-data');
+
+  function scheduleAutosave() {
+    if (autosave) {
+      autosave.schedule();
+    }
+  }
 
   function parseJsonScript(id) {
     var element = document.getElementById(id);
@@ -460,6 +451,29 @@
     placaLookupStatus.textContent = message || 'Digite a placa para localizar a viatura ou preencha manualmente.';
     placaLookupStatus.classList.toggle('text-success', !!found);
     placaLookupStatus.classList.toggle('text-muted', !found);
+    placaLookupStatus.dataset.found = found ? 'true' : 'false';
+    setVehicleFieldsLocked(!!found);
+  }
+
+  function setVehicleFieldsLocked(locked) {
+    if (modeloInput) {
+      modeloInput.readOnly = locked;
+      modeloInput.classList.toggle('bg-light', locked);
+    }
+    if (combustivelInput) {
+      combustivelInput.readOnly = locked;
+      combustivelInput.classList.toggle('bg-light', locked);
+    }
+    if (tipoViaturaInput) {
+      tipoViaturaInput.classList.toggle('pe-none', locked);
+      tipoViaturaInput.classList.toggle('bg-light', locked);
+      tipoViaturaInput.setAttribute('aria-disabled', locked ? 'true' : 'false');
+      if (locked) {
+        tipoViaturaInput.setAttribute('tabindex', '-1');
+      } else {
+        tipoViaturaInput.removeAttribute('tabindex');
+      }
+    }
   }
 
   function updateVehiclePreview() {
@@ -614,6 +628,7 @@
     }
     updateMotoristaState();
     clearMotoristaSuggestions();
+    scheduleAutosave();
   }
 
   function selectMotorista(item) {
@@ -633,6 +648,7 @@
     }
     updateMotoristaState();
     clearMotoristaSuggestions();
+    scheduleAutosave();
   }
 
   function activateManualMode() {
@@ -648,6 +664,7 @@
     if (motoristaManualInput) {
       motoristaManualInput.focus();
     }
+    scheduleAutosave();
   }
 
   function activateServidorMode() {
@@ -661,6 +678,7 @@
     if (motoristaAutocompleteInput) {
       motoristaAutocompleteInput.focus();
     }
+    scheduleAutosave();
   }
 
   function clearPlateSuggestions() {
@@ -754,6 +772,7 @@
     );
     updateVehiclePreview();
     clearPlateSuggestions();
+    scheduleAutosave();
   }
 
   async function searchVehicleSuggestions(term) {
@@ -863,8 +882,15 @@
     var modeloPreenchido = String(modeloInput ? modeloInput.value : '').trim();
     var combustivelPreenchido = String(combustivelInput ? combustivelInput.value : '').trim();
     var tipoViaturaPreenchido = String(tipoViaturaInput ? tipoViaturaInput.value : '').trim();
-    if (modeloPreenchido && combustivelPreenchido && tipoViaturaPreenchido) {
+    if (
+      placaLookupStatus &&
+      placaLookupStatus.dataset.found === 'true' &&
+      modeloPreenchido &&
+      combustivelPreenchido &&
+      tipoViaturaPreenchido
+    ) {
       lastExactLookup = normalized;
+      setVehicleFieldsLocked(true);
       return;
     }
     exactVehicleLookup();

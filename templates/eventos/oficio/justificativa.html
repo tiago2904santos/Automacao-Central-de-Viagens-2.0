@@ -1,105 +1,150 @@
 {% extends 'base.html' %}
+{% load static %}
 
-{% block title %}Justificativa do ofício — Central de Viagens{% endblock %}
-{% block page_title %}Justificativa do ofício{% endblock %}
+{% block title %}Justificativa — Central de Viagens{% endblock %}
+{% block page_title %}Justificativa{% endblock %}
 
 {% block content %}
-<div class="container-fluid py-4">
-  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
-    <h1 class="h4 mb-0">Justificativa do ofício {{ oficio.numero_formatado|default:"—" }}</h1>
-    <div class="d-flex gap-2">
-      <a href="{{ voltar_step4_url }}" class="btn btn-outline-secondary btn-sm">Voltar ao Step 4</a>
-      {% if evento %}
-      <a href="{% url 'eventos:guiado-etapa-3' evento.pk %}" class="btn btn-outline-secondary btn-sm">Voltar ao evento</a>
-      {% endif %}
-    </div>
-  </div>
+<div class="container-fluid py-4 oficio-wizard-page">
+  {% include 'eventos/oficio/_wizard_header.html' %}
 
-  <div class="card mb-4">
-    <div class="card-body">
-      <dl class="row mb-0">
-        <dt class="col-sm-3">Número / Ano</dt><dd class="col-sm-9">{{ oficio.numero_formatado|default:"—" }}</dd>
-        <dt class="col-sm-3">Protocolo</dt><dd class="col-sm-9">{{ oficio.protocolo_formatado|default:"—" }}</dd>
-        <dt class="col-sm-3">Data de criação</dt><dd class="col-sm-9">{{ oficio.data_criacao_formatada_br|default:"—" }}</dd>
-        <dt class="col-sm-3">Obrigatoriedade</dt>
-        <dd class="col-sm-9">
-          {% if justificativa_info.required %}
-          <span class="badge bg-danger">Obrigatória</span>
-          {% else %}
-          <span class="badge bg-secondary">Opcional</span>
-          {% endif %}
-        </dd>
-        <dt class="col-sm-3">Prazo mínimo</dt><dd class="col-sm-9">{{ justificativa_info.prazo_minimo_dias }} dia(s)</dd>
-        <dt class="col-sm-3">Antecedência</dt>
-        <dd class="col-sm-9">
-          {% if justificativa_info.dias_antecedencia is not None %}
-          {{ justificativa_info.dias_antecedencia }} dia(s)
-          {% else %}
-          Aguardando dados válidos do Step 3
-          {% endif %}
-        </dd>
-        <dt class="col-sm-3">Primeira saída</dt><dd class="col-sm-9">{{ justificativa_info.primeira_saida_display|default:"—" }}</dd>
-        <dt class="col-sm-3">Resumo da viagem</dt>
-        <dd class="col-sm-9">
-          {% if step3_preview.tem_trechos %}
-            {% for trecho in step3_preview.trechos %}
-            <div>{{ trecho.rota }}{% if trecho.saida %} — Saída: {{ trecho.saida }}{% endif %}{% if trecho.chegada %} — Chegada: {{ trecho.chegada }}{% endif %}</div>
-            {% endfor %}
-            {% if step3_preview.retorno.show %}
-            <div>Retorno: {{ step3_preview.retorno.rota }}{% if step3_preview.retorno.saida %} — Saída: {{ step3_preview.retorno.saida }}{% endif %}{% if step3_preview.retorno.chegada %} — Chegada: {{ step3_preview.retorno.chegada }}{% endif %}</div>
-            {% endif %}
-          {% else %}
-          Ainda não há trechos válidos salvos no Step 3.
-          {% endif %}
-        </dd>
-      </dl>
-    </div>
-  </div>
-
-  <div class="card">
-    <div class="card-body">
-      <form method="post">
+  <div class="row g-4 oficio-wizard-layout">
+    <div class="col-xxl-7 col-xl-6">
+      <form method="post" id="oficio-justificativa-form">
         {% csrf_token %}
         <input type="hidden" name="next" value="{{ next_url }}">
-        <div class="row g-3">
-          <div class="col-lg-6">
+
+        <div class="card mb-4">
+          <div class="card-body">
+            <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
+              <div>
+                <h2 class="h5 mb-1">Modelo de justificativa</h2>
+                <p class="text-muted small mb-0">Escolha um modelo salvo para acelerar o preenchimento e ajuste o texto final logo abaixo.</p>
+              </div>
+              <div class="d-flex gap-2 flex-wrap">
+                <a href="{{ modelos_justificativa_url }}" class="btn btn-outline-primary btn-sm" data-autosave-link="1">Gerenciar modelos</a>
+                <a href="{{ voltar_step4_url }}" class="btn btn-outline-secondary btn-sm" data-autosave-link="1">Voltar ao resumo</a>
+              </div>
+            </div>
+
             <label for="id_modelo_justificativa" class="form-label">{{ form.modelo_justificativa.label }}</label>
-            <div class="d-flex gap-2">
+            <div class="d-flex gap-2 flex-wrap">
               {{ form.modelo_justificativa }}
               <button type="button" class="btn btn-outline-secondary" id="btnAplicarModelo">Aplicar modelo</button>
             </div>
             {% if form.modelo_justificativa.errors %}<div class="invalid-feedback d-block">{{ form.modelo_justificativa.errors.0 }}</div>{% endif %}
-            <div class="form-text">Use um modelo pronto e ajuste o texto final como necessário.</div>
           </div>
-          <div class="col-lg-6 d-flex align-items-end justify-content-lg-end">
-            <a href="{{ modelos_justificativa_url }}" class="btn btn-outline-primary">Gerenciar modelos de justificativa</a>
-          </div>
-          <div class="col-12">
+        </div>
+
+        <div class="card">
+          <div class="card-body">
+            <div class="d-flex justify-content-between align-items-start gap-3 flex-wrap mb-3">
+              <div>
+                <h2 class="h5 mb-1">Texto da justificativa</h2>
+                <p class="text-muted small mb-0">Escreva a justificativa em português claro. O texto salvo aqui será usado na documentação do ofício.</p>
+              </div>
+              <div class="small text-muted">Caracteres: <span id="justificativa-counter">0</span></div>
+            </div>
+
             <label for="id_justificativa_texto" class="form-label">{{ form.justificativa_texto.label }}</label>
             {{ form.justificativa_texto }}
             {% if form.justificativa_texto.errors %}<div class="invalid-feedback d-block">{{ form.justificativa_texto.errors.0 }}</div>{% endif %}
           </div>
         </div>
-        <div class="d-flex gap-2 flex-wrap mt-4">
-          <button type="submit" class="btn btn-primary">Salvar justificativa</button>
-          <a href="{{ voltar_step4_url }}" class="btn btn-outline-secondary">Voltar ao Step 4</a>
-          {% if evento %}
-          <a href="{% url 'eventos:guiado-etapa-3' evento.pk %}" class="btn btn-outline-secondary">Voltar ao evento</a>
-          {% endif %}
-        </div>
       </form>
+    </div>
+
+    <div class="col-xxl-5 col-xl-6 oficio-quick-report-column">
+      <div class="card oficio-quick-report">
+        <div class="card-body">
+          <h2 class="h6 mb-3">Relatório rápido</h2>
+          <div class="oficio-quick-report-section">
+            <dl class="row">
+              <dt class="col-sm-5">Ofício</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.oficio|default:"—" }}</dd>
+              <dt class="col-sm-5">Protocolo</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.protocolo|default:"—" }}</dd>
+              <dt class="col-sm-5">Data de criação</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.data_criacao|default:"—" }}</dd>
+              <dt class="col-sm-5">Situação / origem</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.situacao_origem|default:"—" }}</dd>
+              <dt class="col-sm-5">Motivo</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.motivo|default:"—" }}</dd>
+              <dt class="col-sm-5">Viajantes</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.viajantes|default:"—" }}</dd>
+              <dt class="col-sm-5">Responsável</dt>
+              <dd class="col-sm-7 mb-0">{{ quick_report.responsavel|default:"—" }}</dd>
+            </dl>
+          </div>
+
+          <div class="oficio-quick-report-section">
+            <h3 class="h6 mb-2">Transporte</h3>
+            <dl class="row">
+              <dt class="col-sm-5">Motorista</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.motorista|default:"—" }}</dd>
+              <dt class="col-sm-5">Viatura</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.veiculo|default:"—" }}</dd>
+              <dt class="col-sm-5">Placa</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.placa|default:"—" }}</dd>
+              <dt class="col-sm-5">Modelo</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.modelo|default:"—" }}</dd>
+              <dt class="col-sm-5">Combustível</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.combustivel|default:"—" }}</dd>
+              <dt class="col-sm-5">Tipo viatura</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.tipo_viatura|default:"—" }}</dd>
+              <dt class="col-sm-5">Carona / ofício</dt>
+              <dd class="col-sm-7 mb-0">{{ quick_report.carona_oficio|default:"—" }}</dd>
+            </dl>
+          </div>
+
+          <div class="oficio-quick-report-section">
+            <h3 class="h6 mb-2">Roteiro e diárias</h3>
+            <dl class="row">
+              <dt class="col-sm-5">Período</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.periodo|default:"—" }}</dd>
+              <dt class="col-sm-5">Destino principal</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.destino_principal|default:"—" }}</dd>
+              <dt class="col-sm-5">Justificativa</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.justificativa_required|default:"—" }}{% if quick_report.justificativa %} · {{ quick_report.justificativa }}{% endif %}</dd>
+              <dt class="col-sm-5">Diárias</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.diarias_qtd|default:"—" }}</dd>
+              <dt class="col-sm-5">Valor estimado</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.diarias_valor|default:"—" }}</dd>
+              <dt class="col-sm-5">Valor por extenso</dt>
+              <dd class="col-sm-7 mb-0">{{ quick_report.diarias_extenso|default:"—" }}</dd>
+            </dl>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 </div>
 {% endblock %}
 
 {% block extra_js %}
+<script src="{% static 'js/oficio_wizard.js' %}"></script>
 <script>
   (function() {
+    const form = document.getElementById('oficio-justificativa-form');
     const select = document.getElementById('id_modelo_justificativa');
     const textarea = document.getElementById('id_justificativa_texto');
     const button = document.getElementById('btnAplicarModelo');
+    const counter = document.getElementById('justificativa-counter');
     const template = "{% url 'eventos:modelos-justificativa-texto-api' 0 %}";
+    const autosave = window.OficioWizard ? window.OficioWizard.createAutosave({ form: form }) : null;
+
+    function scheduleAutosave() {
+      if (autosave) {
+        autosave.schedule();
+      }
+    }
+
+    function syncPreview() {
+      const text = textarea ? (textarea.value || '').trim() : '';
+      if (counter) {
+        counter.textContent = String(text.length);
+      }
+    }
 
     async function aplicarModelo() {
       if (!select || !textarea || !select.value) {
@@ -112,10 +157,14 @@
       const payload = await response.json();
       if (payload.ok) {
         textarea.value = payload.texto || '';
+        syncPreview();
+        scheduleAutosave();
       }
     }
 
+    textarea?.addEventListener('input', syncPreview);
     button?.addEventListener('click', aplicarModelo);
+    syncPreview();
   })();
 </script>
 {% endblock %}

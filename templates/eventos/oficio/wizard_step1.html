@@ -1,56 +1,15 @@
 {% extends 'base.html' %}
+{% load static %}
 
 {% block title %}Dados e viajantes — Central de Viagens{% endblock %}
 {% block page_title %}Dados e viajantes{% endblock %}
 
 {% block content %}
-<style>
-  .oficio-sticky-header {
-    position: sticky;
-    top: 1rem;
-    z-index: 1030;
-    background: var(--bs-body-bg, #fff);
-    padding-bottom: 1rem;
-  }
+<div class="container-fluid py-4 oficio-wizard-page">
+  {% include 'eventos/oficio/_wizard_header.html' %}
 
-  .oficio-sticky-panel {
-    position: sticky;
-    top: 7rem;
-  }
-
-  @media (max-width: 1199.98px) {
-    .oficio-sticky-panel {
-      position: static;
-      top: auto;
-    }
-  }
-</style>
-<div class="container-fluid py-4">
-  <div class="oficio-sticky-header">
-    <div class="card shadow-sm border-0">
-      <div class="card-body py-3">
-        <div class="d-flex justify-content-between align-items-center gap-3 flex-wrap">
-          <div>
-            <h1 class="h4 mb-1">Dados e viajantes</h1>
-            <div class="text-muted small">Base do ofício, motivo e participantes.</div>
-          </div>
-          <div class="d-flex gap-2 flex-wrap">
-            <a href="{% url 'eventos:oficios-global' %}" class="btn btn-outline-secondary btn-sm">Lista de ofícios</a>
-            {% if evento %}
-            <a href="{% url 'eventos:guiado-etapa-5' evento.pk %}" class="btn btn-outline-secondary btn-sm">Ofícios do evento</a>
-            <a href="{% url 'eventos:guiado-painel' evento.pk %}" class="btn btn-outline-secondary btn-sm">Painel do evento</a>
-            {% endif %}
-            <a href="{% url 'eventos:oficio-excluir' oficio.pk %}" class="btn btn-outline-danger btn-sm">Excluir ofício</a>
-            <button type="submit" form="oficio-step1-form" name="salvar" value="1" class="btn btn-primary btn-sm">Salvar</button>
-            <button type="submit" form="oficio-step1-form" name="avancar" value="1" class="btn btn-success btn-sm">Salvar e continuar</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="row g-4 align-items-start">
-    <div class="col-xl-8">
+  <div class="row g-4 oficio-wizard-layout">
+    <div class="col-xxl-7 col-xl-6">
       <div class="card">
         <div class="card-body">
           <form method="post" id="oficio-step1-form">
@@ -88,7 +47,7 @@
                 {% if form.modelo_motivo.errors %}<div class="invalid-feedback d-block">{{ form.modelo_motivo.errors.0 }}</div>{% endif %}
               </div>
               <div class="col-md-4">
-                <a href="{{ gerenciar_modelos_motivo_url }}" class="btn btn-outline-secondary w-100" data-step1-draft-link="1">Gerenciar modelos de motivo</a>
+                <a href="{{ gerenciar_modelos_motivo_url }}" class="btn btn-outline-secondary w-100" data-autosave-link="1">Gerenciar modelos de motivo</a>
               </div>
             </div>
 
@@ -100,7 +59,14 @@
               </div>
               <div class="col-md-5">
                 <input type="hidden" name="novo_modelo_nome" id="id_novo_modelo_nome" value="">
-                <button type="submit" name="salvar_modelo_motivo" value="1" id="btn-salvar-modelo-motivo" class="btn btn-outline-primary">
+                <button
+                  type="submit"
+                  name="salvar_modelo_motivo"
+                  value="1"
+                  id="btn-salvar-modelo-motivo"
+                  class="btn btn-outline-primary"
+                  data-autosave-bypass="1"
+                >
                   Salvar motivo atual como novo modelo
                 </button>
               </div>
@@ -122,7 +88,7 @@
             <div class="mt-4">
               <div class="d-flex justify-content-between align-items-center mb-2 flex-wrap gap-2">
                 <label class="form-label mb-0" for="viajantes-autocomplete-input">Buscar viajante</label>
-                <a href="{{ cadastrar_viajante_url }}" class="btn btn-outline-secondary btn-sm" data-step1-draft-link="1">Cadastrar novo viajante</a>
+                <a href="{{ cadastrar_viajante_url }}" class="btn btn-outline-secondary btn-sm" data-autosave-link="1">Cadastrar novo viajante</a>
               </div>
               <div class="position-relative" id="viajantes-autocomplete-wrapper" data-search-url="{{ buscar_viajantes_url }}">
                 <input
@@ -167,14 +133,13 @@
               </div>
               {% if form.viajantes.errors %}<div class="invalid-feedback d-block">{{ form.viajantes.errors.0 }}</div>{% endif %}
             </div>
-
           </form>
         </div>
       </div>
     </div>
 
-    <div class="col-xl-4">
-      <div class="card oficio-sticky-panel">
+    <div class="col-xxl-5 col-xl-6 oficio-quick-report-column">
+      <div class="card oficio-quick-report">
         <div class="card-body">
           <h2 class="h6 mb-3">Relatório rápido</h2>
           <dl class="row mb-3">
@@ -182,6 +147,8 @@
             <dd class="col-sm-8 mb-2" id="preview-oficio">{{ oficio.numero_formatado|default:"—" }}</dd>
             <dt class="col-sm-4">Protocolo</dt>
             <dd class="col-sm-8 mb-2" id="preview-protocolo">{{ form.protocolo.value|default:"—" }}</dd>
+            <dt class="col-sm-4">Data de criação</dt>
+            <dd class="col-sm-8 mb-2">{{ step1_preview.data_criacao|default:"—" }}</dd>
             <dt class="col-sm-4">Motivo</dt>
             <dd class="col-sm-8 mb-2" id="preview-motivo">{{ form.motivo.value|default:"—" }}</dd>
             <dt class="col-sm-4">Custeio</dt>
@@ -212,7 +179,10 @@
 </div>
 
 {{ selected_viajantes_payload|json_script:"viajantes-selected-data" }}
+{% endblock %}
 
+{% block extra_js %}
+<script src="{% static 'js/oficio_wizard.js' %}"></script>
 <script>
 (function() {
   var form = document.getElementById('oficio-step1-form');
@@ -220,6 +190,7 @@
     return;
   }
 
+  var autosave = window.OficioWizard ? window.OficioWizard.createAutosave({ form: form }) : null;
   var custeioSelect = document.getElementById('id_custeio_tipo');
   var instituicaoWrapper = document.getElementById('nome-instituicao-wrapper');
   var instituicaoInput = document.getElementById('id_nome_instituicao_custeio');
@@ -244,8 +215,12 @@
   var activeIndex = -1;
   var fetchSequence = 0;
   var debounceTimer = null;
-  var autosaveKey = 'oficio-step1-draft-{{ oficio.pk }}';
-  var autosaveTimer = null;
+
+  function scheduleAutosave() {
+    if (autosave) {
+      autosave.schedule();
+    }
+  }
 
   function parseSelectedData() {
     if (!selectedDataElement) {
@@ -330,7 +305,6 @@
         updateGeneralPreview();
       }
     } catch (error) {
-      // Não bloqueia o fluxo do formulário.
     }
   }
 
@@ -495,7 +469,7 @@
     renderHiddenInputs();
     renderChips();
     renderPreview();
-    scheduleDraftPersist();
+    scheduleAutosave();
   }
 
   function addSelectedViajante(item) {
@@ -523,64 +497,6 @@
   function removeSelectedViajante(id) {
     selectedMap.delete(String(id));
     syncSelectedState();
-  }
-
-  function persistDraft() {
-    try {
-      window.localStorage.setItem(autosaveKey, JSON.stringify({
-        protocolo: protocoloInput ? protocoloInput.value : '',
-        modelo_motivo: modeloSelect ? modeloSelect.value : '',
-        motivo: motivoTextarea ? motivoTextarea.value : '',
-        custeio_tipo: custeioSelect ? custeioSelect.value : '',
-        nome_instituicao_custeio: instituicaoInput ? instituicaoInput.value : '',
-        viajantes: Array.from(selectedMap.values())
-      }));
-    } catch (error) {
-      // Storage indisponível não pode bloquear o formulário.
-    }
-  }
-
-  function scheduleDraftPersist() {
-    window.clearTimeout(autosaveTimer);
-    autosaveTimer = window.setTimeout(persistDraft, 120);
-  }
-
-  function restoreDraft() {
-    try {
-      var raw = window.localStorage.getItem(autosaveKey);
-      if (!raw) {
-        return;
-      }
-      var draft = JSON.parse(raw);
-      if (!draft || typeof draft !== 'object') {
-        return;
-      }
-      if (protocoloInput && draft.protocolo) {
-        protocoloInput.value = draft.protocolo;
-      }
-      if (modeloSelect && draft.modelo_motivo) {
-        modeloSelect.value = draft.modelo_motivo;
-      }
-      if (motivoTextarea && typeof draft.motivo === 'string') {
-        motivoTextarea.value = draft.motivo;
-      }
-      if (custeioSelect && draft.custeio_tipo) {
-        custeioSelect.value = draft.custeio_tipo;
-      }
-      if (instituicaoInput && typeof draft.nome_instituicao_custeio === 'string') {
-        instituicaoInput.value = draft.nome_instituicao_custeio;
-      }
-      if (Array.isArray(draft.viajantes)) {
-        selectedMap.clear();
-        draft.viajantes.forEach(function(item) {
-          if (item && item.id) {
-            selectedMap.set(String(item.id), item);
-          }
-        });
-      }
-    } catch (error) {
-      // Ignora rascunho inválido.
-    }
   }
 
   async function buscarSugestoes(term) {
@@ -627,31 +543,31 @@
   if (custeioSelect) {
     custeioSelect.addEventListener('change', function() {
       toggleInstituicao();
-      scheduleDraftPersist();
+      scheduleAutosave();
     });
   }
   if (instituicaoInput) {
     instituicaoInput.addEventListener('input', function() {
       updateGeneralPreview();
-      scheduleDraftPersist();
+      scheduleAutosave();
     });
   }
   if (modeloSelect) {
     modeloSelect.addEventListener('change', async function() {
       await preencherMotivoPorModelo();
-      scheduleDraftPersist();
+      scheduleAutosave();
     });
   }
   if (motivoTextarea) {
     motivoTextarea.addEventListener('input', function() {
       updateGeneralPreview();
-      scheduleDraftPersist();
+      scheduleAutosave();
     });
   }
   if (protocoloInput) {
     protocoloInput.addEventListener('input', function() {
       updateGeneralPreview();
-      scheduleDraftPersist();
+      scheduleAutosave();
     });
   }
 
@@ -706,11 +622,6 @@
     }
   });
 
-  Array.prototype.forEach.call(document.querySelectorAll('[data-step1-draft-link]'), function(link) {
-    link.addEventListener('click', persistDraft);
-  });
-
-  restoreDraft();
   toggleInstituicao();
   updateGeneralPreview();
   syncSelectedState();

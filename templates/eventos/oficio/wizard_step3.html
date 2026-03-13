@@ -1,68 +1,15 @@
 {% extends 'base.html' %}
+{% load static %}
 
 {% block title %}Roteiro e diárias{% endblock %}
 {% block page_title %}Roteiro e diárias{% endblock %}
 
 {% block content %}
-<style>
-  .oficio-sticky-header {
-    position: sticky;
-    top: 1rem;
-    z-index: 1030;
-    background: var(--bs-body-bg, #fff);
-    padding-bottom: 1rem;
-  }
+<div class="container-fluid py-4 oficio-wizard-page">
+  {% include 'eventos/oficio/_wizard_header.html' %}
 
-  .oficio-sticky-panel {
-    position: sticky;
-    top: 7rem;
-  }
-
-  .rota-bloco {
-    border: 1px solid var(--bs-border-color);
-    border-radius: 0.75rem;
-    padding: 1rem;
-    background: var(--bs-light-bg-subtle, #f8f9fa);
-  }
-
-  .rota-estimativa.d-none {
-    display: none !important;
-  }
-
-  @media (max-width: 1199.98px) {
-    .oficio-sticky-panel {
-      position: static;
-      top: auto;
-    }
-  }
-</style>
-<div class="container-fluid py-4">
-  <div class="oficio-sticky-header">
-    <div class="card shadow-sm border-0">
-      <div class="card-body py-3">
-        <div class="d-flex justify-content-between align-items-center gap-3 flex-wrap">
-          <div>
-            <h1 class="h4 mb-1">Roteiro e diárias</h1>
-            <div class="text-muted small">Trechos, retorno e cálculo final das diárias do ofício.</div>
-          </div>
-          <div class="d-flex gap-2 flex-wrap">
-            <a href="{% url 'eventos:oficios-global' %}" class="btn btn-outline-secondary btn-sm">Lista de ofícios</a>
-            {% if evento %}
-            <a href="{% url 'eventos:guiado-etapa-5' evento.pk %}" class="btn btn-outline-secondary btn-sm">Ofícios do evento</a>
-            <a href="{% url 'eventos:guiado-painel' evento.pk %}" class="btn btn-outline-secondary btn-sm">Painel do evento</a>
-            {% endif %}
-            <a href="{% url 'eventos:oficio-step2' oficio.pk %}" class="btn btn-outline-secondary btn-sm">Transporte</a>
-            <a href="{% url 'eventos:oficio-excluir' oficio.pk %}" class="btn btn-outline-danger btn-sm">Excluir ofício</a>
-            <button type="submit" form="oficio-step3-form" name="salvar" value="1" class="btn btn-primary btn-sm">Salvar</button>
-            <button type="submit" form="oficio-step3-form" name="avancar" value="1" class="btn btn-success btn-sm">Salvar e continuar</button>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <div class="row g-4 align-items-start">
-    <div class="col-xl-8">
+  <div class="row g-4 oficio-wizard-layout">
+    <div class="col-xxl-7 col-xl-6">
       <div class="card">
         <div class="card-body">
           <form method="post" id="oficio-step3-form" novalidate>
@@ -80,28 +27,33 @@
             {% if step3_seed_source_label %}<div class="alert alert-info py-2">{{ step3_seed_source_label }}</div>{% endif %}
 
             <div class="border rounded p-3 mb-3">
-              <div class="fw-semibold mb-2">1. Fonte do roteiro</div>
+              <div class="mb-3">
+                <div>
+                  <div class="fw-semibold mb-2">1. Fonte do roteiro</div>
+                  <div class="small text-muted">Escolha um roteiro salvo do banco ou monte um roteiro novo neste ofício. O botão de calcular diárias valida, reutiliza e salva o roteiro atual sem duplicar registro.</div>
+                </div>
+              </div>
               <div class="form-check">
                 <input class="form-check-input" type="radio" name="roteiro_modo" id="id_roteiro_modo_evento" value="EVENTO_EXISTENTE" {% if roteiro_modo == 'EVENTO_EXISTENTE' %}checked{% endif %} {% if not has_event_routes %}disabled{% endif %}>
-                <label class="form-check-label" for="id_roteiro_modo_evento">Usar roteiro existente do evento</label>
+                <label class="form-check-label" for="id_roteiro_modo_evento">Usar roteiro salvo</label>
               </div>
               <div class="form-check mb-3">
                 <input class="form-check-input" type="radio" name="roteiro_modo" id="id_roteiro_modo_proprio" value="ROTEIRO_PROPRIO" {% if roteiro_modo != 'EVENTO_EXISTENTE' %}checked{% endif %}>
-                <label class="form-check-label" for="id_roteiro_modo_proprio">Criar novo roteiro para este ofício</label>
+                <label class="form-check-label" for="id_roteiro_modo_proprio">Montar roteiro neste ofício</label>
               </div>
               <div id="roteiro-selector-wrapper">
-                <label class="form-label" for="id_roteiro_evento_id">Roteiro do evento</label>
+                <label class="form-label" for="id_roteiro_evento_id">Roteiro salvo</label>
                 <select name="roteiro_evento_id" id="id_roteiro_evento_id" class="form-select" {% if not has_event_routes %}disabled{% endif %}>
                   <option value="">Selecione</option>
                   {% for roteiro in roteiros_evento %}
-                  <option value="{{ roteiro.id }}" {% if roteiro_evento_id == roteiro.id %}selected{% endif %}>{{ roteiro.label }}</option>
+                  <option value="{{ roteiro.id }}" {% if roteiro_evento_id == roteiro.id %}selected{% endif %}>{{ roteiro.label }}{% if roteiro.tipo_label %} — {{ roteiro.tipo_label }}{% endif %}</option>
                   {% endfor %}
                 </select>
                 <div class="form-text">
                   {% if has_event_routes %}
-                  Selecionar um roteiro do evento carrega os trechos no editor. As edições do ofício não alteram o roteiro original do evento.
+                  Selecionar um roteiro salvo carrega os trechos no editor. As edições do ofício não alteram o roteiro original salvo.
                   {% else %}
-                  Este evento não possui roteiros cadastrados na Etapa 2.
+                  Nenhum roteiro salvo válido está disponível no banco.
                   {% endif %}
                 </div>
                 <div class="small text-muted mt-2" id="roteiro-selector-resumo"></div>
@@ -187,7 +139,8 @@
                       <div class="row g-3 align-items-end">
                         <div class="col-md-3">
                           <label class="form-label small">Tempo de viagem</label>
-                          <input type="number" min="0" step="15" class="form-control" name="retorno_tempo_cru_estimado_min" id="id_retorno_tempo_cru_estimado_min" value="{{ retorno_state.tempo_cru_estimado_min|default:'' }}">
+                          <input type="text" class="form-control" id="id_retorno_tempo_viagem_hhmm" value="" placeholder="00:00" inputmode="numeric" maxlength="5" autocomplete="off">
+                          <input type="hidden" name="retorno_tempo_cru_estimado_min" id="id_retorno_tempo_cru_estimado_min" value="{{ retorno_state.tempo_cru_estimado_min|default:'' }}">
                         </div>
                         <div class="col-md-3">
                           <label class="form-label small">Tempo adicional</label>
@@ -202,7 +155,7 @@
                         </div>
                       </div>
                     </div>
-                    <div class="col-12 rota-estimativa{% if not retorno_state.distancia_km and not retorno_state.tempo_cru_estimado_min %} d-none{% endif %}" id="retorno-estimativa-wrapper">
+                    <div class="col-12 rota-estimativa{% if not retorno_state.distancia_km and not retorno_state.rota_fonte %} d-none{% endif %}" id="retorno-estimativa-wrapper">
                       <div class="border rounded p-3 bg-white">
                         <div class="row g-3">
                           <div class="col-md-4">
@@ -274,48 +227,73 @@
       </div>
     </div>
 
-    <div class="col-xl-4">
-      <div class="card oficio-sticky-panel">
+    <div class="col-xxl-5 col-xl-6 oficio-quick-report-column">
+      <div class="card oficio-quick-report">
         <div class="card-body">
           <h2 class="h6 mb-3">Relatório rápido</h2>
-          <div class="small mb-3"><strong>Ofício:</strong> {{ step1_preview.oficio|default:"-" }}</div>
-          <div class="small mb-3"><strong>Protocolo:</strong> {{ step1_preview.protocolo|default:"-" }}</div>
-          <div class="small mb-3">
-            <strong>Viajantes:</strong> {{ selected_viajantes|length }}
-            {% if selected_viajantes %}
-            <div class="mt-1">
-              {% for viajante in selected_viajantes %}
-              <div>{{ viajante.nome }}</div>
-              {% endfor %}
-            </div>
-            {% endif %}
+          <div class="oficio-quick-report-section">
+            <dl class="row">
+              <dt class="col-sm-5">Ofício</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.oficio|default:"—" }}</dd>
+              <dt class="col-sm-5">Protocolo</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.protocolo|default:"—" }}</dd>
+              <dt class="col-sm-5">Data de criação</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.data_criacao|default:"—" }}</dd>
+              <dt class="col-sm-5">Situação / origem</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.situacao_origem|default:"—" }}</dd>
+              <dt class="col-sm-5">Motivo</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.motivo|default:"—" }}</dd>
+              <dt class="col-sm-5">Viajantes</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.viajantes|default:"—" }}</dd>
+              <dt class="col-sm-5">Responsável</dt>
+              <dd class="col-sm-7 mb-0">{{ quick_report.responsavel|default:"—" }}</dd>
+            </dl>
           </div>
-          <div class="small mb-3"><strong>Veículo:</strong> {{ step2_preview.placa|default:"-" }} / {{ step2_preview.modelo|default:"-" }}</div>
-          <div class="small mb-2"><strong>Modo:</strong> <span id="preview-modo">{{ step3_preview.roteiro_modo_label|default:"-" }}</span></div>
-          <div class="small mb-3"><strong>Fonte:</strong> <span id="preview-fonte">{{ step3_preview.roteiro_evento_label|default:"Roteiro próprio" }}</span></div>
-          <div id="step3-preview-list" class="small">
-            {% if step3_preview.tem_trechos %}
-              {% for trecho in step3_preview.trechos %}
-              <div class="border rounded p-2 mb-2">
-                <div class="fw-semibold">{{ trecho.rota }}</div>
-                <div class="text-muted">Saída: {{ trecho.saida|default:"-" }}</div>
-                <div class="text-muted">Chegada: {{ trecho.chegada|default:"-" }}</div>
-              </div>
-              {% endfor %}
-              {% if step3_preview.retorno.show %}
-              <div class="border rounded p-2">
-                <div class="fw-semibold">Retorno</div>
-                <div class="text-muted">{{ step3_preview.retorno.rota }}</div>
-                <div class="text-muted">Saída: {{ step3_preview.retorno.saida|default:"-" }}</div>
-                <div class="text-muted">Chegada: {{ step3_preview.retorno.chegada|default:"-" }}</div>
-              </div>
-              {% endif %}
-            {% endif %}
+
+          <div class="oficio-quick-report-section">
+            <h3 class="h6 mb-2">Transporte</h3>
+            <dl class="row">
+              <dt class="col-sm-5">Motorista</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.motorista|default:"—" }}</dd>
+              <dt class="col-sm-5">Viatura</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.veiculo|default:"—" }}</dd>
+              <dt class="col-sm-5">Placa</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.placa|default:"—" }}</dd>
+              <dt class="col-sm-5">Modelo</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.modelo|default:"—" }}</dd>
+              <dt class="col-sm-5">Combustível</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.combustivel|default:"—" }}</dd>
+              <dt class="col-sm-5">Tipo viatura</dt>
+              <dd class="col-sm-7 mb-2">{{ quick_report.tipo_viatura|default:"—" }}</dd>
+              <dt class="col-sm-5">Carona / ofício</dt>
+              <dd class="col-sm-7 mb-0">{{ quick_report.carona_oficio|default:"—" }}</dd>
+            </dl>
           </div>
-          <div id="step3-preview-diarias" class="small mt-3{% if not step3_preview.diarias.show %} d-none{% endif %}">
-            <strong>Diárias:</strong> <span id="preview-diarias-qtd">{{ step3_preview.diarias.quantidade|default:"-" }}</span><br>
-            <strong>Valor:</strong> <span id="preview-diarias-valor">{{ step3_preview.diarias.valor_total|default:"-" }}</span><br>
-            <strong>Valor por extenso:</strong> <span id="preview-diarias-extenso">{{ step3_preview.diarias.valor_extenso|default:"-" }}</span>
+
+          <div class="oficio-quick-report-section">
+            <h3 class="h6 mb-2">Roteiro e diárias</h3>
+            <dl class="row">
+              <dt class="col-sm-5">Modo</dt>
+              <dd class="col-sm-7 mb-2"><span id="preview-modo">{{ quick_report.roteiro_modo|default:"—" }}</span></dd>
+              <dt class="col-sm-5">Fonte</dt>
+              <dd class="col-sm-7 mb-2"><span id="preview-fonte">{{ quick_report.roteiro_fonte|default:"Roteiro próprio" }}</span></dd>
+              <dt class="col-sm-5">Período</dt>
+              <dd class="col-sm-7 mb-2"><span id="preview-periodo">{{ quick_report.periodo|default:"—" }}</span></dd>
+              <dt class="col-sm-5">Destino principal</dt>
+              <dd class="col-sm-7 mb-2"><span id="preview-destino-principal">{{ quick_report.destino_principal|default:"—" }}</span></dd>
+              <dt class="col-sm-5">Justificativa</dt>
+              <dd class="col-sm-7 mb-2">
+                <span id="preview-justificativa">
+                  {{ quick_report.justificativa_required|default:"—" }}{% if quick_report.justificativa %} · {{ quick_report.justificativa }}{% endif %}
+                </span>
+              </dd>
+              <dt class="col-sm-5">Diárias</dt>
+              <dd class="col-sm-7 mb-2"><span id="preview-diarias-qtd">{{ quick_report.diarias_qtd|default:"—" }}</span></dd>
+              <dt class="col-sm-5">Valor estimado</dt>
+              <dd class="col-sm-7 mb-2"><span id="preview-diarias-valor">{{ quick_report.diarias_valor|default:"—" }}</span></dd>
+              <dt class="col-sm-5">Valor por extenso</dt>
+              <dd class="col-sm-7 mb-0"><span id="preview-diarias-extenso">{{ quick_report.diarias_extenso|default:"—" }}</span></dd>
+            </dl>
           </div>
         </div>
       </div>
@@ -326,11 +304,18 @@
 {{ roteiros_evento_json|json_script:"step3-routes-data" }}
 {{ step3_diarias_resultado|default_if_none:''|json_script:"step3-diarias-data" }}
 
+<script src="{% static 'js/oficio_wizard.js' %}"></script>
 <script>
 (function() {
   const form = document.getElementById('oficio-step3-form');
   if (!form || form.dataset.ready === '1') return;
   form.dataset.ready = '1';
+  const autosave = window.OficioWizard ? window.OficioWizard.createAutosave({
+    form: form,
+    beforeSerialize: function() {
+      renderPreview();
+    }
+  }) : null;
   const $ = (id) => document.getElementById(id);
   const initialState = JSON.parse($('step3-state-data').textContent || '{}');
   const routes = JSON.parse($('step3-routes-data').textContent || '[]');
@@ -347,9 +332,91 @@
   let applyingState = false;
   let ownSnapshot = initialState.roteiro_modo === 'ROTEIRO_PROPRIO' ? JSON.parse(JSON.stringify(initialState)) : null;
 
+  function scheduleAutosave() {
+    if (autosave) autosave.schedule();
+  }
+
   function cidadesUrl(id) { return apiCidades.replace(/\/0\/?$/, '/' + id + '/'); }
   function pad(v) { return v < 10 ? '0' + v : String(v); }
-  function hhmm(min) { min = parseInt(min || 0, 10) || 0; if (!min) return '-'; const h = Math.floor(min / 60), m = min % 60; return h ? (h + 'h' + (m ? ' ' + m + 'min' : '')) : (m + 'min'); }
+  function hhmm(min) { min = parseInt(min || 0, 10) || 0; if (!min) return '-'; return pad(Math.floor(min / 60)) + ':' + pad(min % 60); }
+  function formatDurationInput(min) {
+    min = parseInt(min || 0, 10);
+    if (Number.isNaN(min) || min <= 0) return '';
+    return pad(Math.floor(min / 60)) + ':' + pad(min % 60);
+  }
+  function normalizeDurationInput(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (raw.includes(':')) {
+      const parts = raw.split(':');
+      const hours = (parts[0] || '').replace(/\D/g, '').slice(0, 2);
+      const minutes = parts.slice(1).join('').replace(/\D/g, '').slice(0, 2);
+      if (!hours && !minutes) return '';
+      return minutes ? (hours + ':' + minutes) : (hours + ':');
+    }
+    const digits = raw.replace(/\D/g, '').slice(0, 4);
+    if (!digits) return '';
+    if (digits.length <= 2) return digits;
+    if (digits.length === 3) return digits.slice(0, 2) + ':' + digits.slice(2);
+    return digits.slice(0, 2) + ':' + digits.slice(2, 4);
+  }
+  function parseDurationInput(value) {
+    const text = String(value || '').trim();
+    if (!text) return null;
+    const normalized = text.includes(':') ? text : normalizeDurationInput(text);
+    const parts = normalized.split(':');
+    if (parts.length !== 2) return null;
+    const hours = parseInt(parts[0], 10);
+    const minutes = parseInt(parts[1], 10);
+    if (Number.isNaN(hours) || Number.isNaN(minutes) || minutes < 0 || minutes > 59) return null;
+    return (hours * 60) + minutes;
+  }
+  function parseMinutesValue(value) {
+    if (value == null || String(value).trim() === '') return null;
+    const parsed = parseInt(value, 10);
+    return Number.isNaN(parsed) ? null : parsed;
+  }
+  function resolveAdditionalMinutesByDistance(distanceKm) {
+    const distance = parseFloat(String(distanceKm == null ? '' : distanceKm).replace(',', '.'));
+    if (Number.isNaN(distance) || distance < 0) {
+      return null;
+    }
+    if (distance <= 60) return 15;
+    if (distance <= 120) return 20;
+    if (distance <= 200) return 25;
+    if (distance <= 300) return 35;
+    if (distance <= 450) return 45;
+    if (distance <= 600) return 60;
+    return 75;
+  }
+  function resolveEstimatedTravelMinutes(data) {
+    const directMinutes = parseMinutesValue(data && data.tempo_viagem_estimado_min);
+    if (directMinutes != null) return directMinutes;
+    const legacyMinutes = parseMinutesValue(data && data.tempo_cru_estimado_min);
+    if (legacyMinutes != null) return legacyMinutes;
+    if (data && data.tempo_viagem_estimado_hhmm) {
+      return parseDurationInput(data.tempo_viagem_estimado_hhmm);
+    }
+    const total = parseMinutesValue(data && data.duracao_estimada_min);
+    const additional = parseMinutesValue(data && data.tempo_adicional_sugerido_min);
+    if (total != null) {
+      return Math.max(total - (additional || 0), 0);
+    }
+    return null;
+  }
+  function resolveSuggestedAdditionalMinutes(data, travelMinutes) {
+    const byDistance = resolveAdditionalMinutesByDistance(
+      data && (data.distancia_km != null ? data.distancia_km : data.distancia_rodoviaria_km)
+    );
+    if (byDistance != null) return byDistance;
+    const suggested = parseMinutesValue(data && data.tempo_adicional_sugerido_min);
+    if (suggested != null) return Math.max(suggested, 0);
+    const total = parseMinutesValue(data && data.duracao_estimada_min);
+    if (total != null && travelMinutes != null) {
+      return Math.max(total - travelMinutes, 0);
+    }
+    return null;
+  }
   function km(v) { v = parseFloat(String(v || '').replace(',', '.')); return Number.isNaN(v) ? '-' : v.toFixed(2).replace('.', ',') + ' km'; }
   function dtBr(d, h) { if (!d && !h) return ''; if (!d) return h || ''; const p = d.split('-'); return p[2] + '/' + p[1] + '/' + p[0] + (h ? ' ' + h : ''); }
   function selectedText(el) { return el && el.selectedIndex >= 0 && el.options[el.selectedIndex] ? String(el.options[el.selectedIndex].text || '').trim() : ''; }
@@ -406,19 +473,52 @@
   }
 
   function staleDiarias() { $('diarias-status').textContent = 'Cálculo desatualizado. Clique em "Calcular diárias".'; }
-  function routeResumo() { const route = routeMap[String($('id_roteiro_evento_id').value || '')]; $('roteiro-selector-resumo').textContent = route ? route.resumo : ''; }
+  function routeResumo() {
+    const route = routeMap[String($('id_roteiro_evento_id').value || '')];
+    $('roteiro-selector-resumo').textContent = route ? ((route.tipo_label ? route.tipo_label + ' — ' : '') + route.resumo) : '';
+  }
+
+  function setPreviewValue(id, value) {
+    const element = $(id);
+    if (!element) return;
+    const text = String(value || '').trim();
+    element.textContent = text || '—';
+  }
+
+  function buildPreviewPeriod(state) {
+    const trechos = (state && state.trechos) || [];
+    const retorno = (state && state.retorno) || {};
+    if (!trechos.length) {
+      return '';
+    }
+    const primeiro = trechos[0];
+    const ultimo = trechos[trechos.length - 1];
+    const inicio = dtBr(primeiro.saida_data || '', primeiro.saida_hora || '');
+    const fim = dtBr(retorno.chegada_data || ultimo.chegada_data || '', retorno.chegada_hora || ultimo.chegada_hora || '');
+    return inicio && fim ? (inicio + ' até ' + fim) : (inicio || fim);
+  }
+
+  function buildPreviewDestination(state) {
+    const nomes = [];
+    ((state && state.trechos) || []).forEach((trecho) => {
+      const nome = String(trecho.destino_nome || '').trim();
+      if (nome && nomes.indexOf(nome) === -1) {
+        nomes.push(nome);
+      }
+    });
+    if (!nomes.length) {
+      return '';
+    }
+    return nomes.length === 1 ? nomes[0] : (nomes[0] + ' (+' + (nomes.length - 1) + ')');
+  }
 
   function renderPreview() {
-    $('preview-modo').textContent = $('id_roteiro_modo_evento').checked ? 'Usar roteiro existente do evento' : 'Criar novo roteiro para este ofício';
+    const state = captureCurrentState();
+    setPreviewValue('preview-modo', $('id_roteiro_modo_evento').checked ? 'Usar roteiro salvo' : 'Montar roteiro neste ofício');
     const route = routeMap[String($('id_roteiro_evento_id').value || '')];
-    $('preview-fonte').textContent = $('id_roteiro_modo_evento').checked && route ? route.label : 'Roteiro próprio';
-    let html = '';
-    $('trechos-gerados-container').querySelectorAll('.card[data-key]').forEach((card) => {
-      const ordem = card.dataset.ordem;
-      html += '<div class="border rounded p-2 mb-2"><div class="fw-semibold">' + card.dataset.origemNome + ' → ' + card.dataset.destinoNome + '</div><div class="text-muted">Saída: ' + dtBr((card.querySelector('[name="trecho_' + ordem + '_saida_data"]') || {}).value || '', (card.querySelector('[name="trecho_' + ordem + '_saida_hora"]') || {}).value || '') + '</div><div class="text-muted">Chegada: ' + dtBr((card.querySelector('[name="trecho_' + ordem + '_chegada_data"]') || {}).value || '', (card.querySelector('[name="trecho_' + ordem + '_chegada_hora"]') || {}).value || '') + '</div></div>';
-    });
-    html += '<div class="border rounded p-2"><div class="fw-semibold">Retorno</div><div class="text-muted">' + ($('id_retorno_saida_cidade').value || '-') + ' → ' + ($('id_retorno_chegada_cidade').value || '-') + '</div><div class="text-muted">Saída: ' + dtBr($('id_retorno_saida_data').value || '', $('id_retorno_saida_hora').value || '') + '</div><div class="text-muted">Chegada: ' + dtBr($('id_retorno_chegada_data').value || '', $('id_retorno_chegada_hora').value || '') + '</div></div>';
-    $('step3-preview-list').innerHTML = html;
+    setPreviewValue('preview-fonte', $('id_roteiro_modo_evento').checked && route ? route.label : 'Roteiro próprio');
+    setPreviewValue('preview-periodo', buildPreviewPeriod(state));
+    setPreviewValue('preview-destino-principal', buildPreviewDestination(state));
   }
   function esc(value) {
     return String(value || '')
@@ -546,10 +646,25 @@
   function recalcCard(card, suggestArrival) {
     const ordem = card.dataset.ordem;
     const cruInput = card.querySelector('[name="trecho_' + ordem + '_tempo_cru_estimado_min"]');
+    const tempoViagemInput = card.querySelector('.trecho-tempo-viagem-hhmm');
     const adicionalInput = card.querySelector('[name="trecho_' + ordem + '_tempo_adicional_min"]');
     const duracaoInput = card.querySelector('[name="trecho_' + ordem + '_duracao_estimada_min"]');
     const fonteInput = card.querySelector('[name="trecho_' + ordem + '_rota_fonte"]');
     const estimativaWrapper = card.querySelector('.rota-estimativa');
+    if (tempoViagemInput) {
+      const normalizedTempo = normalizeDurationInput(tempoViagemInput.value);
+      if (document.activeElement !== tempoViagemInput) {
+        tempoViagemInput.value = normalizedTempo;
+      } else if (normalizedTempo !== tempoViagemInput.value) {
+        tempoViagemInput.value = normalizedTempo;
+      }
+      const parsedTempo = parseDurationInput(normalizedTempo);
+      if (cruInput) {
+        cruInput.value = parsedTempo != null ? String(parsedTempo) : '';
+      }
+    } else if (cruInput && !cruInput.value) {
+      cruInput.value = '';
+    }
     const cru = parseInt((cruInput || {}).value || 0, 10) || 0;
     let adicional = parseInt((adicionalInput || {}).value || 0, 10);
     if (Number.isNaN(adicional) || adicional < 0) adicional = 0;
@@ -558,6 +673,9 @@
     card.dataset.tempoCruMin = cru ? String(cru) : '';
     card.dataset.tempoTotalMin = total ? String(total) : '';
     if (duracaoInput) duracaoInput.value = total ? String(total) : '';
+    if (tempoViagemInput && document.activeElement !== tempoViagemInput) {
+      tempoViagemInput.value = formatDurationInput(cru);
+    }
     const cruEl = card.querySelector('.trecho-tempo-estimado');
     const totalInput = card.querySelector('.trecho-tempo-total');
     const fonteEl = card.querySelector('.trecho-rota-fonte');
@@ -569,7 +687,8 @@
     }
     if (estimativaWrapper) {
       const distanciaValue = (card.querySelector('[name="trecho_' + ordem + '_distancia_km"]') || {}).value || '';
-      estimativaWrapper.classList.toggle('d-none', !(distanciaValue || cru));
+      const fonteValue = ((fonteInput || {}).value || '').trim();
+      estimativaWrapper.classList.toggle('d-none', !(distanciaValue || fonteValue));
     }
     if (suggestArrival && total > 0) {
       const saidaData = card.querySelector('[name="trecho_' + ordem + '_saida_data"]');
@@ -589,10 +708,21 @@
 
   function recalcRetorno(suggestArrival) {
     const cruInput = $('id_retorno_tempo_cru_estimado_min');
+    const tempoViagemInput = $('id_retorno_tempo_viagem_hhmm');
     const adicionalInput = $('id_retorno_tempo_adicional_min');
     const duracaoInput = $('id_retorno_duracao_estimada_min');
     const distanciaInput = $('id_retorno_distancia_km');
     const fonteInput = $('id_retorno_rota_fonte');
+    if (tempoViagemInput) {
+      const normalizedTempo = normalizeDurationInput(tempoViagemInput.value);
+      if (document.activeElement !== tempoViagemInput) {
+        tempoViagemInput.value = normalizedTempo;
+      } else if (normalizedTempo !== tempoViagemInput.value) {
+        tempoViagemInput.value = normalizedTempo;
+      }
+      const parsedTempo = parseDurationInput(normalizedTempo);
+      if (cruInput) cruInput.value = parsedTempo != null ? String(parsedTempo) : '';
+    }
     const cru = parseInt((cruInput || {}).value || 0, 10) || 0;
     let adicional = parseInt((adicionalInput || {}).value || 0, 10);
     if (Number.isNaN(adicional) || adicional < 0) adicional = 0;
@@ -600,6 +730,9 @@
     const total = cru + adicional;
     if (duracaoInput) {
       duracaoInput.value = total ? String(total) : '';
+    }
+    if (tempoViagemInput && document.activeElement !== tempoViagemInput) {
+      tempoViagemInput.value = formatDurationInput(cru);
     }
     setReadonlyValue('id_retorno_tempo_total', total ? hhmm(total) : '');
     if ($('retorno-tempo-estimado-texto')) {
@@ -613,7 +746,10 @@
       $('retorno-rota-fonte-texto').textContent = fonte ? (fonte === 'ESTIMATIVA_LOCAL' ? 'estimativa local' : fonte) : '-';
     }
     if ($('retorno-estimativa-wrapper')) {
-      $('retorno-estimativa-wrapper').classList.toggle('d-none', !((distanciaInput && distanciaInput.value) || cru));
+      $('retorno-estimativa-wrapper').classList.toggle(
+        'd-none',
+        !((distanciaInput && distanciaInput.value) || (fonteInput && fonteInput.value))
+      );
     }
     if (suggestArrival && total > 0 && $('id_retorno_saida_data').value && $('id_retorno_saida_hora').value) {
       const start = new Date($('id_retorno_saida_data').value + 'T' + $('id_retorno_saida_hora').value);
@@ -659,11 +795,11 @@
                 '</div>' +
               '</div>' +
             '</div>' +
-            '<div class="col-md-3"><label class="form-label small">Tempo de viagem</label><input type="number" min="0" step="15" class="form-control form-control-sm" name="trecho_' + ordem + '_tempo_cru_estimado_min" value="' + esc(tempoCru) + '"></div>' +
+            '<div class="col-md-3"><label class="form-label small">Tempo de viagem</label><input type="text" class="form-control form-control-sm trecho-tempo-viagem-hhmm" value="' + esc(formatDurationInput(tempoCru)) + '" placeholder="00:00" inputmode="numeric" maxlength="5" autocomplete="off"><input type="hidden" name="trecho_' + ordem + '_tempo_cru_estimado_min" value="' + esc(tempoCru) + '"></div>' +
             '<div class="col-md-3"><label class="form-label small">Tempo adicional</label><input type="number" min="0" step="15" class="form-control form-control-sm" name="trecho_' + ordem + '_tempo_adicional_min" value="' + esc(tempoAdicional) + '"></div>' +
             '<div class="col-md-3"><label class="form-label small">Tempo total</label><input type="text" class="form-control form-control-sm trecho-tempo-total" value="" readonly></div>' +
             '<div class="col-md-3 d-grid"><button type="button" class="btn btn-outline-secondary btn-sm btn-estimar-trecho">Estimar automaticamente</button></div>' +
-            '<div class="col-12 rota-estimativa ' + ((distancia || tempoCru) ? '' : 'd-none') + '">' +
+            '<div class="col-12 rota-estimativa ' + ((distancia || rotaFonte) ? '' : 'd-none') + '">' +
               '<div class="border rounded p-3 bg-white">' +
                 '<div class="row g-3">' +
                   '<div class="col-md-4"><div class="small text-muted">Distância</div><div class="fw-semibold trecho-distancia">' + (distancia ? km(distancia) : '-') + '</div></div>' +
@@ -786,8 +922,9 @@
       $('id_quantidade_diarias').value = '';
       $('id_valor_diarias').value = '';
       $('id_valor_diarias_extenso').value = '';
-      $('step3-preview-diarias').classList.add('d-none');
-      $('preview-diarias-extenso').textContent = '-';
+      setPreviewValue('preview-diarias-qtd', '');
+      setPreviewValue('preview-diarias-valor', '');
+      setPreviewValue('preview-diarias-extenso', '');
       return;
     }
 
@@ -812,10 +949,9 @@
     $('id_quantidade_diarias').value = totais.total_diarias || '';
     $('id_valor_diarias').value = totais.total_valor || '';
     $('id_valor_diarias_extenso').value = totais.valor_extenso || '';
-    $('preview-diarias-qtd').textContent = totais.total_diarias || '-';
-    $('preview-diarias-valor').textContent = totais.total_valor || '-';
-    $('preview-diarias-extenso').textContent = totais.valor_extenso || '-';
-    $('step3-preview-diarias').classList.toggle('d-none', !(totais.total_diarias || totais.total_valor));
+    setPreviewValue('preview-diarias-qtd', totais.total_diarias || '');
+    setPreviewValue('preview-diarias-valor', totais.total_valor || '');
+    setPreviewValue('preview-diarias-extenso', totais.valor_extenso || '');
   }
 
   function clearDiarias() {
@@ -888,18 +1024,30 @@
       const ordem = card.dataset.ordem;
       const distInput = card.querySelector('[name="trecho_' + ordem + '_distancia_km"]');
       const cruInput = card.querySelector('[name="trecho_' + ordem + '_tempo_cru_estimado_min"]');
+      const duracaoInput = card.querySelector('[name="trecho_' + ordem + '_duracao_estimada_min"]');
       const fonteInput = card.querySelector('[name="trecho_' + ordem + '_rota_fonte"]');
       const adicional = card.querySelector('[name="trecho_' + ordem + '_tempo_adicional_min"]');
+      const tempoViagemField = card.querySelector('.trecho-tempo-viagem-hhmm');
+      const travelMinutes = resolveEstimatedTravelMinutes(data);
+      const additionalMinutes = resolveSuggestedAdditionalMinutes(data, travelMinutes);
+      const totalMinutes = parseMinutesValue(data && data.duracao_estimada_min);
       if (distInput) distInput.value = data.distancia_km != null ? String(data.distancia_km) : '';
-      if (cruInput) cruInput.value = data.tempo_cru_estimado_min != null ? String(data.tempo_cru_estimado_min) : '';
+      if (cruInput) cruInput.value = travelMinutes != null ? String(travelMinutes) : '';
       if (fonteInput) fonteInput.value = data.rota_fonte || '';
-      if (adicional && data.tempo_adicional_sugerido_min != null) adicional.value = String(data.tempo_adicional_sugerido_min);
+      if (adicional && additionalMinutes != null) adicional.value = String(additionalMinutes);
+      if (duracaoInput) {
+        duracaoInput.value = totalMinutes != null ? String(totalMinutes) : '';
+      }
+      if (tempoViagemField) {
+        tempoViagemField.value = travelMinutes != null ? formatDurationInput(travelMinutes) : '';
+      }
       const distanciaEl = card.querySelector('.trecho-distancia');
       if (distanciaEl) distanciaEl.textContent = data.distancia_km != null ? km(data.distancia_km) : '-';
       recalcCard(card, true);
       clearDiarias();
       renderPreview();
       updateOwnSnapshot();
+      scheduleAutosave();
     } catch (error) {
       erro.textContent = error.message || 'Erro ao estimar o trecho.';
       erro.classList.remove('d-none');
@@ -935,16 +1083,24 @@
       });
       const data = await response.json();
       if (!data.ok) throw new Error(data.erro || 'Erro ao estimar o retorno.');
+      const travelMinutes = resolveEstimatedTravelMinutes(data);
+      const additionalMinutes = resolveSuggestedAdditionalMinutes(data, travelMinutes);
+      const totalMinutes = parseMinutesValue(data && data.duracao_estimada_min);
       $('id_retorno_distancia_km').value = data.distancia_km != null ? String(data.distancia_km) : '';
-      $('id_retorno_tempo_cru_estimado_min').value = data.tempo_cru_estimado_min != null ? String(data.tempo_cru_estimado_min) : '';
+      $('id_retorno_tempo_cru_estimado_min').value = travelMinutes != null ? String(travelMinutes) : '';
+      $('id_retorno_duracao_estimada_min').value = totalMinutes != null ? String(totalMinutes) : '';
       $('id_retorno_rota_fonte').value = data.rota_fonte || '';
-      if (data.tempo_adicional_sugerido_min != null) {
-        $('id_retorno_tempo_adicional_min').value = String(data.tempo_adicional_sugerido_min);
+      if (additionalMinutes != null) {
+        $('id_retorno_tempo_adicional_min').value = String(additionalMinutes);
+      }
+      if ($('id_retorno_tempo_viagem_hhmm')) {
+        $('id_retorno_tempo_viagem_hhmm').value = travelMinutes != null ? formatDurationInput(travelMinutes) : '';
       }
       recalcRetorno(true);
       clearDiarias();
       renderPreview();
       updateOwnSnapshot();
+      scheduleAutosave();
     } catch (error) {
       erro.textContent = error.message || 'Erro ao estimar o retorno.';
       erro.classList.remove('d-none');
@@ -969,8 +1125,19 @@
         body: new FormData(form)
       });
       const data = await response.json();
-      if (!response.ok || !data.ok) throw new Error(data.error || 'Erro ao calcular as diarias.');
+      if (!response.ok || !data.ok) {
+        throw new Error((data.errors || []).join('\n') || data.error || 'Erro ao calcular as diárias.');
+      }
       applyDiarias(data);
+      if (data.justificativa_status_label) {
+        const prefix = data.justificativa_required ? 'Sim' : 'Não';
+        setPreviewValue('preview-justificativa', prefix + ' · ' + data.justificativa_status_label);
+      }
+      scheduleAutosave();
+      if (data.justificativa_required && data.justificativa_url) {
+        window.location.href = data.justificativa_url;
+        return;
+      }
     } catch (error) {
       $('diarias-error').textContent = error.message || 'Erro ao calcular as diarias.';
       $('diarias-error').classList.remove('d-none');
@@ -1001,6 +1168,7 @@
     clearDiarias();
     renderPreview();
     updateOwnSnapshot();
+    scheduleAutosave();
   });
 
   $('btn-adicionar-destino').addEventListener('click', async () => {
@@ -1009,6 +1177,7 @@
     clearDiarias();
     renderPreview();
     updateOwnSnapshot();
+    scheduleAutosave();
   });
 
   $('id_sede_estado').addEventListener('change', async () => {
@@ -1032,12 +1201,13 @@
     const card = event.target.closest('.card[data-key]');
     if (!card || applyingState) return;
     if (
-      event.target.name &&
-      (
-        event.target.name.indexOf('_saida_') !== -1 ||
-        event.target.name.indexOf('_tempo_adicional_min') !== -1 ||
-        event.target.name.indexOf('_tempo_cru_estimado_min') !== -1
-      )
+      (event.target.name &&
+        (
+          event.target.name.indexOf('_saida_') !== -1 ||
+          event.target.name.indexOf('_tempo_adicional_min') !== -1 ||
+          event.target.name.indexOf('_tempo_cru_estimado_min') !== -1
+        )) ||
+      event.target.classList.contains('trecho-tempo-viagem-hhmm')
     ) {
       recalcCard(card, true);
     }
@@ -1050,11 +1220,12 @@
     const card = event.target.closest('.card[data-key]');
     if (!card || applyingState) return;
     if (
-      event.target.name &&
-      (
-        event.target.name.indexOf('_tempo_adicional_min') !== -1 ||
-        event.target.name.indexOf('_tempo_cru_estimado_min') !== -1
-      )
+      (event.target.name &&
+        (
+          event.target.name.indexOf('_tempo_adicional_min') !== -1 ||
+          event.target.name.indexOf('_tempo_cru_estimado_min') !== -1
+        )) ||
+      event.target.classList.contains('trecho-tempo-viagem-hhmm')
     ) {
       recalcCard(card, true);
     }
@@ -1071,7 +1242,7 @@
     }
   });
 
-  ['id_retorno_saida_data', 'id_retorno_saida_hora', 'id_retorno_chegada_data', 'id_retorno_chegada_hora', 'id_retorno_tempo_cru_estimado_min', 'id_retorno_tempo_adicional_min'].forEach((id) => {
+  ['id_retorno_saida_data', 'id_retorno_saida_hora', 'id_retorno_chegada_data', 'id_retorno_chegada_hora', 'id_retorno_tempo_viagem_hhmm', 'id_retorno_tempo_adicional_min'].forEach((id) => {
     $(id).addEventListener('input', () => {
       if (applyingState) return;
       if (id.indexOf('tempo_') !== -1 || id.indexOf('saida_') !== -1) {
@@ -1103,6 +1274,7 @@
     nextState.roteiro_evento_label = route.label || '';
     await applyState(nextState);
     clearDiarias();
+    scheduleAutosave();
   });
 
   $('id_roteiro_modo_evento').addEventListener('change', async () => {
@@ -1122,6 +1294,7 @@
       await applyState(blank);
     }
     clearDiarias();
+    scheduleAutosave();
   });
 
   $('id_roteiro_modo_proprio').addEventListener('change', async () => {
@@ -1133,6 +1306,7 @@
     nextState.roteiro_evento_label = '';
     await applyState(nextState);
     clearDiarias();
+    scheduleAutosave();
   });
 
   form.addEventListener('submit', () => {

@@ -64,6 +64,16 @@ BUFFER_POR_CORREDOR = {
     CORREDOR_PADRAO: 10,
 }
 
+BUFFER_POR_FAIXA_DISTANCIA_KM = (
+    (60, 15),
+    (120, 20),
+    (200, 25),
+    (300, 35),
+    (450, 45),
+    (600, 60),
+    (None, 75),
+)
+
 ROTA_FONTE_OSRM = "OSRM"
 ROTA_FONTE_ESTIMATIVA_LOCAL = "ESTIMATIVA_LOCAL"
 ERRO_SEM_COORDENADAS = "Cidade sem coordenadas para estimativa."
@@ -344,11 +354,11 @@ def classificar_perfil_rota(
 
 
 def sugerir_buffer_operacional(corredor_macro: str, distancia_km: float = 0) -> int:
-    macro = corredor_macro if corredor_macro in corredores.BUFFER_POR_CORREDOR_MACRO else corredores.CORREDOR_PADRAO
-    buffer_min = corredores.BUFFER_POR_CORREDOR_MACRO.get(macro, 10)
-    if macro == corredores.CAMPOS_GERAIS and 0 < float(distancia_km or 0) < 150:
-        return 5
-    return buffer_min
+    distancia = float(distancia_km or 0)
+    for limite, buffer_min in BUFFER_POR_FAIXA_DISTANCIA_KM:
+        if limite is None or distancia <= limite:
+            return buffer_min
+    return 75
 
 
 def _aplicar_calibracao_eta(
@@ -623,7 +633,7 @@ def estimar_tempo_por_distancia_rodoviaria(
     velocidade_base = _velocidade_base_por_faixa(dist_km)
     tempo_base = arredondar_para_multiplo_5_proximo((dist_km / velocidade_base) * 60)
     tempo_viagem_min = arredondar_para_multiplo_5_proximo(tempo_base * FATOR_CORREDOR[corredor_uso])
-    buffer_min = BUFFER_POR_CORREDOR[corredor_uso]
+    buffer_min = sugerir_buffer_operacional(corredor_uso, dist_km)
     total = tempo_viagem_min + buffer_min
     return {
         "tempo_cru_estimado_min": tempo_viagem_min,

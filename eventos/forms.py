@@ -577,7 +577,7 @@ class OficioStep1Form(FormComErroInvalidMixin, forms.Form):
     motivo = forms.CharField(
         required=False,
         label='Motivo da viagem',
-        widget=forms.Textarea(attrs={'class': 'form-control', 'rows': 5}),
+        widget=forms.Textarea(attrs={'class': 'form-control', 'rows': 4}),
     )
     custeio_tipo = forms.ChoiceField(
         required=True,

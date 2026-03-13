@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, time
 from urllib.parse import urlencode
 
 from django.contrib import messages
@@ -19,6 +19,7 @@ from .models import (
     EventoFundamentacao,
     EventoTermoParticipante,
     Oficio,
+    OficioTrecho,
     RoteiroEvento,
 )
 from .services.diarias import PeriodMarker, TABELA_DIARIAS, calculate_periodized_diarias, formatar_valor_diarias
@@ -51,6 +52,24 @@ STATUS_LABELS = {
     'nao_exigida': 'Nao exigida',
     'indefinida': 'Aguardando roteiro',
     'indisponivel': 'Indisponivel',
+}
+
+OFICIO_STATUS_CARD_META = {
+    Oficio.STATUS_RASCUNHO: {'label': 'Rascunho', 'css_class': 'is-rascunho'},
+    'ASSINADO': {'label': 'Assinado', 'css_class': 'is-assinado'},
+    Oficio.STATUS_FINALIZADO: {'label': 'Finalizado', 'css_class': 'is-finalizado'},
+}
+
+DOCUMENT_STATUS_CARD_META = {
+    'available': {'label': 'Disponivel', 'css_class': 'is-ready'},
+    'pending': {'label': 'Pendente', 'css_class': 'is-pending'},
+    'unavailable': {'label': 'Indisponivel', 'css_class': 'is-unavailable'},
+    'not_applicable': {'label': 'Nao aplicavel', 'css_class': 'is-muted'},
+    'preenchida': {'label': 'Preenchida', 'css_class': 'is-info'},
+    'nao_exigida': {'label': 'Nao exigida', 'css_class': 'is-muted'},
+    'indefinida': {'label': 'Aguardando roteiro', 'css_class': 'is-muted'},
+    'indisponivel': {'label': 'Indisponivel', 'css_class': 'is-unavailable'},
+    'pendente': {'label': 'Pendente', 'css_class': 'is-pending'},
 }
 
 
@@ -168,6 +187,196 @@ def _roteiro_destinos_display(roteiro):
     return ', '.join(labels) if labels else '—'
 
 
+def _combine_date_time(date_value, time_value, fallback_time):
+    if not date_value:
+        return None
+    return datetime.combine(date_value, time_value or fallback_time)
+
+
+def _oficio_periodo_display(oficio):
+    pontos = []
+    for trecho in oficio.trechos.all():
+        saida = _combine_date_time(trecho.saida_data, trecho.saida_hora, time.min)
+        chegada = _combine_date_time(trecho.chegada_data, trecho.chegada_hora, time.max)
+        if saida:
+            pontos.append(saida)
+        if chegada:
+            pontos.append(chegada)
+    retorno_saida = _combine_date_time(oficio.retorno_saida_data, oficio.retorno_saida_hora, time.min)
+    retorno_chegada = _combine_date_time(oficio.retorno_chegada_data, oficio.retorno_chegada_hora, time.max)
+    if retorno_saida:
+        pontos.append(retorno_saida)
+    if retorno_chegada:
+        pontos.append(retorno_chegada)
+    if not pontos:
+        return 'â€”'
+    inicio = min(pontos)
+    fim = max(pontos)
+    if inicio.date() == fim.date():
+        return f'{inicio:%d/%m/%Y} {inicio:%H:%M} - {fim:%H:%M}'
+    return f'{inicio:%d/%m/%Y %H:%M} at\u00e9 {fim:%d/%m/%Y %H:%M}'
+
+
+def _oficio_viajantes_display(oficio):
+    viajantes = list(oficio.viajantes.all())
+    if not viajantes:
+        return 'Nenhum'
+    if len(viajantes) == 1:
+        return viajantes[0].nome
+    if len(viajantes) == 2:
+        return f'{viajantes[0].nome} e {viajantes[1].nome}'
+    return f'{len(viajantes)} viajantes'
+
+
+def _oficio_process_status_meta(oficio):
+    default_label = getattr(oficio, 'get_status_display', lambda: oficio.status)() or oficio.status or 'â€”'
+    meta = OFICIO_STATUS_CARD_META.get(oficio.status, {})
+    return {
+        'label': meta.get('label', default_label),
+        'css_class': meta.get('css_class', 'is-muted'),
+    }
+
+
+def _document_card_status_meta(status_key, fallback_label='â€”'):
+    meta = DOCUMENT_STATUS_CARD_META.get(status_key, {})
+    return {
+        'label': meta.get('label', fallback_label),
+        'css_class': meta.get('css_class', 'is-muted'),
+    }
+
+
+def _build_oficio_document_actions(oficio, tipo_documento):
+    meta = get_document_type_meta(tipo_documento)
+    actions = []
+    errors = []
+    statuses = []
+    for formato in (DocumentoFormato.PDF, DocumentoFormato.DOCX):
+        if not meta.supports(formato):
+            continue
+        status_info = get_document_generation_status(oficio, meta.tipo, formato)
+        statuses.append(status_info['status'])
+        actions.append(
+            {
+                'label': formato.value.upper(),
+                'url': reverse(
+                    'eventos:oficio-documento-download',
+                    kwargs={'pk': oficio.pk, 'tipo_documento': meta.slug, 'formato': formato.value},
+                ),
+                'available': status_info['status'] == 'available',
+                'status': status_info['status'],
+                'errors': status_info.get('errors') or [],
+            }
+        )
+        if status_info['status'] != 'available':
+            errors.extend(status_info.get('errors') or [])
+
+    if any(status == 'available' for status in statuses):
+        status_key = 'available'
+        detail = 'Documento pronto para download.'
+    elif any(status == 'pending' for status in statuses):
+        status_key = 'pending'
+        detail = (errors or ['Documento com pendencias de preenchimento.'])[0]
+    elif statuses:
+        status_key = 'unavailable'
+        detail = (errors or ['Documento indisponivel no momento.'])[0]
+    else:
+        status_key = 'not_applicable'
+        detail = 'Documento nao suportado neste fluxo.'
+
+    status_meta = _document_card_status_meta(status_key, STATUS_LABELS.get(status_key, 'â€”'))
+    return {
+        'status_key': status_key,
+        'status_label': status_meta['label'],
+        'status_css_class': status_meta['css_class'],
+        'detail': detail,
+        'actions': actions,
+        'available': any(action['available'] for action in actions),
+    }
+
+
+def _build_oficio_document_cards(oficio):
+    common_items = [
+        {'label': 'Destino', 'value': oficio.destinos_display},
+        {'label': 'Per\u00edodo', 'value': oficio.periodo_display},
+        {'label': 'Viajantes', 'value': oficio.viajantes_display},
+        {'label': 'Protocolo', 'value': oficio.protocolo_formatado or 'â€”'},
+    ]
+    cards = []
+
+    oficio_document = _build_oficio_document_actions(oficio, DocumentoOficioTipo.OFICIO)
+    cards.append(
+        {
+            'key': 'oficio',
+            'title': 'Of\u00edcio',
+            'status_key': oficio_document['status_key'],
+            'status_label': oficio_document['status_label'],
+            'status_css_class': oficio_document['status_css_class'],
+            'detail': oficio_document['detail'],
+            'summary_items': common_items,
+            'edit_url': reverse('eventos:oficio-editar', kwargs={'pk': oficio.pk}),
+            'actions': oficio_document['actions'],
+        }
+    )
+
+    justificativa_info = oficio.justificativa_info
+    justificativa_exists = (
+        justificativa_info['required']
+        or justificativa_info['filled']
+        or bool((oficio.justificativa_texto or '').strip())
+    )
+    if justificativa_exists:
+        justificativa_document = _build_oficio_document_actions(oficio, DocumentoOficioTipo.JUSTIFICATIVA)
+        justificativa_status = _document_card_status_meta(
+            justificativa_info['status_key'],
+            justificativa_info['status_label'],
+        )
+        cards.append(
+            {
+                'key': 'justificativa',
+                'title': 'Justificativa',
+                'status_key': justificativa_info['status_key'],
+                'status_label': justificativa_status['label'],
+                'status_css_class': justificativa_status['css_class'],
+                'detail': (
+                    'Texto da justificativa preenchido.'
+                    if justificativa_info['filled']
+                    else justificativa_document['detail']
+                ),
+                'summary_items': [
+                    {'label': 'Destino', 'value': oficio.destinos_display},
+                    {'label': 'Per\u00edodo', 'value': oficio.periodo_display},
+                    {'label': 'Primeira sa\u00edda', 'value': justificativa_info['primeira_saida_display'] or 'â€”'},
+                    {'label': 'Protocolo', 'value': oficio.protocolo_formatado or 'â€”'},
+                ],
+                'edit_url': reverse('eventos:oficio-justificativa', kwargs={'pk': oficio.pk}),
+                'actions': justificativa_document['actions'],
+            }
+        )
+
+    termo_document = _build_oficio_document_actions(oficio, DocumentoOficioTipo.TERMO_AUTORIZACAO)
+    termo_exists = oficio.gerar_termo_preenchido or termo_document['available']
+    if termo_exists:
+        cards.append(
+            {
+                'key': 'termo-autorizacao',
+                'title': 'Termo de autoriza\u00e7\u00e3o',
+                'status_key': termo_document['status_key'],
+                'status_label': termo_document['status_label'],
+                'status_css_class': termo_document['status_css_class'],
+                'detail': (
+                    'Marcado no resumo para geraÃ§Ã£o do termo preenchido.'
+                    if oficio.gerar_termo_preenchido and termo_document['status_key'] != 'available'
+                    else termo_document['detail']
+                ),
+                'summary_items': common_items,
+                'edit_url': reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk}),
+                'actions': termo_document['actions'],
+            }
+        )
+
+    return cards
+
+
 def _document_status_summary(oficio, tipo_documento, fundamentacao_tipo):
     meta = get_document_type_meta(tipo_documento)
     fundamentacao = getattr(oficio.evento, 'fundamentacao', None) if oficio.evento_id else None
@@ -258,8 +467,19 @@ def _build_oficio_filters(request):
 def oficio_global_lista(request):
     filters = _build_oficio_filters(request)
     queryset = (
-        Oficio.objects.select_related('evento', 'cidade_sede', 'estado_sede', 'roteiro_evento')
-        .prefetch_related('trechos', 'viajantes')
+        Oficio.objects.select_related('evento', 'evento__fundamentacao', 'cidade_sede', 'estado_sede', 'roteiro_evento')
+        .prefetch_related(
+            Prefetch(
+                'trechos',
+                queryset=OficioTrecho.objects.select_related(
+                    'origem_estado',
+                    'origem_cidade',
+                    'destino_estado',
+                    'destino_cidade',
+                ),
+            ),
+            'viajantes',
+        )
         .all()
     )
 
@@ -297,11 +517,19 @@ def oficio_global_lista(request):
     object_list = list(page_obj.object_list)
     for oficio in object_list:
         oficio.destinos_display = _oficio_destinos_display(oficio)
+        oficio.periodo_display = _oficio_periodo_display(oficio)
+        oficio.viajantes_display = _oficio_viajantes_display(oficio)
         oficio.justificativa_info = _build_oficio_justificativa_info(oficio)
+        oficio.process_status = _oficio_process_status_meta(oficio)
         oficio.evento_url = reverse('eventos:guiado-painel', kwargs={'pk': oficio.evento_id}) if oficio.evento_id else ''
-        oficio.documentos_url = reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk})
         oficio.edicao_url = reverse('eventos:oficio-editar', kwargs={'pk': oficio.pk})
         oficio.excluir_url = reverse('eventos:oficio-excluir', kwargs={'pk': oficio.pk})
+        oficio.card_documents = _build_oficio_document_cards(oficio)
+        oficio.evento_titulo_display = (
+            (oficio.evento.titulo or '').strip()
+            if oficio.evento_id
+            else 'Of\u00edcio avulso'
+        ) or '(sem t\u00edtulo)'
 
     return render(
         request,

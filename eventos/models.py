@@ -738,8 +738,8 @@ class Oficio(models.Model):
     ROTEIRO_MODO_EVENTO = 'EVENTO_EXISTENTE'
     ROTEIRO_MODO_PROPRIO = 'ROTEIRO_PROPRIO'
     ROTEIRO_MODO_CHOICES = [
-        (ROTEIRO_MODO_EVENTO, 'Usar roteiro existente do evento'),
-        (ROTEIRO_MODO_PROPRIO, 'Criar novo roteiro para este ofício'),
+        (ROTEIRO_MODO_EVENTO, 'Usar roteiro salvo'),
+        (ROTEIRO_MODO_PROPRIO, 'Montar roteiro neste ofício'),
     ]
 
     # Vínculos
@@ -802,6 +802,10 @@ class Oficio(models.Model):
     )
     motivo = models.TextField('Motivo', blank=True, default='')
     justificativa_texto = models.TextField('Justificativa', blank=True, default='')
+    gerar_termo_preenchido = models.BooleanField(
+        'Gerar termo de autorização preenchido',
+        default=False,
+    )
     custeio_tipo = models.CharField(
         'Custeio', max_length=30, choices=CUSTEIO_CHOICES, default=CUSTEIO_UNIDADE, blank=True
     )
@@ -858,6 +862,31 @@ class Oficio(models.Model):
     retorno_chegada_cidade = models.CharField('Retorno - cidade de chegada', max_length=120, blank=True, default='')
     retorno_chegada_data = models.DateField('Retorno - data de chegada', null=True, blank=True)
     retorno_chegada_hora = models.TimeField('Retorno - hora de chegada', null=True, blank=True)
+    retorno_distancia_km = models.DecimalField(
+        'Retorno - distancia (km)',
+        max_digits=8,
+        decimal_places=2,
+        null=True,
+        blank=True,
+    )
+    retorno_duracao_estimada_min = models.PositiveIntegerField(
+        'Retorno - duracao estimada (min)',
+        null=True,
+        blank=True,
+    )
+    retorno_tempo_cru_estimado_min = models.PositiveIntegerField(
+        'Retorno - tempo cru estimado (min)',
+        null=True,
+        blank=True,
+    )
+    retorno_tempo_adicional_min = models.IntegerField(
+        'Retorno - tempo adicional (min)',
+        null=True,
+        blank=True,
+        default=0,
+    )
+    retorno_rota_fonte = models.CharField('Retorno - fonte da rota', max_length=30, blank=True, default='')
+    retorno_rota_calculada_em = models.DateTimeField('Retorno - rota calculada em', null=True, blank=True)
     quantidade_diarias = models.CharField('Quantidade de diárias', max_length=120, blank=True, default='')
     valor_diarias = models.CharField('Valor das diárias', max_length=80, blank=True, default='')
     valor_diarias_extenso = models.TextField('Valor das diárias por extenso', blank=True, default='')
@@ -930,6 +959,19 @@ class Oficio(models.Model):
     @property
     def placa_formatada(self):
         return format_masked_display('placa', self.placa)
+
+    @property
+    def motorista_oficio_formatado(self):
+        if self.motorista_oficio_numero and self.motorista_oficio_ano:
+            return f'{int(self.motorista_oficio_numero):02d}/{int(self.motorista_oficio_ano)}'
+        return self.motorista_oficio or EMPTY_MASK_DISPLAY
+
+    @property
+    def retorno_tempo_total_final_min(self):
+        cru = self.retorno_tempo_cru_estimado_min or 0
+        adicional = self.retorno_tempo_adicional_min or 0
+        total = cru + adicional
+        return total if total > 0 else (self.retorno_duracao_estimada_min or None)
 
     def clean(self):
         super().clean()
