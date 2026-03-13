@@ -12,7 +12,7 @@
             <a href="{% url 'eventos:documentos-avulsos-download' object.pk 'docx' %}" class="btn btn-outline-primary btn-sm">Baixar DOCX</a>
             <a href="{% url 'eventos:documentos-avulsos-download' object.pk 'pdf' %}" class="btn btn-outline-secondary btn-sm">Baixar PDF</a>
             {% endif %}
-            <a href="{% url 'eventos:documentos-hub' %}" class="btn btn-outline-secondary btn-sm">Voltar para a central</a>
+            <a href="{% if voltar_url %}{{ voltar_url }}{% else %}{% url 'eventos:documentos-hub' %}{% endif %}" class="btn btn-outline-secondary btn-sm">{% if voltar_label %}{{ voltar_label }}{% else %}Voltar para a central{% endif %}</a>
         </div>
     </div>
 
@@ -77,7 +77,7 @@
 
                 <div class="d-flex flex-wrap gap-2 mt-4">
                     <button type="submit" class="btn btn-primary">Salvar</button>
-                    <a href="{% url 'eventos:documentos-hub' %}" class="btn btn-outline-secondary">Cancelar</a>
+                    <a href="{% if voltar_url %}{{ voltar_url }}{% else %}{% url 'eventos:documentos-hub' %}{% endif %}" class="btn btn-outline-secondary">Cancelar</a>
                 </div>
             </form>
         </div>

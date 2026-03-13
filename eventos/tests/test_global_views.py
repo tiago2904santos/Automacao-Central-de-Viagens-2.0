@@ -10,10 +10,12 @@ from eventos.models import (
     Evento,
     EventoFundamentacao,
     EventoTermoParticipante,
+    ModeloJustificativa,
     Oficio,
     OficioTrecho,
     RoteiroEvento,
     RoteiroEventoDestino,
+    RoteiroEventoTrecho,
 )
 
 User = get_user_model()
@@ -54,12 +56,14 @@ class GlobalViewsTest(TestCase):
             status=Evento.STATUS_EM_ANDAMENTO,
             cidade_base=self.cidade_origem,
         )
-        EventoFundamentacao.objects.create(
+        self.fundamentacao_pt = EventoFundamentacao.objects.create(
             evento=self.evento_pt,
             tipo_documento=EventoFundamentacao.TIPO_PT,
             texto_fundamentacao='Plano global',
+            coordenador_administrativo=self.viajante,
+            horario_atendimento='08:00 as 17:00',
         )
-        EventoFundamentacao.objects.create(
+        self.fundamentacao_os = EventoFundamentacao.objects.create(
             evento=self.evento_os,
             tipo_documento=EventoFundamentacao.TIPO_OS,
             texto_fundamentacao='Ordem global',
@@ -121,6 +125,44 @@ class GlobalViewsTest(TestCase):
             cidade=self.cidade_destino,
             ordem=0,
         )
+        RoteiroEventoTrecho.objects.create(
+            roteiro=self.roteiro,
+            ordem=0,
+            tipo=RoteiroEventoTrecho.TIPO_IDA,
+            origem_estado=self.estado,
+            origem_cidade=self.cidade_origem,
+            destino_estado=self.estado,
+            destino_cidade=self.cidade_destino,
+            saida_dt=timezone.make_aware(datetime(2026, 3, 10, 8, 0)),
+            chegada_dt=timezone.make_aware(datetime(2026, 3, 10, 12, 0)),
+        )
+
+        self.roteiro_avulso = RoteiroEvento.objects.create(
+            evento=None,
+            origem_estado=self.estado,
+            origem_cidade=self.cidade_origem,
+            saida_dt=timezone.make_aware(datetime(2026, 5, 3, 6, 30)),
+            chegada_dt=timezone.make_aware(datetime(2026, 5, 3, 10, 45)),
+            status=RoteiroEvento.STATUS_FINALIZADO,
+            tipo=RoteiroEvento.TIPO_AVULSO,
+        )
+        RoteiroEventoDestino.objects.create(
+            roteiro=self.roteiro_avulso,
+            estado=self.estado,
+            cidade=self.cidade_destino,
+            ordem=0,
+        )
+        RoteiroEventoTrecho.objects.create(
+            roteiro=self.roteiro_avulso,
+            ordem=0,
+            tipo=RoteiroEventoTrecho.TIPO_IDA,
+            origem_estado=self.estado,
+            origem_cidade=self.cidade_origem,
+            destino_estado=self.estado,
+            destino_cidade=self.cidade_destino,
+            saida_dt=timezone.make_aware(datetime(2026, 5, 3, 6, 30)),
+            chegada_dt=timezone.make_aware(datetime(2026, 5, 3, 10, 45)),
+        )
 
         EventoTermoParticipante.objects.create(
             evento=self.evento_pt,
@@ -157,6 +199,75 @@ class GlobalViewsTest(TestCase):
         self.assertContains(response, 'Termo de autorização')
         self.assertContains(response, 'Abrir wizard')
 
+    def test_lista_global_de_roteiros_renderiza_cards_para_evento_e_avulso(self):
+        response = self.client.get(reverse('eventos:roteiros-global'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Lista de roteiros')
+        self.assertContains(response, 'Cadastro de roteiro')
+        self.assertNotContains(response, 'Novo roteiro avulso')
+        self.assertNotContains(response, '>Eventos<', html=True)
+        self.assertContains(response, 'roteiro-vinculo-chip')
+        self.assertContains(response, 'Avulso')
+        self.assertContains(response, 'Vinculado a evento')
+        self.assertContains(response, 'Usar no cadastro')
+        self.assertContains(response, self.roteiro_avulso.origem_cidade.nome)
+
+    def test_lista_global_de_planos_trabalho_renderiza_cards_no_padrao_novo(self):
+        response = self.client.get(reverse('eventos:documentos-planos-trabalho'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Lista de planos de trabalho')
+        # Cadastro avulso de PT será reconstruído; por enquanto, apenas listagem.
+        self.assertNotContains(response, 'Cadastro de plano de trabalho')
+        self.assertNotContains(response, 'Voltar para documentos')
+        self.assertNotContains(response, '>Oficios<', html=True)
+        self.assertContains(response, 'oficio-process-card')
+        self.assertContains(response, 'Plano de trabalho')
+        self.assertContains(response, self.evento_pt.titulo)
+        self.assertContains(response, self.viajante.nome)
+        self.assertContains(response, 'Editar')
+        self.assertContains(response, 'Visualizar')
+        self.assertContains(response, self.oficio_pt.numero_formatado)
+        self.assertNotContains(response, self.oficio_os.numero_formatado)
+
+    def test_lista_global_de_justificativas_renderiza_cards_no_padrao_novo(self):
+        modelo = ModeloJustificativa.objects.create(nome='Modelo urgente', texto='Texto base')
+        self.oficio_pt.justificativa_modelo = modelo
+        self.oficio_pt.justificativa_texto = 'Justificativa operacional registrada para cobertura global.'
+        self.oficio_pt.save(update_fields=['justificativa_modelo', 'justificativa_texto'])
+
+        response = self.client.get(reverse('eventos:documentos-justificativas'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Lista de justificativas')
+        self.assertContains(response, 'Cadastro de modelo')
+        self.assertContains(response, 'oficio-process-card')
+        self.assertContains(response, 'Justificativa - {}'.format(self.oficio_pt.numero_formatado))
+        self.assertContains(response, modelo.nome)
+        self.assertContains(response, 'Editar')
+        self.assertContains(response, 'Visualizar')
+        self.assertContains(response, 'PDF')
+        self.assertContains(response, 'DOCX')
+        self.assertContains(response, self.evento_pt.titulo)
+
+    def test_lista_global_de_termos_renderiza_cards_enxutos(self):
+        response = self.client.get(reverse('eventos:documentos-termos'))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'Lista de termos')
+        self.assertNotContains(response, 'Voltar para documentos')
+        self.assertNotContains(response, 'Abrir termos')
+        self.assertContains(response, 'term-process-card')
+        self.assertContains(response, self.viajante.nome)
+        self.assertContains(response, self.cargo.nome)
+        self.assertContains(response, 'Completo')
+        self.assertContains(response, self.evento_pt.titulo)
+        self.assertContains(response, self.oficio_pt.numero_formatado)
+        self.assertContains(response, 'Abrir / Editar')
+        self.assertContains(response, 'PDF')
+        self.assertContains(response, 'DOCX')
+
     def test_hubs_globais_principais_respondem_200(self):
         urls = [
             reverse('eventos:roteiros-global'),
@@ -172,12 +283,12 @@ class GlobalViewsTest(TestCase):
 
     def test_hubs_documentais_renderizam_contexto_real(self):
         response_pt = self.client.get(reverse('eventos:documentos-planos-trabalho'))
-        self.assertContains(response_pt, 'Planos de trabalho')
+        self.assertContains(response_pt, 'Lista de planos de trabalho')
         self.assertContains(response_pt, self.evento_pt.titulo)
         self.assertContains(response_pt, self.oficio_pt.numero_formatado)
 
         response_os = self.client.get(reverse('eventos:documentos-ordens-servico'))
-        self.assertContains(response_os, 'Ordens de servico')
+        self.assertContains(response_os, 'Lista de ordens')
         self.assertContains(response_os, self.evento_os.titulo)
         self.assertContains(response_os, self.oficio_os.numero_formatado)
 

@@ -17,7 +17,9 @@ from eventos.services.justificativa import (
     oficio_tem_justificativa,
 )
 from eventos.services.plano_trabalho_domain import (
+    build_atividades_items,
     build_atividades_formatada,
+    build_efetivo_resumo,
     build_metas_formatada,
     get_unidade_movel_text,
 )
@@ -511,9 +513,63 @@ def _format_data_extenso(data_value):
         return ''
 
 
+def _format_multiline_text(value):
+    linhas = []
+    for line in str(value or '').replace('\r', '\n').split('\n'):
+        texto = ' '.join(line.strip().split())
+        if texto:
+            linhas.append(f'• {texto}')
+    return '\n'.join(linhas)
+
+
+def _resolve_pt_titulo(evento, fund):
+    if fund and _text_or_empty(getattr(fund, 'titulo_plano', '')):
+        return _text_or_empty(fund.titulo_plano)
+    if evento and _text_or_empty(getattr(evento, 'titulo', '')):
+        return _text_or_empty(evento.titulo)
+    return ''
+
+
+def _resolve_pt_local_execucao(context, fund):
+    if fund and _text_or_empty(getattr(fund, 'local_execucao', '')):
+        return _text_or_empty(fund.local_execucao)
+    return _text_or_empty(context['roteiro']['destinos_texto'] or context['roteiro']['sede'])
+
+
+def _resolve_pt_periodo_execucao(context, evento, fund):
+    if fund and _text_or_empty(getattr(fund, 'periodo_execucao', '')):
+        return _text_or_empty(fund.periodo_execucao)
+    if evento and evento.data_inicio:
+        if evento.data_fim and evento.data_fim != evento.data_inicio:
+            return f'{evento.data_inicio:%d/%m/%Y} a {evento.data_fim:%d/%m/%Y}'
+        return f'{evento.data_inicio:%d/%m/%Y}'
+    return _text_or_empty(context['roteiro']['periodo_viagem']['resumo'])
+
+
+def _resolve_pt_solicitante(fund):
+    if not fund:
+        return ''
+    if fund.solicitante_id:
+        return _text_or_empty(fund.solicitante.nome)
+    return _text_or_empty(fund.solicitante_outros)
+
+
+def _get_pt_efetivo_items(evento):
+    if not evento:
+        return []
+    itens = []
+    for efetivo in EfetivoPlanoTrabalho.objects.filter(evento=evento).select_related('cargo').order_by('cargo__nome'):
+        itens.append(
+            {
+                'cargo': _text_or_empty(efetivo.cargo.nome if getattr(efetivo, 'cargo_id', None) else ''),
+                'quantidade': efetivo.quantidade,
+            }
+        )
+    return itens
+
+
 def _build_coordenacao_formatada(fund):
-    """Monta o texto {{coordenacao_formatada}} a partir da fundamentação (coordenador operacional + administrativo)."""
-    from django.utils import timezone
+    """Monta o texto {{coordenacao_formatada}} com blocos condicionais do plano."""
     partes = []
     if fund and fund.coordenador_operacional_id:
         co = fund.coordenador_operacional
@@ -537,18 +593,33 @@ def _build_coordenacao_formatada(fund):
             'consolidação de dados estatísticos, elaboração de relatório final e demais providências necessárias '
             'ao regular cumprimento da ação.'
         )
+    if fund:
+        if getattr(fund, 'tem_coordenador_municipal', False):
+            nome = _text_or_empty(getattr(fund, 'coordenador_municipal_nome', '')) or 'representante municipal a definir'
+            partes.append(
+                f'Haverá apoio de coordenação municipal exercido por {nome}, responsável pela articulação local, '
+                'alinhamento com a administração do município, organização dos espaços de atendimento e apoio '
+                'à execução do cronograma do plano de trabalho.'
+            )
+        else:
+            partes.append(
+                'Não haverá coordenador municipal designado. A articulação local, o alinhamento operacional e '
+                'a organização dos espaços de atendimento permanecerão sob responsabilidade direta da equipe '
+                'da PCPR designada para a ação.'
+            )
     return '\n\n'.join(partes)
 
 
-def _pt_total_servidores_safe(evento):
-    """Total de servidores do plano (composição de efetivo); fallback 1."""
-    from django.db.models import Sum
-    if not evento:
-        return 1
-    total = EfetivoPlanoTrabalho.objects.filter(evento=evento).aggregate(
-        total=Sum('quantidade')
-    )['total']
-    return max(1, (total or 0))
+def _pt_total_servidores_safe(evento, oficio=None):
+    """Total de servidores do plano (composição de efetivo); fallback para participantes do ofício."""
+    resumo = build_efetivo_resumo(_get_pt_efetivo_items(evento))
+    if resumo['total'] > 0:
+        return resumo['total']
+    if oficio is not None:
+        participantes = oficio.viajantes.count()
+        if participantes > 0:
+            return participantes
+    return 1
 
 
 def build_plano_trabalho_document_context(oficio):
@@ -563,18 +634,22 @@ def build_plano_trabalho_document_context(oficio):
     if fund and (fund.tipo_documento or '').strip() != EventoFundamentacao.TIPO_PT:
         fund = None
 
-    solicitante_texto = ''
-    if fund:
-        if fund.solicitante_id:
-            solicitante_texto = _text_or_empty(fund.solicitante.nome)
-        else:
-            solicitante_texto = _text_or_empty(fund.solicitante_outros)
-
+    solicitante_texto = _resolve_pt_solicitante(fund)
     atividades_codigos = (fund.atividades_codigos if fund else '') or ''
+    atividades_customizadas = (fund.atividades_customizadas if fund else '') or ''
     horario_atendimento = _text_or_empty(fund.horario_atendimento if fund else '')
-    recursos_formatado = _text_or_empty(fund.recursos_texto if fund else '')
+    recursos_formatado = _format_multiline_text(fund.recursos_texto if fund else '')
+    locais_formatado = _format_multiline_text(fund.locais_texto if fund else '')
+    cronograma_formatado = _format_multiline_text(fund.cronograma_texto if fund else '')
+    materiais_formatado = _format_multiline_text(fund.materiais_equipamentos_texto if fund else '')
+    observacoes_operacionais = _text_or_empty(fund.observacoes_pt_os if fund else '')
+    titulo_plano = _resolve_pt_titulo(evento, fund)
+    local_execucao = _resolve_pt_local_execucao(context, fund)
+    periodo_execucao = _resolve_pt_periodo_execucao(context, evento, fund)
+    atividades_items = build_atividades_items(atividades_codigos, atividades_customizadas)
+    efetivo_resumo = build_efetivo_resumo(_get_pt_efetivo_items(evento))
 
-    total_servidores_pt = _pt_total_servidores_safe(evento)
+    total_servidores_pt = _pt_total_servidores_safe(evento, oficio=oficio)
     markers, chegada_final = _get_plano_trabalho_markers_chegada(oficio)
     diarias_pt = {}
     if markers and chegada_final:
@@ -603,7 +678,10 @@ def build_plano_trabalho_document_context(oficio):
             valor_unitario_str = ''
     valor_unitario_extenso = valor_por_extenso_ptbr(valor_unitario_str) if valor_unitario_str else ''
 
-    quantidade_de_servidores_texto = f'{total_servidores_pt} servidor(es)' if total_servidores_pt else ''
+    quantidade_de_servidores_texto = (
+        efetivo_resumo['quantidade_label']
+        or (f'{total_servidores_pt} servidor' if total_servidores_pt == 1 else f'{total_servidores_pt} servidores')
+    )
 
     dias_evento_extenso = ''
     if evento and evento.data_inicio:
@@ -624,14 +702,19 @@ def build_plano_trabalho_document_context(oficio):
             'assinaturas': get_assinaturas_documento(DocumentoOficioTipo.PLANO_TRABALHO.value),
             'data_extenso': data_extenso,
             'numero_plano_trabalho': numero_pt,
+            'titulo_plano_trabalho': titulo_plano,
             'destino': context['roteiro']['destinos_texto'] or context['roteiro']['sede'],
             'solicitante': solicitante_texto,
-            'metas_formatada': build_metas_formatada(atividades_codigos),
-            'atividades_formatada': build_atividades_formatada(atividades_codigos),
+            'metas_formatada': build_metas_formatada(atividades_codigos, atividades_customizadas),
+            'atividades_formatada': build_atividades_formatada(atividades_codigos, atividades_customizadas),
             'dias_evento_extenso': dias_evento_extenso,
-            'locais_formatado': context['roteiro']['destinos_texto'] or context['roteiro']['sede'],
+            'local_execucao': local_execucao,
+            'periodo_execucao': periodo_execucao,
+            'locais_formatado': locais_formatado or local_execucao,
+            'cronograma_formatado': cronograma_formatado,
             'horario_atendimento': horario_atendimento,
             'quantidade_de_servidores': quantidade_de_servidores_texto,
+            'efetivo_formatado': efetivo_resumo['descricao'],
             'unidade_movel': get_unidade_movel_text(atividades_codigos),
             'valor_total': total_valor_str,
             'valor_total_por_extenso': valor_extenso_pt,
@@ -639,21 +722,33 @@ def build_plano_trabalho_document_context(oficio):
             'valor_unitario': valor_unitario_str,
             'valor_unitario_por_extenso': valor_unitario_extenso,
             'recursos_formatado': recursos_formatado,
+            'materiais_equipamentos_formatado': materiais_formatado,
+            'observacoes_operacionais': observacoes_operacionais,
             'coordenacao_formatada': _build_coordenacao_formatada(fund) if fund else '',
             'plano_trabalho': {
+                'titulo': titulo_plano,
+                'contexto': 'Vinculado ao evento' if evento else 'Avulso',
                 'objetivo': objetivo,
                 'local_periodo': (
                     ' | '.join(
                         [
                             part
                             for part in [
-                                context['roteiro']['destinos_texto'] or context['roteiro']['sede'],
-                                context['roteiro']['periodo_viagem']['resumo'],
+                                local_execucao,
+                                periodo_execucao,
                             ]
                             if part
                         ]
                     )
                 ),
+                'local_execucao': local_execucao,
+                'periodo_execucao': periodo_execucao,
+                'horario_atendimento': horario_atendimento,
+                'solicitante': solicitante_texto,
+                'coordenacao_texto': _build_coordenacao_formatada(fund) if fund else '',
+                'efetivo_resumo': efetivo_resumo['descricao'],
+                'efetivo_total': quantidade_de_servidores_texto,
+                'atividades_itens': atividades_items,
                 'participantes_texto': context['resumos']['participantes_texto'],
                 'roteiro_resumo': context['roteiro']['resumo_linhas'],
                 'transporte_resumo': ' | '.join(
@@ -671,6 +766,11 @@ def build_plano_trabalho_document_context(oficio):
                     ]
                 ),
                 'custeio_resumo': context['custeio']['descricao'],
+                'locais': locais_formatado or local_execucao,
+                'cronograma': cronograma_formatado,
+                'materiais_equipamentos': materiais_formatado,
+                'recursos': recursos_formatado,
+                'observacoes_operacionais': observacoes_operacionais,
             },
         }
     )

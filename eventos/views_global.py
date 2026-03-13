@@ -9,7 +9,7 @@ from django.db.models import Count, Prefetch, Q
 from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
-from django.utils.text import slugify
+from django.utils.text import Truncator, slugify
 from django.views.decorators.http import require_http_methods
 
 from .forms import DocumentoAvulsoForm
@@ -21,6 +21,7 @@ from .models import (
     Oficio,
     OficioTrecho,
     RoteiroEvento,
+    RoteiroEventoTrecho,
 )
 from .services.diarias import PeriodMarker, TABELA_DIARIAS, calculate_periodized_diarias, formatar_valor_diarias
 from .services.documentos import (
@@ -70,6 +71,17 @@ DOCUMENT_STATUS_CARD_META = {
     'indefinida': {'label': 'Aguardando roteiro', 'css_class': 'is-muted'},
     'indisponivel': {'label': 'Indisponivel', 'css_class': 'is-unavailable'},
     'pendente': {'label': 'Pendente', 'css_class': 'is-pending'},
+}
+
+ROTEIRO_STATUS_CARD_META = {
+    RoteiroEvento.STATUS_RASCUNHO: {'label': 'Rascunho', 'css_class': 'is-rascunho'},
+    'ASSINADO': {'label': 'Assinado', 'css_class': 'is-assinado'},
+    RoteiroEvento.STATUS_FINALIZADO: {'label': 'Finalizado', 'css_class': 'is-finalizado'},
+}
+
+ROTEIRO_VINCULO_META = {
+    RoteiroEvento.TIPO_AVULSO: {'label': 'Avulso', 'css_class': 'is-avulso'},
+    RoteiroEvento.TIPO_EVENTO: {'label': 'Vinculado a evento', 'css_class': 'is-evento'},
 }
 
 
@@ -545,6 +557,84 @@ def oficio_global_lista(request):
     )
 
 
+def _roteiro_origem_display(roteiro):
+    return _label_local(roteiro.origem_cidade, roteiro.origem_estado)
+
+
+def _roteiro_destino_principal_display(roteiro):
+    primeiro_destino = next(iter(roteiro.destinos.all()), None)
+    if primeiro_destino:
+        return _label_local(primeiro_destino.cidade, primeiro_destino.estado)
+    return 'â€”'
+
+
+def _roteiro_periodo_display(roteiro):
+    inicio = roteiro.saida_dt
+    fim = roteiro.retorno_chegada_dt or roteiro.chegada_dt
+    if not inicio and not fim:
+        return 'â€”'
+    if inicio and fim:
+        if inicio.date() == fim.date():
+            return f'{inicio:%d/%m/%Y} {inicio:%H:%M} - {fim:%H:%M}'
+        return f'{inicio:%d/%m/%Y %H:%M} at\u00e9 {fim:%d/%m/%Y %H:%M}'
+    ponto = inicio or fim
+    return ponto.strftime('%d/%m/%Y %H:%M')
+
+
+def _roteiro_process_status_meta(roteiro):
+    default_label = getattr(roteiro, 'get_status_display', lambda: roteiro.status)() or roteiro.status or 'â€”'
+    meta = ROTEIRO_STATUS_CARD_META.get(roteiro.status, {})
+    return {
+        'label': meta.get('label', default_label),
+        'css_class': meta.get('css_class', 'is-muted'),
+    }
+
+
+def _roteiro_vinculo_meta(roteiro):
+    tipo = RoteiroEvento.TIPO_AVULSO if (roteiro.tipo == RoteiroEvento.TIPO_AVULSO or not roteiro.evento_id) else RoteiroEvento.TIPO_EVENTO
+    meta = ROTEIRO_VINCULO_META[tipo]
+    return {
+        'label': meta['label'],
+        'css_class': meta['css_class'],
+    }
+
+
+def _build_roteiro_resumo_trechos(roteiro):
+    items = []
+    trechos = list(roteiro.trechos.all())
+    for trecho in trechos[:2]:
+        origem = _label_local(trecho.origem_cidade, trecho.origem_estado)
+        destino = _label_local(trecho.destino_cidade, trecho.destino_estado)
+        tipo = trecho.get_tipo_display()
+        horario = trecho.saida_dt.strftime('%d/%m/%Y %H:%M') if trecho.saida_dt else 'Sem hor\u00e1rio'
+        items.append(f'{tipo}: {origem} -> {destino} ({horario})')
+    restante = max(len(trechos) - len(items), 0)
+    return {'items': items, 'remaining_count': restante}
+
+
+def _build_roteiro_card_actions(roteiro, selected_event=None):
+    actions = [
+        {'label': 'Editar', 'url': roteiro.editar_url, 'style': 'primary'},
+    ]
+    if roteiro.evento_url:
+        actions.append({'label': 'Visualizar', 'url': roteiro.evento_url, 'style': 'secondary'})
+    elif roteiro.etapa_url:
+        actions.append({'label': 'Visualizar', 'url': roteiro.etapa_url, 'style': 'secondary'})
+
+    usar_no_cadastro_url = ''
+    if roteiro.is_avulso:
+        usar_no_cadastro_url = reverse('eventos:oficio-novo')
+    elif roteiro.oficios_url:
+        usar_no_cadastro_url = roteiro.oficios_url
+    if usar_no_cadastro_url:
+        actions.append({'label': 'Usar no cadastro', 'url': usar_no_cadastro_url, 'style': 'secondary'})
+
+    if roteiro.etapa_url and roteiro.etapa_url != usar_no_cadastro_url:
+        actions.append({'label': 'Etapa 2', 'url': roteiro.etapa_url, 'style': 'secondary'})
+
+    return actions
+
+
 def roteiro_global_lista(request):
     filters = {
         'q': _clean(request.GET.get('q')),
@@ -554,8 +644,20 @@ def roteiro_global_lista(request):
     }
     queryset = (
         RoteiroEvento.objects.select_related('evento', 'origem_estado', 'origem_cidade')
-        .prefetch_related('destinos__estado', 'destinos__cidade')
-        .annotate(oficios_count=Count('oficios', distinct=True))
+        .prefetch_related(
+            'destinos__estado',
+            'destinos__cidade',
+            Prefetch(
+                'trechos',
+                queryset=RoteiroEventoTrecho.objects.select_related(
+                    'origem_estado',
+                    'origem_cidade',
+                    'destino_estado',
+                    'destino_cidade',
+                ),
+            ),
+        )
+        .annotate(oficios_count=Count('oficios', distinct=True), trechos_count=Count('trechos', distinct=True))
     )
     if filters['q']:
         queryset = queryset.filter(
@@ -581,7 +683,12 @@ def roteiro_global_lista(request):
     object_list = list(page_obj.object_list)
     for roteiro in object_list:
         roteiro.destinos_display = _roteiro_destinos_display(roteiro)
+        roteiro.origem_display = _roteiro_origem_display(roteiro)
+        roteiro.destino_principal_display = _roteiro_destino_principal_display(roteiro)
+        roteiro.periodo_display = _roteiro_periodo_display(roteiro)
         roteiro.is_avulso = roteiro.tipo == RoteiroEvento.TIPO_AVULSO or not roteiro.evento_id
+        roteiro.process_status = _roteiro_process_status_meta(roteiro)
+        roteiro.vinculo_meta = _roteiro_vinculo_meta(roteiro)
         if roteiro.is_avulso:
             roteiro.editar_url = reverse('eventos:roteiro-avulso-editar', kwargs={'pk': roteiro.pk})
             roteiro.evento_url = ''
@@ -595,6 +702,13 @@ def roteiro_global_lista(request):
             roteiro.evento_url = reverse('eventos:guiado-painel', kwargs={'pk': roteiro.evento_id})
             roteiro.etapa_url = reverse('eventos:guiado-etapa-2', kwargs={'evento_id': roteiro.evento_id})
             roteiro.oficios_url = reverse('eventos:guiado-etapa-5', kwargs={'evento_id': roteiro.evento_id})
+        roteiro.evento_titulo_display = (
+            (roteiro.evento.titulo or '').strip()
+            if roteiro.evento_id
+            else 'Roteiro avulso'
+        ) or '(sem t\u00edtulo)'
+        roteiro.trechos_preview = _build_roteiro_resumo_trechos(roteiro)
+        roteiro.actions = _build_roteiro_card_actions(roteiro)
 
     selected_event = None
     if filters['evento_id'].isdigit():
@@ -751,6 +865,11 @@ def documento_avulso_novo(request):
 
 
 @require_http_methods(['GET', 'POST'])
+def planos_trabalho_novo(request):
+    """
+    Página dedicada de criação de Plano de Trabalho avulso.
+    Evento não é obrigatório; o vínculo com evento é opcional e pode ser feito depois.
+    """
 def documento_avulso_editar(request, pk):
     documento = get_object_or_404(
         DocumentoAvulso.objects.select_related('evento', 'roteiro', 'plano_trabalho', 'oficio', 'criado_por'),
@@ -761,16 +880,18 @@ def documento_avulso_editar(request, pk):
         form.save()
         messages.success(request, 'Documento avulso atualizado.')
         return redirect('eventos:documentos-avulsos-editar', pk=documento.pk)
-    return render(
-        request,
-        'eventos/global/documento_avulso_form.html',
-        {
-            'form': form,
-            'object': documento,
-            'tipo_documento': documento.tipo_documento,
-            'titulo_pagina': 'Editar documento avulso',
-        },
-    )
+
+    # Página dedicada de PT: título e link "Voltar" para listagem de planos
+    is_plano_trabalho = documento.tipo_documento == DocumentoAvulso.TIPO_PLANO_TRABALHO
+    context = {
+        'form': form,
+        'object': documento,
+        'tipo_documento': documento.tipo_documento,
+        'titulo_pagina': 'Editar Plano de Trabalho' if is_plano_trabalho else 'Editar documento avulso',
+        'voltar_url': reverse('eventos:documentos-planos-trabalho') if is_plano_trabalho else None,
+        'voltar_label': 'Voltar para planos de trabalho' if is_plano_trabalho else None,
+    }
+    return render(request, 'eventos/global/documento_avulso_form.html', context)
 
 
 @require_http_methods(['GET'])
@@ -803,11 +924,15 @@ def _build_documento_derivado_rows(queryset, *, request, tipo_documento, fundame
         status_info = _document_status_summary(oficio, tipo_documento, fundamentacao_tipo)
         if situacao and situacao != 'todos' and status_info['status_key'] != situacao:
             continue
+        meta = DOCUMENT_STATUS_CARD_META.get(status_info['status_key'], {})
+        status_info['status_css_class'] = meta.get('css_class', 'is-muted')
         rows.append(
             {
                 'oficio': oficio,
                 'evento': oficio.evento,
                 'destinos_display': _oficio_destinos_display(oficio),
+                'periodo_display': _oficio_periodo_display(oficio),
+                'viajantes_display': _oficio_viajantes_display(oficio),
                 'status': status_info,
                 'oficio_url': reverse('eventos:oficio-editar', kwargs={'pk': oficio.pk}),
                 'documentos_url': reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk}),
@@ -821,7 +946,114 @@ def _build_documento_derivado_rows(queryset, *, request, tipo_documento, fundame
     return rows
 
 
-def _documento_derivado_global(request, *, template_title, template_page_title, template_subtitle, tipo_documento, fundamentacao_tipo):
+def _plano_trabalho_responsavel_display(oficio):
+    fundamentacao = getattr(oficio.evento, 'fundamentacao', None) if oficio.evento_id else None
+    if not fundamentacao:
+        return '-'
+    if getattr(fundamentacao, 'coordenador_operacional_id', None):
+        return str(fundamentacao.coordenador_operacional)
+    if getattr(fundamentacao, 'coordenador_administrativo_id', None):
+        return fundamentacao.coordenador_administrativo.nome
+    if _clean(getattr(fundamentacao, 'solicitante_outros', '')):
+        return fundamentacao.solicitante_outros
+    if getattr(fundamentacao, 'solicitante_id', None):
+        return str(fundamentacao.solicitante)
+    return '-'
+
+
+def _plano_trabalho_solicitante_display(oficio):
+    fundamentacao = getattr(oficio.evento, 'fundamentacao', None) if oficio.evento_id else None
+    if not fundamentacao:
+        return '-'
+    if _clean(getattr(fundamentacao, 'solicitante_outros', '')):
+        return fundamentacao.solicitante_outros
+    if getattr(fundamentacao, 'solicitante_id', None):
+        return str(fundamentacao.solicitante)
+    return '-'
+
+
+def _plano_trabalho_resumo_display(oficio):
+    fundamentacao = getattr(oficio.evento, 'fundamentacao', None) if oficio.evento_id else None
+    texto = _clean(getattr(fundamentacao, 'texto_fundamentacao', '')) or _clean(oficio.motivo)
+    if not texto:
+        return 'Sem resumo preenchido.'
+    return Truncator(texto).chars(180)
+
+
+def _build_plano_trabalho_actions(oficio, status_info):
+    actions = []
+    if oficio.evento_id:
+        actions.append(
+            {
+                'label': 'Editar',
+                'url': reverse('eventos:guiado-etapa-4', kwargs={'evento_id': oficio.evento_id}),
+                'style': 'primary',
+            }
+        )
+    else:
+        actions.append(
+            {
+                'label': 'Editar',
+                'url': reverse('eventos:oficio-editar', kwargs={'pk': oficio.pk}),
+                'style': 'primary',
+            }
+        )
+    actions.append(
+        {
+            'label': 'Visualizar',
+            'url': reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk}),
+            'style': 'secondary',
+        }
+    )
+    if status_info.get('download_pdf_url'):
+        actions.append(
+            {
+                'label': 'PDF',
+                'url': status_info['download_pdf_url'],
+                'style': 'secondary',
+            }
+        )
+    if status_info.get('download_docx_url'):
+        actions.append(
+            {
+                'label': 'DOCX',
+                'url': status_info['download_docx_url'],
+                'style': 'secondary',
+            }
+        )
+    return actions
+
+
+def _build_plano_trabalho_footer_actions(oficio):
+    actions = []
+    if oficio.evento_id:
+        actions.append(
+            {
+                'label': 'Painel do evento',
+                'url': reverse('eventos:guiado-painel', kwargs={'pk': oficio.evento_id}),
+                'style': 'secondary',
+            }
+        )
+    actions.append(
+        {
+            'label': 'Oficio base',
+            'url': reverse('eventos:oficio-editar', kwargs={'pk': oficio.pk}),
+            'style': 'secondary',
+        }
+    )
+    return actions
+
+
+def _documento_derivado_global(
+    request,
+    *,
+    template_title,
+    template_page_title,
+    template_subtitle,
+    tipo_documento,
+    fundamentacao_tipo,
+    template_name='eventos/global/documento_derivado_lista.html',
+):
     filters = {
         'q': _clean(request.GET.get('q')),
         'evento_id': _clean(request.GET.get('evento_id')),
@@ -859,7 +1091,7 @@ def _documento_derivado_global(request, *, template_title, template_page_title, 
     page_obj = _paginate(rows, request.GET.get('page'))
     return render(
         request,
-        'eventos/global/documento_derivado_lista.html',
+        template_name,
         {
             'object_list': list(page_obj.object_list),
             'page_obj': page_obj,
@@ -877,30 +1109,172 @@ def _documento_derivado_global(request, *, template_title, template_page_title, 
                 ('unavailable', 'Indisponiveis'),
                 ('not_applicable', 'Nao aplicaveis'),
             ],
+            'status_card_meta': DOCUMENT_STATUS_CARD_META,
         },
     )
 
 
 def planos_trabalho_global(request):
-    return _documento_derivado_global(
+    filters = {
+        'q': _clean(request.GET.get('q')),
+        'evento_id': _clean(request.GET.get('evento_id')),
+        'ano': _clean(request.GET.get('ano')),
+        'situacao': _clean(request.GET.get('situacao')) or 'todos',
+        'oficio_status': _clean(request.GET.get('oficio_status')),
+    }
+    queryset = (
+        Oficio.objects.select_related(
+            'evento',
+            'evento__fundamentacao',
+            'evento__fundamentacao__solicitante',
+            'evento__fundamentacao__coordenador_operacional',
+            'evento__fundamentacao__coordenador_administrativo',
+        )
+        .prefetch_related(
+            Prefetch(
+                'trechos',
+                queryset=OficioTrecho.objects.select_related(
+                    'origem_estado',
+                    'origem_cidade',
+                    'destino_estado',
+                    'destino_cidade',
+                ),
+            ),
+            'viajantes',
+        )
+        .filter(evento__isnull=False)
+        .exclude(evento__fundamentacao__tipo_documento=EventoFundamentacao.TIPO_OS)
+    )
+    if filters['q']:
+        queryset = queryset.filter(
+            Q(evento__titulo__icontains=filters['q'])
+            | Q(motivo__icontains=filters['q'])
+            | Q(evento__fundamentacao__texto_fundamentacao__icontains=filters['q'])
+            | Q(protocolo__icontains=Oficio.normalize_protocolo(filters['q']) or filters['q'])
+            | Q(trechos__destino_cidade__nome__icontains=filters['q'])
+            | Q(viajantes__nome__icontains=filters['q'])
+        )
+    if filters['evento_id'].isdigit():
+        queryset = queryset.filter(evento_id=int(filters['evento_id']))
+    if filters['ano'].isdigit():
+        queryset = queryset.filter(ano=int(filters['ano']))
+    if filters['oficio_status']:
+        queryset = queryset.filter(status=filters['oficio_status'])
+
+    selected_event = (
+        Evento.objects.filter(pk=int(filters['evento_id'])).first()
+        if filters['evento_id'].isdigit()
+        else None
+    )
+    rows = []
+    for oficio in queryset.distinct().order_by('-updated_at', '-created_at'):
+        status_info = _document_status_summary(
+            oficio,
+            DocumentoOficioTipo.PLANO_TRABALHO,
+            EventoFundamentacao.TIPO_PT,
+        )
+        if filters['situacao'] != 'todos' and status_info['status_key'] != filters['situacao']:
+            continue
+        process_status = _document_card_status_meta(status_info['status_key'], status_info['status_label'])
+        fundamentacao = getattr(oficio.evento, 'fundamentacao', None)
+        oficio.process_status = process_status
+        oficio.status_info = status_info
+        oficio.evento_url = reverse('eventos:guiado-painel', kwargs={'pk': oficio.evento_id})
+        oficio.evento_titulo_display = (oficio.evento.titulo or '').strip() or '(sem titulo)'
+        oficio.identificacao_display = f'Plano de trabalho - {oficio.numero_formatado}'
+        oficio.destinos_display = _oficio_destinos_display(oficio)
+        oficio.periodo_display = _oficio_periodo_display(oficio)
+        oficio.viajantes_display = _oficio_viajantes_display(oficio)
+        oficio.responsavel_display = _plano_trabalho_responsavel_display(oficio)
+        oficio.solicitante_display = _plano_trabalho_solicitante_display(oficio)
+        oficio.resumo_display = _plano_trabalho_resumo_display(oficio)
+        oficio.footer_actions = _build_plano_trabalho_footer_actions(oficio)
+        oficio.card_actions = _build_plano_trabalho_actions(oficio, status_info)
+        oficio.document_summary_items = [
+            {'label': 'Configuracao', 'value': status_info['fundamentacao_label']},
+            {'label': 'Solicitante', 'value': oficio.solicitante_display},
+            {
+                'label': 'Atendimento',
+                'value': _clean(getattr(fundamentacao, 'horario_atendimento', '')) or '-',
+            },
+        ]
+        rows.append(oficio)
+
+    page_obj = _paginate(rows, request.GET.get('page'))
+    return render(
         request,
-        template_title='Planos de trabalho - Central de Viagens',
-        template_page_title='Planos de trabalho',
-        template_subtitle='Hub global derivado dos oficios e da fundamentacao do evento.',
-        tipo_documento=DocumentoOficioTipo.PLANO_TRABALHO,
-        fundamentacao_tipo=EventoFundamentacao.TIPO_PT,
+        'eventos/global/planos_trabalho_lista.html',
+        {
+            'object_list': list(page_obj.object_list),
+            'page_obj': page_obj,
+            'pagination_query': _query_without_page(request),
+            'filters': filters,
+            'eventos_choices': _eventos_choices(),
+            'oficio_status_choices': Oficio.STATUS_CHOICES,
+            'situacao_choices': [
+                ('todos', 'Todos'),
+                ('available', 'Disponiveis'),
+                ('pending', 'Pendentes'),
+                ('unavailable', 'Indisponiveis'),
+                ('not_applicable', 'Nao aplicaveis'),
+            ],
+            'selected_event': selected_event,
+        },
     )
 
 
 def ordens_servico_global(request):
+    """Lista de ordens de serviço em cards (mesmo padrão da lista de ofícios)."""
     return _documento_derivado_global(
         request,
-        template_title='Ordens de servico - Central de Viagens',
-        template_page_title='Ordens de servico',
-        template_subtitle='Hub global derivado dos oficios e da configuracao documental do evento.',
+        template_title='Lista de ordens de serviço - Central de Viagens',
+        template_page_title='Lista de ordens de serviço',
+        template_subtitle='Acompanhe cada ordem de serviço em um card, com vínculo ao evento, período, equipe e ações.',
         tipo_documento=DocumentoOficioTipo.ORDEM_SERVICO,
         fundamentacao_tipo=EventoFundamentacao.TIPO_OS,
+        template_name='eventos/global/ordens_servico_lista.html',
     )
+
+
+def _build_justificativa_card_actions(oficio, next_url):
+    documento = _build_oficio_document_actions(oficio, DocumentoOficioTipo.JUSTIFICATIVA)
+    actions = [
+        {
+            'label': 'Editar',
+            'url': _append_next(reverse('eventos:oficio-justificativa', kwargs={'pk': oficio.pk}), next_url),
+            'style': 'primary',
+            'available': True,
+        },
+        {
+            'label': 'Visualizar',
+            'url': reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk}),
+            'style': 'secondary',
+            'available': True,
+        },
+    ]
+    for action in documento['actions']:
+        actions.append(
+            {
+                'label': action['label'],
+                'url': action['url'],
+                'style': 'secondary',
+                'available': action['available'],
+            }
+        )
+    return documento, actions
+
+
+def _build_justificativa_detail(oficio, info, documento):
+    texto = _clean(oficio.justificativa_texto)
+    if texto:
+        return Truncator(texto).chars(240)
+    if info['status_key'] == 'nao_exigida':
+        return 'Justificativa nao obrigatoria para o prazo atual.'
+    if info['status_key'] == 'indefinida':
+        return 'Aguardando roteiro valido para definir a obrigatoriedade.'
+    if info['status_key'] == 'indisponivel':
+        return info['schema_message']
+    return documento['detail']
 
 
 def justificativas_global(request):
@@ -910,12 +1284,28 @@ def justificativas_global(request):
         'ano': _clean(request.GET.get('ano')),
         'status': _clean(request.GET.get('status')),
     }
-    queryset = Oficio.objects.select_related('evento').prefetch_related('trechos').all()
+    queryset = (
+        Oficio.objects.select_related('evento', 'justificativa_modelo')
+        .prefetch_related(
+            Prefetch(
+                'trechos',
+                queryset=OficioTrecho.objects.select_related(
+                    'origem_estado',
+                    'origem_cidade',
+                    'destino_estado',
+                    'destino_cidade',
+                ),
+            ),
+            'viajantes',
+        )
+        .all()
+    )
     if filters['q']:
         queryset = queryset.filter(
             Q(evento__titulo__icontains=filters['q'])
             | Q(motivo__icontains=filters['q'])
             | Q(justificativa_texto__icontains=filters['q'])
+            | Q(justificativa_modelo__nome__icontains=filters['q'])
             | Q(protocolo__icontains=Oficio.normalize_protocolo(filters['q']) or filters['q'])
             | Q(trechos__destino_cidade__nome__icontains=filters['q'])
         )
@@ -925,27 +1315,55 @@ def justificativas_global(request):
         queryset = queryset.filter(ano=int(filters['ano']))
 
     next_url = request.get_full_path()
-    rows = []
+    object_list = []
     for oficio in queryset.distinct().order_by('-updated_at', '-created_at'):
         info = _build_oficio_justificativa_info(oficio)
         if filters['status'] and info['status_key'] != filters['status']:
             continue
-        rows.append(
-            {
-                'oficio': oficio,
-                'evento': oficio.evento,
-                'info': info,
-                'destinos_display': _oficio_destinos_display(oficio),
-                'justificativa_url': _append_next(
-                    reverse('eventos:oficio-justificativa', kwargs={'pk': oficio.pk}),
-                    next_url,
-                ),
-                'documentos_url': reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk}),
-                'oficio_url': reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk}),
-                'evento_url': reverse('eventos:guiado-painel', kwargs={'pk': oficio.evento_id}) if oficio.evento_id else '',
-            }
+        documento, actions = _build_justificativa_card_actions(oficio, next_url)
+        oficio.info = info
+        oficio.process_status = _document_card_status_meta(info['status_key'], info['status_label'])
+        oficio.destinos_display = _oficio_destinos_display(oficio)
+        oficio.periodo_display = _oficio_periodo_display(oficio)
+        oficio.viajantes_display = _oficio_viajantes_display(oficio)
+        oficio.justificativa_actions = actions
+        oficio.justificativa_detail = _build_justificativa_detail(oficio, info, documento)
+        oficio.justificativa_url = _append_next(
+            reverse('eventos:oficio-justificativa', kwargs={'pk': oficio.pk}),
+            next_url,
         )
-    page_obj = _paginate(rows, request.GET.get('page'))
+        oficio.documentos_url = reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk})
+        oficio.oficio_url = reverse('eventos:oficio-editar', kwargs={'pk': oficio.pk})
+        oficio.evento_url = reverse('eventos:guiado-painel', kwargs={'pk': oficio.evento_id}) if oficio.evento_id else ''
+        oficio.evento_titulo_display = (
+            (oficio.evento.titulo or '').strip()
+            if oficio.evento_id
+            else 'Oficio avulso'
+        ) or '(sem titulo)'
+        oficio.data_display = (
+            oficio.data_criacao.strftime('%d/%m/%Y')
+            if oficio.data_criacao
+            else oficio.created_at.strftime('%d/%m/%Y')
+        )
+        oficio.modelo_display = (
+            (oficio.justificativa_modelo.nome or '').strip()
+            if oficio.justificativa_modelo_id
+            else 'Sem modelo'
+        )
+        oficio.tema_display = Truncator(_clean(oficio.motivo) or 'Tema nao informado.').chars(160)
+        oficio.antecedencia_display = (
+            f"{info['dias_antecedencia']} dia(s)"
+            if info['dias_antecedencia'] is not None
+            else '-'
+        )
+        oficio.summary_items = [
+            {'label': 'Tema', 'value': oficio.tema_display},
+            {'label': 'Modelo', 'value': oficio.modelo_display},
+            {'label': 'Primeira saida', 'value': info['primeira_saida_display'] or '-'},
+            {'label': 'Protocolo', 'value': oficio.protocolo_formatado or '-'},
+        ]
+        object_list.append(oficio)
+    page_obj = _paginate(object_list, request.GET.get('page'))
     return render(
         request,
         'eventos/global/justificativas_lista.html',
@@ -955,6 +1373,7 @@ def justificativas_global(request):
             'pagination_query': _query_without_page(request),
             'filters': filters,
             'eventos_choices': _eventos_choices(),
+            'novo_justificativa_url': reverse('eventos:modelos-justificativa-cadastrar'),
             'status_choices': [
                 ('pendente', 'Pendentes'),
                 ('preenchida', 'Preenchidas'),
@@ -964,6 +1383,31 @@ def justificativas_global(request):
             ],
         },
     )
+
+
+TERMO_STATUS_CARD_META = {
+    EventoTermoParticipante.STATUS_PENDENTE: {'label': 'Pendente', 'css_class': 'is-pendente'},
+    EventoTermoParticipante.STATUS_DISPENSADO: {'label': 'Dispensado', 'css_class': 'is-dispensado'},
+    EventoTermoParticipante.STATUS_GERADO: {'label': 'Gerado', 'css_class': 'is-gerado'},
+    EventoTermoParticipante.STATUS_CONCLUIDO: {'label': 'Concluído', 'css_class': 'is-concluido'},
+}
+
+
+def _build_termo_oficio_context(oficios_relacionados):
+    if not oficios_relacionados:
+        return {
+            'principal': '-',
+            'detail': 'Nenhum oficio vinculado.',
+        }
+    principal = oficios_relacionados[0].numero_formatado
+    extras = len(oficios_relacionados) - 1
+    detail = principal
+    if extras > 0:
+        detail = f'{principal} + {extras} oficio(s)'
+    return {
+        'principal': principal,
+        'detail': detail,
+    }
 
 
 def termos_global(request):
@@ -1002,14 +1446,25 @@ def termos_global(request):
             if termo.viajante_id in viajante_ids:
                 oficios_relacionados.append(oficio)
         termo.oficios_relacionados = oficios_relacionados
-        termo.oficios_display = ', '.join(oficio.numero_formatado for oficio in oficios_relacionados) if oficios_relacionados else '—'
-        termo.termos_url = reverse('eventos:guiado-etapa-3', kwargs={'evento_id': termo.evento_id})
-        termo.oficios_url = reverse('eventos:guiado-etapa-5', kwargs={'evento_id': termo.evento_id})
+        oficio_context = _build_termo_oficio_context(oficios_relacionados)
+        termo.oficios_display = oficio_context['detail']
+        termo.oficio_principal_display = oficio_context['principal']
+        termo.open_url = reverse('eventos:guiado-etapa-3', kwargs={'evento_id': termo.evento_id})
         termo.evento_url = reverse('eventos:guiado-painel', kwargs={'pk': termo.evento_id})
-        termo.documentos_url = (
-            reverse('eventos:oficio-documentos', kwargs={'pk': oficios_relacionados[0].pk})
-            if len(oficios_relacionados) == 1
-            else ''
+        meta = TERMO_STATUS_CARD_META.get(termo.status, {})
+        termo.status_css_class = meta.get('css_class', 'is-pendente')
+        termo.status_label = meta.get('label', termo.get_status_display())
+        termo.modalidade_label = termo.get_modalidade_display()
+        termo.cargo_display = getattr(getattr(termo.viajante, 'cargo', None), 'nome', '') or 'Sem cargo'
+        termo.updated_display = termo.updated_at.strftime('%d/%m/%Y %H:%M')
+        termo.download_available = termo.status != EventoTermoParticipante.STATUS_DISPENSADO
+        termo.termo_docx_url = reverse(
+            'eventos:guiado-etapa-3-termo-download',
+            kwargs={'evento_id': termo.evento_id, 'viajante_id': termo.viajante_id, 'formato': 'docx'},
+        )
+        termo.termo_pdf_url = reverse(
+            'eventos:guiado-etapa-3-termo-download',
+            kwargs={'evento_id': termo.evento_id, 'viajante_id': termo.viajante_id, 'formato': 'pdf'},
         )
         object_list.append(termo)
 

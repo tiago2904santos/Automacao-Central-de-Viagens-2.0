@@ -141,6 +141,10 @@ def _validate_plano_trabalho_document(oficio):
     extra_errors = []
     if not context['plano_trabalho']['objetivo']:
         extra_errors.append('Informe a finalidade da viagem antes de gerar o plano de trabalho.')
+    if not context.get('atividades_formatada'):
+        extra_errors.append('Selecione ao menos uma atividade do plano de trabalho antes de gerar o documento.')
+    if not context.get('locais_formatado'):
+        extra_errors.append('Informe os locais de execução antes de gerar o plano de trabalho.')
     if not context['plano_trabalho']['roteiro_resumo']:
         extra_errors.append('Salve um roteiro válido antes de gerar o plano de trabalho.')
     if not context['plano_trabalho']['participantes_texto']:

@@ -1,18 +1,14 @@
 {% extends 'base.html' %}
 
-{% block title %}Termos - Central de Viagens{% endblock %}
-{% block page_title %}Termos{% endblock %}
+{% block title %}Lista de termos - Central de Viagens{% endblock %}
+{% block page_title %}Lista de termos{% endblock %}
 
 {% block content %}
 <div class="container-fluid py-4">
     <div class="page-header-cadastro">
         <div>
-            <h1 class="mb-1">Lista global de termos</h1>
-            <p class="text-muted mb-0">Visao global dos participantes, status do termo e contexto operacional do evento.</p>
-        </div>
-        <div class="d-flex gap-2 flex-wrap">
-            <a href="{% url 'eventos:documentos-hub' %}" class="btn btn-outline-secondary">Documentos</a>
-            <a href="{% url 'eventos:lista' %}" class="btn btn-outline-secondary">Eventos</a>
+            <h1 class="mb-1">Lista de termos</h1>
+            <p class="text-muted mb-0">Painel por servidor, com foco no contexto do termo e nas acoes essenciais do modulo.</p>
         </div>
     </div>
 
@@ -49,52 +45,55 @@
         </div>
     </div>
 
-    <div class="card">
-        <div class="table-responsive">
-            <table class="table table-hover table-cadastro mb-0 align-middle">
-                <thead class="table-light">
-                    <tr>
-                        <th>Participante</th>
-                        <th>Evento</th>
-                        <th>Oficios relacionados</th>
-                        <th>Status</th>
-                        <th>Atualizado</th>
-                        <th class="text-end" width="280">Acoes</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for termo in object_list %}
-                    <tr>
-                        <td>
-                            <div class="fw-semibold">{{ termo.viajante.nome|default:"(sem nome)" }}</div>
-                            <div class="small text-muted">{{ termo.viajante.cargo.nome|default:"Sem cargo" }}</div>
-                        </td>
-                        <td><a href="{{ termo.evento_url }}" class="text-decoration-none">{{ termo.evento.titulo|default:"(sem titulo)" }}</a></td>
-                        <td>{{ termo.oficios_display }}</td>
-                        <td>
-                            {% if termo.status == 'CONCLUIDO' %}
-                            <span class="badge bg-success">{{ termo.get_status_display }}</span>
-                            {% elif termo.status == 'DISPENSADO' %}
-                            <span class="badge bg-secondary">{{ termo.get_status_display }}</span>
-                            {% else %}
-                            <span class="badge bg-warning text-dark">{{ termo.get_status_display }}</span>
-                            {% endif %}
-                        </td>
-                        <td>{{ termo.updated_at|date:"d/m/Y H:i" }}</td>
-                        <td class="text-end">
-                            <a href="{{ termo.termos_url }}" class="btn btn-sm btn-outline-primary">Abrir termos</a>
-                            <a href="{{ termo.oficios_url }}" class="btn btn-sm btn-outline-secondary">Oficios</a>
-                            {% if termo.documentos_url %}
-                            <a href="{{ termo.documentos_url }}" class="btn btn-sm btn-outline-secondary">Documentos</a>
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% empty %}
-                    <tr><td colspan="6" class="text-center text-muted py-5">Nenhum termo encontrado.</td></tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+    <div class="term-process-list">
+        {% for termo in object_list %}
+        <article class="term-process-card term-process-card--{{ termo.status|lower }}">
+            <div class="term-process-card__header">
+                <div class="term-process-card__title-block">
+                    <h2 class="term-process-card__title">{{ termo.viajante.nome|default:"(sem nome)" }}</h2>
+                    <div class="term-process-card__subtitle">{{ termo.cargo_display }}</div>
+                </div>
+                <div class="term-process-card__badges">
+                    <span class="term-process-modality">{{ termo.modalidade_label }}</span>
+                    <span class="term-process-status {{ termo.status_css_class }}">{{ termo.status_label }}</span>
+                </div>
+            </div>
+
+            <div class="term-process-card__meta">
+                <div class="term-process-meta-item">
+                    <span class="term-process-meta-label">Evento</span>
+                    <span class="term-process-meta-value">
+                        <a href="{{ termo.evento_url }}" class="text-decoration-none">{{ termo.evento.titulo|default:"(sem titulo)" }}</a>
+                    </span>
+                </div>
+                <div class="term-process-meta-item">
+                    <span class="term-process-meta-label">Oficio relacionado</span>
+                    <span class="term-process-meta-value">{{ termo.oficios_display }}</span>
+                </div>
+                <div class="term-process-meta-item">
+                    <span class="term-process-meta-label">Atualizado em</span>
+                    <span class="term-process-meta-value">{{ termo.updated_display }}</span>
+                </div>
+            </div>
+
+            <div class="term-process-card__footer">
+                <a href="{{ termo.open_url }}" class="btn btn-sm btn-outline-primary">Abrir / Editar</a>
+                {% if termo.download_available %}
+                <a href="{{ termo.termo_pdf_url }}" class="btn btn-sm btn-outline-secondary">PDF</a>
+                <a href="{{ termo.termo_docx_url }}" class="btn btn-sm btn-outline-secondary">DOCX</a>
+                {% else %}
+                <span class="btn btn-sm btn-outline-secondary disabled">PDF</span>
+                <span class="btn btn-sm btn-outline-secondary disabled">DOCX</span>
+                {% endif %}
+            </div>
+        </article>
+        {% empty %}
+        <div class="card">
+            <div class="card-body text-center text-muted py-5">
+                Nenhum termo encontrado com os filtros atuais.
+            </div>
         </div>
+        {% endfor %}
     </div>
 
     {% include 'includes/pagination.html' %}

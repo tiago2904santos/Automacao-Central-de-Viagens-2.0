@@ -138,6 +138,231 @@ HORARIO_ATENDIMENTO_OPCOES = [
 ]
 
 
+class PlanoTrabalhoDadosGeraisForm(FormComErroInvalidMixin, forms.ModelForm):
+    horario_atendimento_sel = forms.ChoiceField(
+        label='Horário de atendimento',
+        choices=HORARIO_ATENDIMENTO_OPCOES,
+        required=False,
+        widget=forms.Select(attrs={'class': 'form-select'}),
+    )
+
+    class Meta:
+        model = EventoFundamentacao
+        fields = [
+            'tipo_documento',
+            'titulo_plano',
+            'local_execucao',
+            'periodo_execucao',
+            'solicitante',
+            'solicitante_outros',
+            'horario_atendimento',
+            'texto_fundamentacao',
+        ]
+        widgets = {
+            'tipo_documento': forms.Select(attrs={'class': 'form-select'}),
+            'titulo_plano': forms.TextInput(
+                attrs={'class': 'form-control', 'placeholder': 'Ex.: Plano de Trabalho - PCPR na Comunidade'}
+            ),
+            'local_execucao': forms.TextInput(
+                attrs={'class': 'form-control', 'placeholder': 'Município, unidade ou local principal'}
+            ),
+            'periodo_execucao': forms.TextInput(
+                attrs={'class': 'form-control', 'placeholder': 'Ex.: 10 a 12 de abril de 2026'}
+            ),
+            'solicitante': forms.Select(attrs={'class': 'form-select'}),
+            'solicitante_outros': forms.TextInput(
+                attrs={'class': 'form-control', 'placeholder': 'Informe o solicitante quando não estiver na lista'}
+            ),
+            'horario_atendimento': forms.TextInput(
+                attrs={'class': 'form-control', 'placeholder': 'Ex.: 08:00 às 17:00'}
+            ),
+            'texto_fundamentacao': forms.Textarea(
+                attrs={
+                    'class': 'form-control',
+                    'rows': 5,
+                    'placeholder': 'Descreva o objetivo do plano, o atendimento previsto e a motivação da ação.',
+                }
+            ),
+        }
+        labels = {
+            'tipo_documento': 'Tipo do documento',
+            'titulo_plano': 'Identificação / título',
+            'local_execucao': 'Município / local',
+            'periodo_execucao': 'Período',
+            'solicitante': 'Solicitante',
+            'solicitante_outros': 'Solicitante (outros)',
+            'horario_atendimento': 'Horário de atendimento',
+            'texto_fundamentacao': 'Objetivo',
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['tipo_documento'].required = False
+        self.fields['tipo_documento'].choices = [('', '---------')] + list(EventoFundamentacao.TIPO_CHOICES)
+        self.fields['solicitante'].required = False
+        self.fields['solicitante'].queryset = SolicitantePlanoTrabalho.objects.filter(ativo=True).order_by('ordem', 'nome')
+        self.fields['solicitante'].empty_label = 'Outros (informar abaixo)'
+        for field_name in (
+            'titulo_plano',
+            'local_execucao',
+            'periodo_execucao',
+            'solicitante_outros',
+            'horario_atendimento',
+            'texto_fundamentacao',
+        ):
+            self.fields[field_name].required = False
+        if self.instance and self.instance.pk and self.instance.horario_atendimento:
+            horario = self.instance.horario_atendimento
+            self.initial['horario_atendimento_sel'] = (
+                horario if horario in dict(HORARIO_ATENDIMENTO_OPCOES[1:]) else 'MANUAL'
+            )
+
+    def clean(self):
+        data = super().clean()
+        sel = data.get('horario_atendimento_sel')
+        manual = (data.get('horario_atendimento') or '').strip()
+        if sel == 'MANUAL':
+            data['horario_atendimento'] = manual
+        elif sel:
+            data['horario_atendimento'] = sel
+        else:
+            data['horario_atendimento'] = manual
+        return data
+
+
+class PlanoTrabalhoCoordenacaoForm(FormComErroInvalidMixin, forms.ModelForm):
+    class Meta:
+        model = EventoFundamentacao
+        fields = [
+            'coordenador_operacional',
+            'coordenador_administrativo',
+            'tem_coordenador_municipal',
+            'coordenador_municipal_nome',
+        ]
+        widgets = {
+            'coordenador_operacional': forms.Select(attrs={'class': 'form-select'}),
+            'coordenador_administrativo': forms.Select(attrs={'class': 'form-select'}),
+            'tem_coordenador_municipal': forms.CheckboxInput(attrs={'class': 'form-check-input'}),
+            'coordenador_municipal_nome': forms.TextInput(
+                attrs={'class': 'form-control', 'placeholder': 'Nome do coordenador municipal'}
+            ),
+        }
+        labels = {
+            'coordenador_operacional': 'Coordenador do plano',
+            'coordenador_administrativo': 'Coordenador administrativo',
+            'tem_coordenador_municipal': 'Há coordenador municipal',
+            'coordenador_municipal_nome': 'Coordenador municipal',
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['coordenador_operacional'].required = False
+        self.fields['coordenador_operacional'].queryset = CoordenadorOperacional.objects.filter(ativo=True).order_by('ordem', 'nome')
+        self.fields['coordenador_operacional'].empty_label = '---------'
+        self.fields['coordenador_administrativo'].required = False
+        self.fields['coordenador_administrativo'].queryset = Viajante.objects.filter(
+            status=Viajante.STATUS_FINALIZADO
+        ).order_by('nome')
+        self.fields['coordenador_administrativo'].empty_label = '---------'
+        self.fields['coordenador_municipal_nome'].required = False
+
+
+class PlanoTrabalhoAtividadesForm(FormComErroInvalidMixin, forms.ModelForm):
+    atividades_codigos = forms.MultipleChoiceField(
+        label='Atividades padrão',
+        choices=[(item['codigo'], item['nome']) for item in ATIVIDADES_CATALOGO],
+        required=False,
+        widget=forms.CheckboxSelectMultiple(attrs={'class': 'form-check-input'}),
+    )
+    atividades_ordem = forms.CharField(
+        required=False,
+        widget=forms.HiddenInput(),
+    )
+
+    class Meta:
+        model = EventoFundamentacao
+        fields = ['atividades_customizadas']
+        widgets = {
+            'atividades_customizadas': forms.Textarea(
+                attrs={
+                    'class': 'form-control',
+                    'rows': 5,
+                    'placeholder': 'Adicione atividades livres, uma por linha, quando não estiverem na lista padrão.',
+                }
+            ),
+        }
+        labels = {
+            'atividades_customizadas': 'Atividades livres / customizadas',
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance and self.instance.pk and self.instance.atividades_codigos:
+            initial_codes = [codigo.strip() for codigo in self.instance.atividades_codigos.split(',') if codigo.strip()]
+            self.initial['atividades_codigos'] = initial_codes
+            self.initial['atividades_ordem'] = ','.join(initial_codes)
+
+    def clean(self):
+        data = super().clean()
+        selected = [codigo for codigo in self.data.getlist('atividades_codigos') if codigo]
+        ordered = [codigo.strip() for codigo in (data.get('atividades_ordem') or '').split(',') if codigo.strip()]
+        ordered_selected = [codigo for codigo in ordered if codigo in selected]
+        for codigo in selected:
+            if codigo not in ordered_selected:
+                ordered_selected.append(codigo)
+        data['atividades_codigos'] = ordered_selected
+        data['atividades_ordem'] = ','.join(ordered_selected)
+        return data
+
+    def save(self, commit=True):
+        instance = super().save(commit=False)
+        instance.atividades_codigos = self.cleaned_data.get('atividades_ordem', '')
+        if commit:
+            instance.save()
+        return instance
+
+
+class PlanoTrabalhoEstruturaForm(FormComErroInvalidMixin, forms.ModelForm):
+    class Meta:
+        model = EventoFundamentacao
+        fields = [
+            'locais_texto',
+            'cronograma_texto',
+            'materiais_equipamentos_texto',
+            'recursos_texto',
+            'observacoes_pt_os',
+        ]
+        widgets = {
+            'locais_texto': forms.Textarea(
+                attrs={'class': 'form-control', 'rows': 4, 'placeholder': 'Informe os locais e frentes de atendimento.'}
+            ),
+            'cronograma_texto': forms.Textarea(
+                attrs={'class': 'form-control', 'rows': 4, 'placeholder': 'Descreva o cronograma operacional.'}
+            ),
+            'materiais_equipamentos_texto': forms.Textarea(
+                attrs={'class': 'form-control', 'rows': 4, 'placeholder': 'Liste materiais, equipamentos e apoios necessários.'}
+            ),
+            'recursos_texto': forms.Textarea(
+                attrs={'class': 'form-control', 'rows': 3, 'placeholder': 'Recursos e infraestrutura complementar.'}
+            ),
+            'observacoes_pt_os': forms.Textarea(
+                attrs={'class': 'form-control', 'rows': 4, 'placeholder': 'Observações operacionais e orientações finais.'}
+            ),
+        }
+        labels = {
+            'locais_texto': 'Locais',
+            'cronograma_texto': 'Cronograma',
+            'materiais_equipamentos_texto': 'Materiais / equipamentos',
+            'recursos_texto': 'Recursos adicionais',
+            'observacoes_pt_os': 'Observações operacionais',
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        for field_name in self.fields:
+            self.fields[field_name].required = False
+
+
 class EventoFundamentacaoForm(FormComErroInvalidMixin, forms.ModelForm):
     """Formulário da Etapa 4 do evento: Fundamentação / PT-OS (tipo PT ou OS, texto, observações e campos PT)."""
     atividades_codigos = forms.MultipleChoiceField(
@@ -204,7 +429,9 @@ class EventoFundamentacaoForm(FormComErroInvalidMixin, forms.ModelForm):
         self.fields['coordenador_operacional'].queryset = CoordenadorOperacional.objects.filter(ativo=True).order_by('ordem', 'nome')
         self.fields['coordenador_operacional'].empty_label = '---------'
         self.fields['coordenador_administrativo'].required = False
-        self.fields['coordenador_administrativo'].queryset = Viajante.objects.filter(status='ATIVO').order_by('nome')
+        self.fields['coordenador_administrativo'].queryset = Viajante.objects.filter(
+            status=Viajante.STATUS_FINALIZADO
+        ).order_by('nome')
         self.fields['coordenador_administrativo'].empty_label = '---------'
         self.fields['horario_atendimento'].required = False
         self.fields['recursos_texto'].required = False

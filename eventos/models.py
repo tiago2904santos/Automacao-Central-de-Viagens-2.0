@@ -301,6 +301,55 @@ class EventoFundamentacao(models.Model):
         blank=True,
         default='',
     )
+    titulo_plano = models.CharField(
+        'Título do plano',
+        max_length=200,
+        blank=True,
+        default='',
+    )
+    local_execucao = models.CharField(
+        'Município / local',
+        max_length=200,
+        blank=True,
+        default='',
+    )
+    periodo_execucao = models.CharField(
+        'Período',
+        max_length=200,
+        blank=True,
+        default='',
+    )
+    tem_coordenador_municipal = models.BooleanField(
+        'Há coordenador municipal',
+        default=False,
+    )
+    coordenador_municipal_nome = models.CharField(
+        'Coordenador municipal',
+        max_length=200,
+        blank=True,
+        default='',
+    )
+    atividades_customizadas = models.TextField(
+        'Atividades customizadas',
+        blank=True,
+        default='',
+        help_text='Uma atividade por linha.',
+    )
+    locais_texto = models.TextField(
+        'Locais',
+        blank=True,
+        default='',
+    )
+    cronograma_texto = models.TextField(
+        'Cronograma',
+        blank=True,
+        default='',
+    )
+    materiais_equipamentos_texto = models.TextField(
+        'Materiais e equipamentos',
+        blank=True,
+        default='',
+    )
     recursos_texto = models.TextField(
         'Recursos (texto)',
         blank=True,
@@ -317,19 +366,76 @@ class EventoFundamentacao(models.Model):
     def __str__(self):
         return f'Fundamentação — {self.evento}'
 
+    def _has_contexto_pt(self):
+        return any(
+            (
+                (self.tipo_documento or '').strip(),
+                (self.texto_fundamentacao or '').strip(),
+                (self.titulo_plano or '').strip(),
+                (self.local_execucao or '').strip(),
+                (self.periodo_execucao or '').strip(),
+                (self.horario_atendimento or '').strip(),
+                (self.atividades_codigos or '').strip(),
+                (self.atividades_customizadas or '').strip(),
+                (self.locais_texto or '').strip(),
+                (self.cronograma_texto or '').strip(),
+                (self.materiais_equipamentos_texto or '').strip(),
+                (self.recursos_texto or '').strip(),
+                (self.observacoes_pt_os or '').strip(),
+            )
+        )
+
+    def _pt_local_resolvido(self):
+        if (self.local_execucao or '').strip():
+            return self.local_execucao.strip()
+        destinos = list(self.evento.destinos.select_related('cidade').all()[:3])
+        nomes = [destino.cidade.nome for destino in destinos if getattr(destino, 'cidade_id', None)]
+        return ', '.join(nomes)
+
+    def _pt_periodo_resolvido(self):
+        if (self.periodo_execucao or '').strip():
+            return self.periodo_execucao.strip()
+        if self.evento and self.evento.data_inicio:
+            if self.evento.data_fim and self.evento.data_fim != self.evento.data_inicio:
+                return f'{self.evento.data_inicio:%d/%m/%Y} a {self.evento.data_fim:%d/%m/%Y}'
+            return f'{self.evento.data_inicio:%d/%m/%Y}'
+        return ''
+
+    def _pt_step1_ok(self):
+        return bool(
+            (self.texto_fundamentacao or '').strip()
+            and ((self.titulo_plano or '').strip() or (self.evento.titulo or '').strip())
+            and self._pt_local_resolvido()
+            and self._pt_periodo_resolvido()
+        )
+
+    def _pt_step3_ok(self):
+        return bool((self.atividades_codigos or '').strip() or (self.atividades_customizadas or '').strip())
+
+    def _pt_step4_ok(self):
+        return bool(
+            (self.locais_texto or '').strip()
+            or (self.cronograma_texto or '').strip()
+            or (self.materiais_equipamentos_texto or '').strip()
+            or (self.recursos_texto or '').strip()
+            or (self.observacoes_pt_os or '').strip()
+        )
+
     @property
     def concluido(self):
-        """True quando tipo e texto da fundamentação estiverem preenchidos."""
+        """True quando o documento tiver dados mínimos para PT ou OS."""
         tipo_ok = bool((self.tipo_documento or '').strip())
         texto_ok = bool((self.texto_fundamentacao or '').strip())
-        return tipo_ok and texto_ok
+        if not tipo_ok:
+            return False
+        if (self.tipo_documento or '').strip() == self.TIPO_PT:
+            return self._pt_step1_ok() and self._pt_step3_ok() and self._pt_step4_ok()
+        return texto_ok
 
     @property
     def em_andamento(self):
         """True quando existe registro mas ainda não está concluído (salvo incompleto)."""
-        return not self.concluido and (
-            bool((self.tipo_documento or '').strip()) or bool((self.texto_fundamentacao or '').strip())
-        )
+        return not self.concluido and self._has_contexto_pt()
 
 
 class EfetivoPlanoTrabalho(models.Model):

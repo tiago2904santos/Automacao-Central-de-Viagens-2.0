@@ -101,6 +101,10 @@ TEXTO_UNIDADE_MOVEL = (
     'Estrutura: Unidade móvel da PCPR equipada para atendimento e confecção de documentos.'
 )
 
+ATIVIDADES_CATALOGO_MAP = {
+    item['codigo']: item for item in ATIVIDADES_CATALOGO
+}
+
 
 def _codigos_from_string(value: str | None) -> list[str]:
     """Retorna lista de códigos únicos a partir de string (ex: 'CIN,BO,NOC')."""
@@ -117,29 +121,57 @@ def _codigos_from_string(value: str | None) -> list[str]:
 
 
 def _codigos_validos_na_ordem(codigos: list[str]) -> list[dict]:
-    """Retorna itens do catálogo na ordem oficial, apenas os que existem em codigos."""
-    codigos_set = set(codigos)
-    return [item for item in ATIVIDADES_CATALOGO if item['codigo'] in codigos_set]
+    """Retorna itens do catálogo na ordem informada pelo usuário, sem perder a validação."""
+    return [ATIVIDADES_CATALOGO_MAP[codigo] for codigo in codigos if codigo in ATIVIDADES_CATALOGO_MAP]
 
 
-def build_atividades_formatada(codigos_raw: str | None) -> str:
+def _atividades_customizadas_from_text(value: str | None) -> list[str]:
+    if not value:
+        return []
+    atividades = []
+    seen = set()
+    for line in value.replace('\r', '\n').split('\n'):
+        atividade = ' '.join((line or '').strip().split())
+        if atividade and atividade.lower() not in seen:
+            seen.add(atividade.lower())
+            atividades.append(atividade)
+    return atividades
+
+
+def build_atividades_items(
+    codigos_raw: str | None,
+    custom_raw: str | None = None,
+) -> list[dict]:
+    codigos = _codigos_from_string(codigos_raw)
+    itens = list(_codigos_validos_na_ordem(codigos))
+    for index, atividade in enumerate(_atividades_customizadas_from_text(custom_raw), start=1):
+        itens.append(
+            {
+                'codigo': f'CUSTOM_{index}',
+                'nome': atividade,
+                'meta': f'Executar a atividade complementar "{atividade}" conforme necessidade operacional do plano.',
+                'is_custom': True,
+            }
+        )
+    return itens
+
+
+def build_atividades_formatada(codigos_raw: str | None, custom_raw: str | None = None) -> str:
     """
-    Gera texto formatado das atividades selecionadas, na ordem oficial, sem duplicar.
+    Gera texto formatado das atividades selecionadas na ordem salva pelo usuário.
     codigos_raw: string com códigos separados por vírgula (ex: 'CIN,BO,NOC').
     """
-    codigos = _codigos_from_string(codigos_raw)
-    itens = _codigos_validos_na_ordem(codigos)
+    itens = build_atividades_items(codigos_raw, custom_raw)
     if not itens:
         return ''
     return '\n'.join(f"• {item['nome']}" for item in itens)
 
 
-def build_metas_formatada(codigos_raw: str | None) -> str:
+def build_metas_formatada(codigos_raw: str | None, custom_raw: str | None = None) -> str:
     """
-    Gera texto formatado das metas correspondentes às atividades, na ordem oficial, sem duplicar.
+    Gera texto formatado das metas correspondentes às atividades na ordem salva pelo usuário.
     """
-    codigos = _codigos_from_string(codigos_raw)
-    itens = _codigos_validos_na_ordem(codigos)
+    itens = build_atividades_items(codigos_raw, custom_raw)
     if not itens:
         return ''
     return '\n\n'.join(item['meta'] for item in itens)
@@ -156,3 +188,32 @@ def get_unidade_movel_text(codigos_raw: str | None) -> str:
     Preenchido apenas se a atividade Unidade móvel estiver marcada; senão vazio.
     """
     return TEXTO_UNIDADE_MOVEL if has_unidade_movel(codigos_raw) else ''
+
+
+def build_efetivo_resumo(efetivos: list[dict] | None) -> dict:
+    itens = []
+    total = 0
+    for item in efetivos or []:
+        cargo = ' '.join(str(item.get('cargo') or '').split())
+        try:
+            quantidade = int(item.get('quantidade') or 0)
+        except (TypeError, ValueError):
+            quantidade = 0
+        if not cargo or quantidade <= 0:
+            continue
+        total += quantidade
+        itens.append({'cargo': cargo, 'quantidade': quantidade})
+    quantidade_label = ''
+    if total == 1:
+        quantidade_label = '1 servidor'
+    elif total > 1:
+        quantidade_label = f'{total} servidores'
+    descricao = '; '.join(
+        f"{item['quantidade']} x {item['cargo']}" for item in itens
+    )
+    return {
+        'itens': itens,
+        'total': total,
+        'quantidade_label': quantidade_label,
+        'descricao': descricao,
+    }

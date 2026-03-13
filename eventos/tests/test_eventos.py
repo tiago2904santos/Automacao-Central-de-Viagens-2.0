@@ -109,7 +109,7 @@ class EventoListaAuthTest(TestCase):
         self.assertContains(response, 'Eventos')
 
     def test_lista_exibe_titulo_destinos_editar_etapa_1(self):
-        """Lista usa título gerado, destinos e link Editar Etapa 1."""
+        """Lista em cards exibe título, destinos e botão Editar (fluxo guiado)."""
         User.objects.create_user(username='u', password='p')
         self.client.login(username='u', password='p')
         tipo = TipoDemandaEvento.objects.filter(ativo=True).first()
@@ -127,7 +127,8 @@ class EventoListaAuthTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'PCPR')
         self.assertContains(response, 'Curitiba')
-        self.assertContains(response, 'Editar Etapa 1')
+        self.assertContains(response, 'Editar')
+        self.assertContains(response, 'Abrir fluxo guiado')
 
 
 class EventoCRUDTest(TestCase):

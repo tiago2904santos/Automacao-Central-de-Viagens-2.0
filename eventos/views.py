@@ -18,10 +18,11 @@ from django.utils.text import slugify
 from django.views.decorators.http import require_http_methods
 from urllib.parse import quote, urlencode
 
-from cadastros.models import ConfiguracaoSistema, Cidade, Estado, Veiculo, Viajante
+from cadastros.models import Cargo, ConfiguracaoSistema, Cidade, Estado, Veiculo, Viajante
 from core.utils.masks import format_placa, format_protocolo, normalize_placa, only_digits
 
 from .models import (
+    EfetivoPlanoTrabalho,
     Evento,
     EventoDestino,
     EventoFinalizacao,
@@ -40,12 +41,15 @@ from .models import (
 from .forms import (
     EventoEtapa1Form,
     EventoFinalizacaoForm,
-    EventoFundamentacaoForm,
     ModeloJustificativaForm,
     ModeloMotivoViagemForm,
     OficioJustificativaForm,
     OficioStep1Form,
     OficioStep2Form,
+    PlanoTrabalhoAtividadesForm,
+    PlanoTrabalhoCoordenacaoForm,
+    PlanoTrabalhoDadosGeraisForm,
+    PlanoTrabalhoEstruturaForm,
     RoteiroEventoForm,
     TipoDemandaEventoForm,
 )
@@ -74,6 +78,7 @@ from .services.documentos import (
     DocumentoOficioTipo,
     DocumentGenerationError,
     DocumentRendererUnavailable,
+    build_plano_trabalho_document_context,
     build_document_filename,
     get_docx_backend_availability,
     get_pdf_backend_availability,
@@ -435,9 +440,49 @@ def _parse_trechos_times_post(request, num_trechos):
     return result
 
 
+def _evento_lista_periodo_display(evento):
+    if not evento.data_inicio:
+        return '—'
+    if evento.data_fim and evento.data_fim != evento.data_inicio:
+        return f'{evento.data_inicio:%d/%m/%Y} a {evento.data_fim:%d/%m/%Y}'
+    return evento.data_inicio.strftime('%d/%m/%Y')
+
+
+def _evento_lista_destinos_display(evento):
+    destinos = list(evento.destinos.select_related('cidade', 'estado').order_by('ordem', 'id')[:5])
+    if not destinos:
+        return '—'
+    return ', '.join(d.cidade.nome if d.cidade_id else (d.estado.sigla if d.estado_id else '—') for d in destinos)
+
+
+def _evento_lista_tipos_display(evento):
+    tipos = list(evento.tipos_demanda.filter(ativo=True).order_by('ordem', 'nome')[:5])
+    if not tipos:
+        return '—'
+    return ', '.join(t.nome for t in tipos)
+
+
+def _evento_status_card_css(status):
+    m = {
+        Evento.STATUS_RASCUNHO: 'is-rascunho',
+        Evento.STATUS_EM_ANDAMENTO: 'is-em-andamento',
+        Evento.STATUS_FINALIZADO: 'is-finalizado',
+        Evento.STATUS_ARQUIVADO: 'is-arquivado',
+    }
+    return m.get(status, 'is-rascunho')
+
+
 @login_required
 def evento_lista(request):
-    qs = Evento.objects.prefetch_related('tipos_demanda', 'destinos', 'destinos__estado', 'destinos__cidade').all()
+    from django.core.paginator import Paginator
+
+    qs = (
+        Evento.objects.prefetch_related(
+            'tipos_demanda', 'destinos', 'destinos__estado', 'destinos__cidade',
+            'oficios', 'roteiros',
+        )
+        .order_by('-data_inicio', '-created_at')
+    )
     q = request.GET.get('q', '').strip()
     if q:
         qs = qs.filter(titulo__icontains=q)
@@ -447,8 +492,34 @@ def evento_lista(request):
     tipo_id = request.GET.get('tipo_id', '')
     if tipo_id:
         qs = qs.filter(tipos_demanda__id=tipo_id)
+
+    page_obj = Paginator(qs, 20).get_page(request.GET.get('page'))
+    object_list = list(page_obj.object_list)
+
+    for evento in object_list:
+        evento.periodo_display = _evento_lista_periodo_display(evento)
+        evento.destinos_display = _evento_lista_destinos_display(evento)
+        evento.tipos_display = _evento_lista_tipos_display(evento)
+        evento.status_css_class = _evento_status_card_css(evento.status)
+        evento.painel_url = reverse('eventos:guiado-painel', kwargs={'pk': evento.pk})
+        evento.etapa1_url = reverse('eventos:guiado-etapa-1', kwargs={'pk': evento.pk})
+        evento.detalhe_url = reverse('eventos:detalhe', kwargs={'pk': evento.pk})
+        evento.excluir_url = reverse('eventos:excluir', kwargs={'pk': evento.pk})
+        evento.documentos_hub_url = reverse('eventos:documentos-hub')
+        evento.oficios_count = len(list(evento.oficios.all()))
+        evento.roteiros_count = len(list(evento.roteiros.all()))
+        evento.pendencias = []
+        if evento.status != Evento.STATUS_FINALIZADO:
+            evento.pendencias = _evento_pendencias_finalizacao(evento)[:3]
+
+    params = request.GET.copy()
+    params.pop('page', None)
+    pagination_query = params.urlencode()
+
     context = {
-        'object_list': qs,
+        'object_list': object_list,
+        'page_obj': page_obj,
+        'pagination_query': pagination_query,
         'form_filter': {'q': q, 'status': status, 'tipo_id': tipo_id},
         'status_choices': Evento.STATUS_CHOICES,
         'tipos_demanda_list': TipoDemandaEvento.objects.filter(ativo=True).order_by('ordem', 'nome'),
@@ -1296,12 +1367,379 @@ def _guiado_etapa_em_breve(request, evento_id, numero, nome):
     })
 
 
+PLANO_TRABALHO_STACK_STEPS = (
+    {'number': 1, 'label': 'Dados gerais'},
+    {'number': 2, 'label': 'Coordenação e equipe'},
+    {'number': 3, 'label': 'Atividades'},
+    {'number': 4, 'label': 'Estrutura operacional'},
+    {'number': 5, 'label': 'Preview e finalização'},
+)
+
+
+def _pt_parse_step(value):
+    try:
+        step = int(value)
+    except (TypeError, ValueError):
+        return 1
+    return min(max(step, 1), len(PLANO_TRABALHO_STACK_STEPS))
+
+
+def _pt_evento_periodo_display(evento):
+    if not evento or not evento.data_inicio:
+        return '-'
+    if evento.data_fim and evento.data_fim != evento.data_inicio:
+        return f'{evento.data_inicio:%d/%m/%Y} a {evento.data_fim:%d/%m/%Y}'
+    return f'{evento.data_inicio:%d/%m/%Y}'
+
+
+def _pt_evento_destinos_display(evento):
+    nomes = []
+    destinos = getattr(evento, 'destinos', None)
+    if destinos is not None:
+        for destino in destinos.all():
+            cidade = getattr(destino, 'cidade', None)
+            if cidade and cidade.nome:
+                nomes.append(cidade.nome)
+    return ', '.join(dict.fromkeys(nomes)) or '-'
+
+
+def _pt_defaults_from_evento(evento):
+    return {
+        'titulo_plano': (evento.titulo or '').strip(),
+        'local_execucao': _pt_evento_destinos_display(evento).replace(' -', '').strip('- ').strip(),
+        'periodo_execucao': _pt_evento_periodo_display(evento).replace('-', '').strip(),
+    }
+
+
+def _pt_get_tipo_documento(fundamentacao):
+    return (getattr(fundamentacao, 'tipo_documento', '') or '').strip()
+
+
+def _pt_is_os(fundamentacao):
+    return _pt_get_tipo_documento(fundamentacao) == EventoFundamentacao.TIPO_OS
+
+
+def _pt_solicitante_display(fundamentacao):
+    if not fundamentacao:
+        return '-'
+    if getattr(fundamentacao, 'solicitante_id', None):
+        return fundamentacao.solicitante.nome
+    return (fundamentacao.solicitante_outros or '').strip() or '-'
+
+
+def _pt_coordenacao_resumo(fundamentacao):
+    partes = []
+    if fundamentacao and getattr(fundamentacao, 'coordenador_operacional_id', None):
+        partes.append(str(fundamentacao.coordenador_operacional))
+    if fundamentacao and getattr(fundamentacao, 'coordenador_administrativo_id', None):
+        partes.append(fundamentacao.coordenador_administrativo.nome)
+    if fundamentacao and getattr(fundamentacao, 'tem_coordenador_municipal', False):
+        nome = (fundamentacao.coordenador_municipal_nome or '').strip()
+        if nome:
+            partes.append(f'Coord. municipal: {nome}')
+    return ' | '.join(partes) or '-'
+
+
+def _pt_atividades_count(fundamentacao):
+    codigos = [codigo for codigo in (getattr(fundamentacao, 'atividades_codigos', '') or '').split(',') if codigo.strip()]
+    custom = [linha for linha in (getattr(fundamentacao, 'atividades_customizadas', '') or '').splitlines() if linha.strip()]
+    return len(codigos) + len(custom)
+
+
+def _pt_get_efetivo_rows(evento):
+    rows = [
+        {
+            'cargo_id': efetivo.cargo_id,
+            'cargo_label': efetivo.cargo.nome if getattr(efetivo, 'cargo_id', None) else '',
+            'quantidade': efetivo.quantidade,
+        }
+        for efetivo in evento.efetivo_plano_trabalho.select_related('cargo').order_by('cargo__nome')
+    ]
+    if rows:
+        return rows
+    return [{'cargo_id': '', 'cargo_label': '', 'quantidade': 1}]
+
+
+def _pt_sync_efetivo_rows(evento, payload):
+    cargo_values = payload.getlist('efetivo_cargo')
+    quantidade_values = payload.getlist('efetivo_quantidade')
+    max_rows = max(len(cargo_values), len(quantidade_values))
+    desired = {}
+    for index in range(max_rows):
+        cargo_raw = (cargo_values[index] if index < len(cargo_values) else '').strip()
+        quantidade_raw = (quantidade_values[index] if index < len(quantidade_values) else '').strip()
+        if not cargo_raw and not quantidade_raw:
+            continue
+        if not cargo_raw.isdigit():
+            continue
+        cargo_id = int(cargo_raw)
+        try:
+            quantidade = int(quantidade_raw or '1')
+        except (TypeError, ValueError):
+            quantidade = 1
+        desired[cargo_id] = max(1, quantidade)
+
+    cargos_validos = {
+        cargo.pk: cargo
+        for cargo in Cargo.objects.filter(pk__in=list(desired.keys())).order_by('nome')
+    }
+    efetivos_existentes = {
+        efetivo.cargo_id: efetivo
+        for efetivo in EfetivoPlanoTrabalho.objects.filter(evento=evento)
+    }
+
+    with transaction.atomic():
+        for cargo_id, quantidade in desired.items():
+            if cargo_id not in cargos_validos:
+                continue
+            efetivo = efetivos_existentes.get(cargo_id)
+            if efetivo:
+                if efetivo.quantidade != quantidade:
+                    efetivo.quantidade = quantidade
+                    efetivo.save(update_fields=['quantidade'])
+            else:
+                EfetivoPlanoTrabalho.objects.create(
+                    evento=evento,
+                    cargo=cargos_validos[cargo_id],
+                    quantidade=quantidade,
+                )
+        EfetivoPlanoTrabalho.objects.filter(evento=evento).exclude(cargo_id__in=list(cargos_validos.keys())).delete()
+
+
+def _pt_build_step_state(evento, fundamentacao):
+    defaults = _pt_defaults_from_evento(evento)
+    tipo_documento = _pt_get_tipo_documento(fundamentacao)
+    is_os = tipo_documento == EventoFundamentacao.TIPO_OS
+    efetivo_total = sum(
+        int(item['quantidade'] or 0) for item in _pt_get_efetivo_rows(evento) if str(item['cargo_id']).strip()
+    )
+    step1_ok = bool(
+        tipo_documento
+        and ((fundamentacao.titulo_plano or '').strip() or defaults['titulo_plano'])
+        and ((fundamentacao.local_execucao or '').strip() or defaults['local_execucao'])
+        and ((fundamentacao.periodo_execucao or '').strip() or defaults['periodo_execucao'])
+        and (fundamentacao.texto_fundamentacao or '').strip()
+    )
+    step2_ok = is_os or bool(
+        getattr(fundamentacao, 'coordenador_operacional_id', None)
+        or getattr(fundamentacao, 'coordenador_administrativo_id', None)
+        or (fundamentacao.coordenador_municipal_nome or '').strip()
+        or efetivo_total
+    )
+    step3_ok = is_os or bool(
+        (fundamentacao.atividades_codigos or '').strip()
+        or (fundamentacao.atividades_customizadas or '').strip()
+    )
+    step4_ok = is_os or bool(
+        (fundamentacao.locais_texto or '').strip()
+        or (fundamentacao.cronograma_texto or '').strip()
+        or (fundamentacao.materiais_equipamentos_texto or '').strip()
+        or (fundamentacao.recursos_texto or '').strip()
+        or (fundamentacao.observacoes_pt_os or '').strip()
+    )
+    step5_ok = step1_ok and step2_ok and step3_ok and step4_ok
+    return {
+        1: step1_ok,
+        2: step2_ok,
+        3: step3_ok,
+        4: step4_ok,
+        5: step5_ok,
+    }
+
+
+def _pt_build_stepper(current_step, step_state):
+    items = []
+    for step in PLANO_TRABALHO_STACK_STEPS:
+        css_class = ''
+        if step['number'] == current_step:
+            css_class = 'is-active'
+        elif step_state.get(step['number']):
+            css_class = 'is-complete'
+        items.append(
+            {
+                'number': step['number'],
+                'label': step['label'],
+                'css_class': css_class,
+            }
+        )
+    return items
+
+
+def _pt_build_oficios_context(evento):
+    oficios = list(
+        evento.oficios.prefetch_related('viajantes', 'trechos').order_by('ano', 'numero', 'id')
+    )
+    for oficio in oficios:
+        destino = '-'
+        for trecho in oficio.trechos.all():
+            if getattr(trecho, 'destino_cidade_id', None) and trecho.destino_cidade:
+                destino = trecho.destino_cidade.nome
+                break
+        oficio.pt_destino_display = destino
+        oficio.pt_periodo_display = (
+            f'{oficio.data_saida:%d/%m/%Y}' if getattr(oficio, 'data_saida', None) else '-'
+        )
+        if getattr(oficio, 'retorno_chegada_data', None):
+            oficio.pt_periodo_display = f'{oficio.pt_periodo_display} a {oficio.retorno_chegada_data:%d/%m/%Y}'
+        oficio.pt_viajantes_display = ', '.join(
+            viajante.nome for viajante in oficio.viajantes.all()[:3]
+        ) or '-'
+    return oficios
+
+
+def _pt_build_preview_sections(evento, fundamentacao, oficios):
+    preview_oficio = oficios[0] if oficios else None
+    if preview_oficio:
+        context = build_plano_trabalho_document_context(preview_oficio)
+        sections = [
+            {
+                'title': 'Dados gerais',
+                'rows': [
+                    ('Título', context['plano_trabalho'].get('titulo') or '-'),
+                    ('Contexto', context['plano_trabalho'].get('contexto') or '-'),
+                    ('Evento', context['evento']['titulo'] or '-'),
+                    ('Local / período', context['plano_trabalho'].get('local_periodo') or '-'),
+                    ('Horário de atendimento', context.get('horario_atendimento') or '-'),
+                    ('Solicitante', context.get('solicitante') or '-'),
+                ],
+                'text': context['plano_trabalho'].get('objetivo') or '',
+            },
+            {
+                'title': 'Coordenação e equipe',
+                'rows': [
+                    ('Coordenação', context.get('coordenacao_formatada') or '-'),
+                    ('Efetivo previsto', context.get('quantidade_de_servidores') or '-'),
+                    ('Composição', context.get('efetivo_formatado') or '-'),
+                ],
+                'text': '',
+            },
+            {
+                'title': 'Atividades',
+                'rows': [
+                    ('Metas', context.get('metas_formatada') or '-'),
+                ],
+                'text': context.get('atividades_formatada') or '',
+            },
+            {
+                'title': 'Estrutura operacional',
+                'rows': [
+                    ('Locais', context.get('locais_formatado') or '-'),
+                    ('Cronograma', context.get('cronograma_formatado') or '-'),
+                    ('Materiais / equipamentos', context.get('materiais_equipamentos_formatado') or '-'),
+                ],
+                'text': '\n\n'.join(
+                    [texto for texto in [context.get('recursos_formatado'), context.get('observacoes_operacionais')] if texto]
+                ),
+            },
+        ]
+        return {
+            'preview_oficio': preview_oficio,
+            'sections': sections,
+        }
+
+    defaults = _pt_defaults_from_evento(evento)
+    return {
+        'preview_oficio': None,
+        'sections': [
+            {
+                'title': 'Dados gerais',
+                'rows': [
+                    ('Título', (fundamentacao.titulo_plano or '').strip() or defaults['titulo_plano'] or '-'),
+                    ('Evento', evento.titulo or '-'),
+                    ('Local / período', ' | '.join(
+                        part for part in [
+                            (fundamentacao.local_execucao or '').strip() or defaults['local_execucao'],
+                            (fundamentacao.periodo_execucao or '').strip() or defaults['periodo_execucao'],
+                        ] if part
+                    ) or '-'),
+                    ('Solicitante', _pt_solicitante_display(fundamentacao)),
+                ],
+                'text': (fundamentacao.texto_fundamentacao or '').strip(),
+            }
+        ],
+    }
+
+
+def _pt_build_export_cards(oficios):
+    cards = []
+    for oficio in oficios:
+        downloads = _build_oficio_document_download_context(oficio, DocumentoOficioTipo.PLANO_TRABALHO)
+        cards.append(
+            {
+                'oficio': oficio,
+                'downloads': downloads,
+                'destino': oficio.pt_destino_display,
+                'periodo': oficio.pt_periodo_display,
+                'viajantes': oficio.pt_viajantes_display,
+            }
+        )
+    return cards
+
+
+def _pt_build_quick_report(evento, fundamentacao, oficios, step_state):
+    efetivo_rows = _pt_get_efetivo_rows(evento)
+    efetivo_total = sum(
+        int(item['quantidade'] or 0) for item in efetivo_rows if str(item['cargo_id']).strip()
+    )
+    return {
+        'contexto': 'Evento vinculado',
+        'evento': (evento.titulo or '').strip() or '(sem título)',
+        'tipo_documento': fundamentacao.get_tipo_documento_display() if _pt_get_tipo_documento(fundamentacao) else 'Não definido',
+        'periodo': (fundamentacao.periodo_execucao or '').strip() or _pt_evento_periodo_display(evento),
+        'destinos': (fundamentacao.local_execucao or '').strip() or _pt_evento_destinos_display(evento),
+        'solicitante': _pt_solicitante_display(fundamentacao),
+        'coordenacao': _pt_coordenacao_resumo(fundamentacao),
+        'efetivo_total': f'{efetivo_total} servidor(es)' if efetivo_total else '-',
+        'atividades_total': _pt_atividades_count(fundamentacao),
+        'oficios_total': len(oficios),
+        'oficios_prontos': sum(1 for oficio in oficios if oficio.status == Oficio.STATUS_FINALIZADO),
+        'steps_ok': sum(1 for ok in step_state.values() if ok),
+    }
+
+
+def _pt_build_forms(evento, fundamentacao, *, data=None):
+    defaults = _pt_defaults_from_evento(evento)
+    return {
+        'dados_gerais_form': PlanoTrabalhoDadosGeraisForm(data=data, instance=fundamentacao, initial=defaults),
+        'coordenacao_form': PlanoTrabalhoCoordenacaoForm(data=data, instance=fundamentacao),
+        'atividades_form': PlanoTrabalhoAtividadesForm(data=data, instance=fundamentacao),
+        'estrutura_form': PlanoTrabalhoEstruturaForm(data=data, instance=fundamentacao),
+    }
+
+
+def _pt_save_current_step(evento, fundamentacao, current_step, payload):
+    forms = _pt_build_forms(evento, fundamentacao, data=payload)
+    if current_step == 1:
+        if forms['dados_gerais_form'].is_valid():
+            forms['dados_gerais_form'].save()
+            return True, forms
+        return False, forms
+    if current_step == 2:
+        if forms['coordenacao_form'].is_valid():
+            forms['coordenacao_form'].save()
+            _pt_sync_efetivo_rows(evento, payload)
+            return True, forms
+        return False, forms
+    if current_step == 3:
+        if forms['atividades_form'].is_valid():
+            forms['atividades_form'].save()
+            return True, forms
+        return False, forms
+    if current_step == 4:
+        if forms['estrutura_form'].is_valid():
+            forms['estrutura_form'].save()
+            return True, forms
+        return False, forms
+    fundamentacao.save()
+    return True, forms
+
+
 @login_required
 @require_http_methods(['GET', 'POST'])
 def guiado_etapa_4(request, evento_id):
-    """PT / OS do evento (Etapa 4): formulário real, salvar e reabrir."""
+    """Gerador único de Plano de Trabalho / Ordem de Serviço do evento."""
     evento = get_object_or_404(
-        Evento.objects.prefetch_related('oficios', 'destinos', 'tipos_demanda'),
+        Evento.objects.prefetch_related('destinos', 'tipos_demanda', 'efetivo_plano_trabalho'),
         pk=evento_id,
     )
 
@@ -1309,28 +1747,59 @@ def guiado_etapa_4(request, evento_id):
         evento=evento,
         defaults={'tipo_documento': '', 'texto_fundamentacao': '', 'observacoes_pt_os': ''},
     )
-    oficios = list(evento.oficios.order_by('ano', 'numero', 'id'))
-    for oficio in oficios:
-        oficio.justificativa_info = _build_oficio_justificativa_info(oficio)
+    current_step = _pt_parse_step(request.GET.get('step') or request.POST.get('current_step'))
+    oficios = _pt_build_oficios_context(evento)
 
     if request.method == 'POST':
-        form = EventoFundamentacaoForm(request.POST, instance=fundamentacao)
-        if form.is_valid():
-            form.save()
-            messages.success(request, 'Fundamentação salva com sucesso.')
-            voltar = request.POST.get('voltar_painel')
-            if voltar:
+        saved, forms = _pt_save_current_step(evento, fundamentacao, current_step, request.POST)
+        if _is_autosave_request(request):
+            if saved:
+                return _autosave_success_response()
+            error_text = 'Revise os campos do plano de trabalho.'
+            for form in forms.values():
+                if form.errors:
+                    error_text = next(iter(form.errors.values()))[0]
+                    break
+            return JsonResponse({'ok': False, 'error': error_text}, status=400)
+        action = (request.POST.get('action') or 'save').strip()
+        if saved:
+            if action == 'voltar_painel':
+                messages.success(request, 'Plano de trabalho salvo com sucesso.')
                 return redirect('eventos:guiado-painel', pk=evento.pk)
-            return redirect('eventos:guiado-etapa-4', evento_id=evento.pk)
+            if action == 'next':
+                current_step = min(current_step + 1, len(PLANO_TRABALHO_STACK_STEPS))
+            elif action == 'back':
+                current_step = max(current_step - 1, 1)
+            elif action == 'go-step':
+                current_step = _pt_parse_step(request.POST.get('target_step'))
+            messages.success(request, 'Rascunho do plano de trabalho salvo.')
+            return redirect(f"{reverse('eventos:guiado-etapa-4', kwargs={'evento_id': evento.pk})}?step={current_step}")
     else:
-        form = EventoFundamentacaoForm(instance=fundamentacao)
+        forms = _pt_build_forms(evento, fundamentacao)
 
+    step_state = _pt_build_step_state(evento, fundamentacao)
+    export_cards = _pt_build_export_cards(oficios)
+    preview = _pt_build_preview_sections(evento, fundamentacao, oficios)
+    quick_report = _pt_build_quick_report(evento, fundamentacao, oficios, step_state)
+    cargo_choices = list(Cargo.objects.order_by('nome').values('id', 'nome'))
     context = {
         'evento': evento,
         'object': evento,
-        'form': form,
         'fundamentacao': fundamentacao,
         'oficios': oficios,
+        'current_step': current_step,
+        'stepper_items': _pt_build_stepper(current_step, step_state),
+        'step_state': step_state,
+        'quick_report': quick_report,
+        'preview': preview,
+        'export_cards': export_cards,
+        'cargo_choices': cargo_choices,
+        'efetivo_rows': _pt_get_efetivo_rows(evento),
+        'dados_gerais_form': forms['dados_gerais_form'],
+        'coordenacao_form': forms['coordenacao_form'],
+        'atividades_form': forms['atividades_form'],
+        'estrutura_form': forms['estrutura_form'],
+        'is_ordem_servico': _pt_is_os(fundamentacao),
     }
     return render(request, 'eventos/guiado/etapa_4.html', context)
 
