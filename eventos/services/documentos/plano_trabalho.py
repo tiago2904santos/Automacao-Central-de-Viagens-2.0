@@ -100,7 +100,7 @@ def render_plano_trabalho_model_docx(plano_trabalho):
     subtitulo = (
         (plano_trabalho.evento.titulo or '').strip()
         if plano_trabalho.evento_id and plano_trabalho.evento
-        else 'Documento avulso'
+        else 'Plano de trabalho independente'
     )
     document = create_base_document(titulo, subtitulo)
 

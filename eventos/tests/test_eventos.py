@@ -21,7 +21,6 @@ from django.utils import timezone as tz
 
 from cadastros.models import AssinaturaConfiguracao, Cargo, ConfiguracaoSistema, Estado, Cidade, UnidadeLotacao, Viajante, Veiculo, CombustivelVeiculo
 from eventos.models import (
-    DocumentoAvulso,
     Evento,
     EventoDestino,
     EventoFinalizacao,
@@ -6892,111 +6891,19 @@ class OficioStep1ProtocolRegressionTest(TestCase):
         self.assertEqual(oficio.data_criacao, data_antes)
 
 
-class DocumentoAvulsoFlowTest(TestCase):
+class DocumentosHubTest(TestCase):
     def setUp(self):
-        self.user = User.objects.create_user(username='u_doc_avulso', password='p_doc_avulso')
+        self.user = User.objects.create_user(username='u_documentos', password='p_documentos')
         self.client = Client()
-        self.client.login(username='u_doc_avulso', password='p_doc_avulso')
+        self.client.login(username='u_documentos', password='p_documentos')
 
-    def test_hub_exibe_botao_novo_documento_avulso(self):
+    def test_hub_nao_exibe_fluxo_generico_de_documentos(self):
         response = self.client.get(reverse('eventos:documentos-hub'))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Novo documento avulso')
-        self.assertContains(response, 'modalNovoDocumentoAvulso')
-
-    def test_selector_novo_documento_avulso_sem_tipo(self):
-        response = self.client.get(reverse('eventos:documentos-avulsos-novo'))
-        self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Selecionar tipo de documento avulso')
-        self.assertContains(response, 'Ofício avulso')
-
-    def test_criar_documento_avulso_sem_vinculo(self):
-        response = self.client.post(
-            reverse('eventos:documentos-avulsos-novo'),
-            {
-                'tipo_documento': DocumentoAvulso.TIPO_OFICIO,
-                'titulo': 'Ofício avulso teste',
-                'termo_template_variant': DocumentoAvulso.TERMO_TEMPLATE_SEMIPREENCHIDO,
-                'conteudo_texto': '',
-                'placeholders_json': '{"oficio_numero":"001/2026","data_hoje":"12/03/2026"}',
-            },
-        )
-        self.assertEqual(response.status_code, 302)
-        documento = DocumentoAvulso.objects.get(titulo='Ofício avulso teste')
-        self.assertEqual(documento.classificacao, DocumentoAvulso.CLASSIFICACAO_AVULSO)
-        self.assertIsNone(documento.evento_id)
-        self.assertIn(str(documento.pk), response.url)
-
-    def test_documento_avulso_pode_ser_vinculado_posteriormente(self):
-        estado = Estado.objects.create(nome='Paraná', sigla='PR', codigo_ibge='41')
-        cidade = Cidade.objects.create(nome='Curitiba', estado=estado, codigo_ibge='4106902')
-        evento = Evento.objects.create(
-            titulo='Evento para vínculo',
-            data_inicio=date(2026, 1, 1),
-            data_fim=date(2026, 1, 2),
-            cidade_principal=cidade,
-            estado_principal=estado,
-        )
-        documento = DocumentoAvulso.objects.create(
-            titulo='Termo avulso convertível',
-            tipo_documento=DocumentoAvulso.TIPO_TERMO_AUTORIZACAO,
-            placeholders={},
-            criado_por=self.user,
-        )
-        response = self.client.post(
-            reverse('eventos:documentos-avulsos-editar', kwargs={'pk': documento.pk}),
-            {
-                'tipo_documento': DocumentoAvulso.TIPO_TERMO_AUTORIZACAO,
-                'titulo': documento.titulo,
-                'termo_template_variant': DocumentoAvulso.TERMO_TEMPLATE_SEMIPREENCHIDO,
-                'conteudo_texto': '',
-                'placeholders_json': '{}',
-                'evento': str(evento.pk),
-                'roteiro': '',
-                'plano_trabalho': '',
-                'oficio': '',
-            },
-        )
-        self.assertEqual(response.status_code, 302)
-        documento.refresh_from_db()
-        self.assertEqual(documento.classificacao, DocumentoAvulso.CLASSIFICACAO_VINCULADO)
-        self.assertEqual(documento.evento_id, evento.pk)
-
-    def test_download_docx_documento_avulso_sem_vinculo(self):
-        documento = DocumentoAvulso.objects.create(
-            titulo='Outro avulso',
-            tipo_documento=DocumentoAvulso.TIPO_OUTRO,
-            conteudo_texto='Corpo livre',
-            placeholders={'campo': 'valor'},
-            criado_por=self.user,
-        )
-        response = self.client.get(
-            reverse(
-                'eventos:documentos-avulsos-download',
-                kwargs={'pk': documento.pk, 'formato': 'docx'},
-            )
-        )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(
-            response['Content-Type'],
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        )
-
-    def test_download_pdf_documento_avulso_sem_vinculo(self):
-        documento = DocumentoAvulso.objects.create(
-            titulo='Outro avulso PDF',
-            tipo_documento=DocumentoAvulso.TIPO_OUTRO,
-            conteudo_texto='Corpo livre',
-            placeholders={},
-            criado_por=self.user,
-        )
-        with patch('eventos.views_global.convert_docx_bytes_to_pdf_bytes', return_value=b'%PDF-1.4 avulso'):
-            response = self.client.get(
-                reverse(
-                    'eventos:documentos-avulsos-download',
-                    kwargs={'pk': documento.pk, 'formato': 'pdf'},
-                )
-            )
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response['Content-Type'], 'application/pdf')
-        self.assertTrue(response.content.startswith(b'%PDF-1.4'))
+        self.assertNotContains(response, 'Novo documento' + ' avulso')
+        self.assertNotContains(response, 'modalNovoDocumento' + 'Avulso')
+        self.assertNotContains(response, 'Documentos criados no fluxo' + ' avulso')
+        self.assertContains(response, 'Planos de trabalho')
+        self.assertContains(response, 'Ordens de servico')
+        self.assertContains(response, 'Justificativas')
+        self.assertContains(response, 'Termos')

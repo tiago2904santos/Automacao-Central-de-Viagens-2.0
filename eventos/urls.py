@@ -31,13 +31,6 @@ urlpatterns = [
     path('documentos/termos/<int:pk>/editar/', login_required(views_global.termo_autorizacao_editar), name='documentos-termos-editar'),
     path('documentos/termos/<int:pk>/excluir/', login_required(views_global.termo_autorizacao_excluir), name='documentos-termos-excluir'),
     path('documentos/termos/<int:pk>/download/<str:formato>/', login_required(views_global.termo_autorizacao_download), name='documentos-termos-download'),
-    path('documentos/avulsos/novo/', login_required(views_global.documento_avulso_novo), name='documentos-avulsos-novo'),
-    path('documentos/avulsos/<int:pk>/editar/', login_required(views_global.documento_avulso_editar), name='documentos-avulsos-editar'),
-    path(
-        'documentos/avulsos/<int:pk>/download/<str:formato>/',
-        login_required(views_global.documento_avulso_download),
-        name='documentos-avulsos-download',
-    ),
     path('simulacao-diarias/', login_required(views_global.simulacao_diarias_global), name='simulacao-diarias'),
     path('cadastrar/', login_required(views.evento_cadastrar), name='cadastrar'),
     path('<int:pk>/', login_required(views.evento_detalhe), name='detalhe'),

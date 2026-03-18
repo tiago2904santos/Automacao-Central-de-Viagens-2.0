@@ -1,7 +1,6 @@
 from django.contrib import admin
 from .models import (
     CoordenadorOperacional,
-    DocumentoAvulso,
     EfetivoPlanoTrabalho,
     Evento,
     EventoFinalizacao,
@@ -89,24 +88,6 @@ class EventoFinalizacaoAdmin(admin.ModelAdmin):
     list_filter = ('finalizado_em',)
     search_fields = ('observacoes_finais',)
     raw_id_fields = ('evento', 'finalizado_por')
-
-
-@admin.register(DocumentoAvulso)
-class DocumentoAvulsoAdmin(admin.ModelAdmin):
-    list_display = (
-        'id',
-        'titulo',
-        'tipo_documento',
-        'classificacao',
-        'evento',
-        'oficio',
-        'criado_por',
-        'updated_at',
-    )
-    list_filter = ('tipo_documento', 'classificacao')
-    search_fields = ('titulo',)
-    raw_id_fields = ('evento', 'roteiro', 'plano_trabalho', 'ordem_servico', 'oficio', 'criado_por')
-    ordering = ('-updated_at',)
 
 
 @admin.register(TermoAutorizacao)

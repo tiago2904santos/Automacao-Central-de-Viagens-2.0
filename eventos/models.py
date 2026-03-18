@@ -571,140 +571,6 @@ class EventoFinalizacao(models.Model):
         return self.finalizado_em is not None
 
 
-class DocumentoAvulso(models.Model):
-    """Documento criado sem vínculo obrigatório; pode ser vinculado posteriormente."""
-
-    TIPO_OFICIO = 'OFICIO'
-    TIPO_TERMO_AUTORIZACAO = 'TERMO_AUTORIZACAO'
-    TIPO_JUSTIFICATIVA = 'JUSTIFICATIVA'
-    TIPO_PLANO_TRABALHO = 'PLANO_TRABALHO'
-    TIPO_ORDEM_SERVICO = 'ORDEM_SERVICO'
-    TIPO_OUTRO = 'OUTRO'
-    TIPO_CHOICES = [
-        (TIPO_OFICIO, 'Ofício avulso'),
-        (TIPO_TERMO_AUTORIZACAO, 'Termo de autorização avulso'),
-        (TIPO_JUSTIFICATIVA, 'Justificativa avulsa'),
-        (TIPO_PLANO_TRABALHO, 'Plano de trabalho avulso'),
-        (TIPO_ORDEM_SERVICO, 'Ordem de serviço avulsa'),
-        (TIPO_OUTRO, 'Outros modelos avulsos'),
-    ]
-
-    CLASSIFICACAO_AVULSO = 'AVULSO'
-    CLASSIFICACAO_VINCULADO = 'VINCULADO'
-    CLASSIFICACAO_CHOICES = [
-        (CLASSIFICACAO_AVULSO, 'Avulso'),
-        (CLASSIFICACAO_VINCULADO, 'Vinculado'),
-    ]
-
-    TERMO_TEMPLATE_COMPLETO_COM_VIATURA = 'COMPLETO_COM_VIATURA'
-    TERMO_TEMPLATE_COMPLETO_SEM_VIATURA = 'COMPLETO_SEM_VIATURA'
-    TERMO_TEMPLATE_SEMIPREENCHIDO = 'SEMIPREENCHIDO'
-    TERMO_TEMPLATE_CHOICES = [
-        (TERMO_TEMPLATE_COMPLETO_COM_VIATURA, 'Termo completo com viatura'),
-        (TERMO_TEMPLATE_COMPLETO_SEM_VIATURA, 'Termo completo sem viatura'),
-        (TERMO_TEMPLATE_SEMIPREENCHIDO, 'Termo semipreenchido/manual'),
-    ]
-
-    titulo = models.CharField('Título', max_length=200)
-    tipo_documento = models.CharField('Tipo do documento', max_length=30, choices=TIPO_CHOICES)
-    conteudo_texto = models.TextField('Conteúdo livre', blank=True, default='')
-    placeholders = models.JSONField('Placeholders', blank=True, default=dict)
-    termo_template_variant = models.CharField(
-        'Variante do template de termo',
-        max_length=30,
-        choices=TERMO_TEMPLATE_CHOICES,
-        default=TERMO_TEMPLATE_SEMIPREENCHIDO,
-    )
-    classificacao = models.CharField(
-        'Classificação',
-        max_length=20,
-        choices=CLASSIFICACAO_CHOICES,
-        default=CLASSIFICACAO_AVULSO,
-        db_index=True,
-    )
-    evento = models.ForeignKey(
-        Evento,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='documentos_avulsos',
-        verbose_name='Evento vinculado',
-    )
-    roteiro = models.ForeignKey(
-        'RoteiroEvento',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='documentos_avulsos',
-        verbose_name='Roteiro vinculado',
-    )
-    plano_trabalho = models.ForeignKey(
-        'PlanoTrabalho',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='documentos_avulsos',
-        verbose_name='Plano de trabalho vinculado',
-    )
-    ordem_servico = models.ForeignKey(
-        'OrdemServico',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='documentos_avulsos',
-        verbose_name='Ordem de serviço vinculada',
-    )
-    oficio = models.ForeignKey(
-        'Oficio',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='documentos_avulsos',
-        verbose_name='Ofício vinculado',
-    )
-    criado_por = models.ForeignKey(
-        settings.AUTH_USER_MODEL,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='documentos_avulsos_criados',
-        verbose_name='Criado por',
-    )
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        ordering = ['-updated_at', '-created_at']
-        verbose_name = 'Documento avulso'
-        verbose_name_plural = 'Documentos avulsos'
-
-    def __str__(self):
-        return f'{self.get_tipo_documento_display()} — {self.titulo}'
-
-    @property
-    def is_vinculado(self):
-        return bool(
-            self.evento_id
-            or self.roteiro_id
-            or self.plano_trabalho_id
-            or self.ordem_servico_id
-            or self.oficio_id
-        )
-
-    def _sync_classificacao(self):
-        self.classificacao = (
-            self.CLASSIFICACAO_VINCULADO if self.is_vinculado else self.CLASSIFICACAO_AVULSO
-        )
-
-    def save(self, *args, **kwargs):
-        self.titulo = (self.titulo or '').strip()
-        self.conteudo_texto = (self.conteudo_texto or '').strip()
-        if not isinstance(self.placeholders, dict):
-            self.placeholders = {}
-        self._sync_classificacao()
-        super().save(*args, **kwargs)
-
-
 class TermoAutorizacao(models.Model):
     """Documento real de termo de autorizacao."""
 
@@ -724,6 +590,15 @@ class TermoAutorizacao(models.Model):
         (STATUS_GERADO, 'Gerado'),
     ]
 
+    TEMPLATE_COMPLETO_COM_VIATURA = 'COMPLETO_COM_VIATURA'
+    TEMPLATE_COMPLETO_SEM_VIATURA = 'COMPLETO_SEM_VIATURA'
+    TEMPLATE_SEMIPREENCHIDO = 'SEMIPREENCHIDO'
+    TEMPLATE_VARIANT_CHOICES = [
+        (TEMPLATE_COMPLETO_COM_VIATURA, 'Termo completo com viatura'),
+        (TEMPLATE_COMPLETO_SEM_VIATURA, 'Termo completo sem viatura'),
+        (TEMPLATE_SEMIPREENCHIDO, 'Termo semipreenchido/manual'),
+    ]
+
     modo_geracao = models.CharField(
         'Modo de geracao',
         max_length=40,
@@ -734,8 +609,8 @@ class TermoAutorizacao(models.Model):
     template_variant = models.CharField(
         'Template usado',
         max_length=30,
-        choices=DocumentoAvulso.TERMO_TEMPLATE_CHOICES,
-        default=DocumentoAvulso.TERMO_TEMPLATE_SEMIPREENCHIDO,
+        choices=TEMPLATE_VARIANT_CHOICES,
+        default=TEMPLATE_SEMIPREENCHIDO,
     )
     status = models.CharField(
         'Status',
@@ -768,6 +643,12 @@ class TermoAutorizacao(models.Model):
         blank=True,
         related_name='termos_autorizacao',
         verbose_name='Oficio',
+    )
+    oficios = models.ManyToManyField(
+        'Oficio',
+        blank=True,
+        related_name='termos_autorizacao_relacionados',
+        verbose_name='Oficios relacionados',
     )
     viajante = models.ForeignKey(
         'cadastros.Viajante',
@@ -861,13 +742,36 @@ class TermoAutorizacao(models.Model):
         return f'{self.data_evento:%d/%m/%Y}'
 
     @classmethod
+    def infer_modo_geracao(cls, *, has_servidores=False, has_viatura=False):
+        if has_servidores and has_viatura:
+            return cls.MODO_AUTOMATICO_COM_VIATURA
+        if has_servidores:
+            return cls.MODO_AUTOMATICO_SEM_VIATURA
+        return cls.MODO_RAPIDO
+
+    @property
+    def oficios_relacionados_display(self):
+        oficios = list(self.oficios.all())
+        if not oficios and self.oficio_id:
+            oficios = [self.oficio]
+        labels = []
+        seen = set()
+        for oficio in oficios:
+            label = (getattr(oficio, 'numero_formatado', '') or '').strip() or f'#{oficio.pk}'
+            if label in seen:
+                continue
+            seen.add(label)
+            labels.append(label)
+        return ', '.join(labels)
+
+    @classmethod
     def template_variant_for_mode(cls, modo):
         normalized = (modo or '').strip().upper()
         if normalized == cls.MODO_AUTOMATICO_COM_VIATURA:
-            return DocumentoAvulso.TERMO_TEMPLATE_COMPLETO_COM_VIATURA
+            return cls.TEMPLATE_COMPLETO_COM_VIATURA
         if normalized == cls.MODO_AUTOMATICO_SEM_VIATURA:
-            return DocumentoAvulso.TERMO_TEMPLATE_COMPLETO_SEM_VIATURA
-        return DocumentoAvulso.TERMO_TEMPLATE_SEMIPREENCHIDO
+            return cls.TEMPLATE_COMPLETO_SEM_VIATURA
+        return cls.TEMPLATE_SEMIPREENCHIDO
 
     def _sync_context_relations(self):
         if self.oficio_id:
@@ -924,8 +828,6 @@ class TermoAutorizacao(models.Model):
     def clean(self):
         self._sync_context_relations()
         self.destino = (self.destino or '').strip()
-        self.texto_complementar = (self.texto_complementar or '').strip()
-        self.observacoes = (self.observacoes or '').strip()
         self.servidor_nome = (self.servidor_nome or '').strip()
         self.servidor_rg = (self.servidor_rg or '').strip()
         self.servidor_cpf = (self.servidor_cpf or '').strip()
@@ -934,8 +836,18 @@ class TermoAutorizacao(models.Model):
         self.veiculo_placa = (self.veiculo_placa or '').strip().upper()
         self.veiculo_modelo = (self.veiculo_modelo or '').strip()
         self.veiculo_combustivel = (self.veiculo_combustivel or '').strip()
+        has_servidores = bool((self.servidor_display or '').strip())
+        has_viatura = bool((self.viatura_display or '').strip())
+        self.modo_geracao = self.infer_modo_geracao(
+            has_servidores=has_servidores,
+            has_viatura=has_viatura,
+        )
 
         errors = {}
+        if not self.destino:
+            errors['destino'] = 'Informe ao menos um destino consolidado para o termo.'
+        if not self.data_evento:
+            errors['data_evento'] = 'Informe a data inicial do termo.'
         if self.data_evento and self.data_evento_fim and self.data_evento_fim < self.data_evento:
             errors['data_evento_fim'] = 'A data final nao pode ser anterior a data inicial.'
         if self.oficio_id and self.evento_id and self.oficio.evento_id and self.oficio.evento_id != self.evento_id:
@@ -946,30 +858,26 @@ class TermoAutorizacao(models.Model):
             roteiro_oficio_id = getattr(self.oficio, 'roteiro_evento_id', None)
             if roteiro_oficio_id and roteiro_oficio_id != self.roteiro_id:
                 errors['roteiro'] = 'O roteiro informado nao corresponde ao roteiro do oficio.'
-        if self.modo_geracao == self.MODO_RAPIDO and (self.veiculo_id or self.veiculo_placa or self.veiculo_modelo):
-            errors['veiculo'] = 'O termo rapido nao usa viatura.'
-        if self.modo_geracao == self.MODO_AUTOMATICO_SEM_VIATURA and (
-            self.veiculo_id or self.veiculo_placa or self.veiculo_modelo
-        ):
-            errors['veiculo'] = 'Este modo nao permite viatura.'
-        if self.modo_geracao == self.MODO_AUTOMATICO_COM_VIATURA and not (
-            self.veiculo_id or self.veiculo_placa or self.veiculo_modelo
-        ):
-            errors['veiculo'] = 'Selecione uma viatura para este modo.'
         if self.modo_geracao in {
             self.MODO_AUTOMATICO_COM_VIATURA,
             self.MODO_AUTOMATICO_SEM_VIATURA,
-        } and not ((self.servidor_display or '').strip()):
+        } and not has_servidores:
             errors['viajante'] = 'Selecione um servidor para este modo.'
         if errors:
             raise ValidationError(errors)
 
     def save(self, *args, **kwargs):
         self._sync_context_relations()
+        self.modo_geracao = self.infer_modo_geracao(
+            has_servidores=bool((self.servidor_display or '').strip() or getattr(self.viajante, 'nome', '')),
+            has_viatura=bool((self.viatura_display or '').strip() or getattr(self.veiculo, 'placa', '')),
+        )
         self.template_variant = self.template_variant_for_mode(self.modo_geracao)
         self.populate_snapshots_from_relations()
         if self.modo_geracao != self.MODO_RAPIDO and not self.lote_uuid:
             self.lote_uuid = uuid.uuid4()
+        if self.modo_geracao == self.MODO_RAPIDO:
+            self.lote_uuid = None
         self.status = self.STATUS_GERADO if self.is_ready_for_generation() else self.STATUS_RASCUNHO
         super().save(*args, **kwargs)
 

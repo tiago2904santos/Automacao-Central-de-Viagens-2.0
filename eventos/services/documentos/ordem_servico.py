@@ -100,7 +100,7 @@ def render_ordem_servico_model_docx(ordem_servico):
     subtitulo = (
         (ordem_servico.evento.titulo or '').strip()
         if ordem_servico.evento_id and ordem_servico.evento
-        else 'Documento avulso'
+        else 'Ordem de serviço independente'
     )
     document = create_base_document(titulo, subtitulo)
 

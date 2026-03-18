@@ -1,4 +1,3 @@
-import json
 import uuid
 
 from django import forms
@@ -9,7 +8,6 @@ from cadastros.models import Viajante, Veiculo
 from eventos.services.oficio_schema import oficio_justificativa_schema_available
 from .models import (
     Evento,
-    DocumentoAvulso,
     EventoFinalizacao,
     EventoParticipante,
     ModeloJustificativa,
@@ -272,125 +270,6 @@ class OrdemServicoForm(FormComErroInvalidMixin, forms.ModelForm):
         self.fields['ano'].required = False
         self.fields['evento'].queryset = Evento.objects.order_by('-data_inicio', 'titulo')
         self.fields['oficio'].queryset = Oficio.objects.select_related('evento').order_by('-updated_at')
-
-
-class DocumentoAvulsoForm(FormComErroInvalidMixin, forms.ModelForm):
-    """Formulário de documento avulso com placeholders em JSON e vínculos opcionais."""
-
-    placeholders_json = forms.CharField(
-        required=False,
-        label='Placeholders (JSON)',
-        widget=forms.Textarea(
-            attrs={
-                'class': 'form-control',
-                'rows': 8,
-                'placeholder': '{\n  "chave_placeholder": "valor"\n}',
-            }
-        ),
-        help_text='Informe um objeto JSON com os placeholders e valores para preencher o template.',
-    )
-
-    class Meta:
-        model = DocumentoAvulso
-        fields = [
-            'tipo_documento',
-            'titulo',
-            'termo_template_variant',
-            'conteudo_texto',
-            'evento',
-            'roteiro',
-            'plano_trabalho',
-            'ordem_servico',
-            'oficio',
-        ]
-        widgets = {
-            'tipo_documento': forms.Select(attrs={'class': 'form-select'}),
-            'titulo': forms.TextInput(attrs={'class': 'form-control'}),
-            'termo_template_variant': forms.Select(attrs={'class': 'form-select'}),
-            'conteudo_texto': forms.Textarea(
-                attrs={
-                    'class': 'form-control',
-                    'rows': 5,
-                    'placeholder': 'Conteúdo livre (usado principalmente para "Outros modelos avulsos").',
-                }
-            ),
-            'evento': forms.Select(attrs={'class': 'form-select'}),
-            'roteiro': forms.Select(attrs={'class': 'form-select'}),
-            'plano_trabalho': forms.Select(attrs={'class': 'form-select'}),
-            'ordem_servico': forms.Select(attrs={'class': 'form-select'}),
-            'oficio': forms.Select(attrs={'class': 'form-select'}),
-        }
-
-    def __init__(self, *args, **kwargs):
-        self.tipo_predefinido = (kwargs.pop('tipo_predefinido', '') or '').strip().upper()
-        super().__init__(*args, **kwargs)
-        self.fields['evento'].required = False
-        self.fields['roteiro'].required = False
-        self.fields['plano_trabalho'].required = False
-        self.fields['ordem_servico'].required = False
-        self.fields['oficio'].required = False
-
-        self.fields['evento'].queryset = Evento.objects.order_by('-data_inicio', 'titulo')
-        self.fields['roteiro'].queryset = RoteiroEvento.objects.select_related('evento').order_by('-updated_at')
-        self.fields['plano_trabalho'].queryset = (
-            PlanoTrabalho.objects.select_related('evento', 'oficio').order_by('-updated_at')
-        )
-        self.fields['ordem_servico'].queryset = (
-            OrdemServico.objects.select_related('evento', 'oficio').order_by('-updated_at')
-        )
-        self.fields['oficio'].queryset = Oficio.objects.select_related('evento').order_by('-updated_at')
-
-        self.fields['termo_template_variant'].required = False
-        self.fields['termo_template_variant'].help_text = (
-            'Aplicável quando o tipo do documento for Termo de autorização.'
-        )
-
-        if self.instance and self.instance.pk:
-            placeholders = self.instance.placeholders if isinstance(self.instance.placeholders, dict) else {}
-            self.initial['placeholders_json'] = json.dumps(placeholders, ensure_ascii=False, indent=2)
-        else:
-            self.initial.setdefault('placeholders_json', '{}')
-
-        if self.tipo_predefinido and self.tipo_predefinido in dict(DocumentoAvulso.TIPO_CHOICES):
-            self.fields['tipo_documento'].initial = self.tipo_predefinido
-            self.fields['tipo_documento'].disabled = True
-
-    def clean_placeholders_json(self):
-        raw = (self.cleaned_data.get('placeholders_json') or '').strip()
-        if not raw:
-            return {}
-        try:
-            payload = json.loads(raw)
-        except json.JSONDecodeError as exc:
-            raise forms.ValidationError(f'JSON inválido em placeholders: {exc.msg}.')
-        if not isinstance(payload, dict):
-            raise forms.ValidationError('Os placeholders devem ser um objeto JSON (chave/valor).')
-        normalized = {}
-        for key, value in payload.items():
-            k = str(key or '').strip()
-            if not k:
-                continue
-            normalized[k] = '' if value is None else str(value)
-        return normalized
-
-    def clean(self):
-        data = super().clean()
-        if self.tipo_predefinido:
-            data['tipo_documento'] = self.tipo_predefinido
-            self.instance.tipo_documento = self.tipo_predefinido
-        tipo = (data.get('tipo_documento') or '').strip().upper()
-        if tipo != DocumentoAvulso.TIPO_TERMO_AUTORIZACAO:
-            data['termo_template_variant'] = DocumentoAvulso.TERMO_TEMPLATE_SEMIPREENCHIDO
-        return data
-
-    def save(self, commit=True):
-        instance = super().save(commit=False)
-        instance.placeholders = self.cleaned_data.get('placeholders_json') or {}
-        if instance.tipo_documento != DocumentoAvulso.TIPO_TERMO_AUTORIZACAO:
-            instance.termo_template_variant = DocumentoAvulso.TERMO_TEMPLATE_SEMIPREENCHIDO
-        if commit:
-            instance.save()
-        return instance
 
 
 def _parse_hidden_ids(raw_value):
