@@ -9,10 +9,19 @@ from django.db.models import Count, Prefetch, Q
 from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.utils import timezone
 from django.utils.text import slugify
 from django.views.decorators.http import require_http_methods
 
-from .forms import DocumentoAvulsoForm, OrdemServicoForm, PlanoTrabalhoForm
+from .forms import (
+    DocumentoAvulsoForm,
+    OrdemServicoForm,
+    PlanoTrabalhoForm,
+    TermoAutorizacaoAutomaticoComViaturaForm,
+    TermoAutorizacaoAutomaticoSemViaturaForm,
+    TermoAutorizacaoEdicaoForm,
+    TermoAutorizacaoRapidoForm,
+)
 from .models import (
     DocumentoAvulso,
     Evento,
@@ -22,6 +31,7 @@ from .models import (
     OficioTrecho,
     PlanoTrabalho,
     RoteiroEvento,
+    TermoAutorizacao,
 )
 from .services.diarias import PeriodMarker, TABELA_DIARIAS, calculate_periodized_diarias, formatar_valor_diarias
 from .services.documentos import (
@@ -42,6 +52,8 @@ from .services.documentos.renderer import (
 )
 from .services.documentos.ordem_servico import render_ordem_servico_docx, render_ordem_servico_model_docx
 from .services.documentos.plano_trabalho import render_plano_trabalho_docx, render_plano_trabalho_model_docx
+from .services.documentos.termo_autorizacao import render_saved_termo_autorizacao_docx
+from .utils import serializar_viajante_para_autocomplete, serializar_veiculo_para_oficio
 from .views import _build_oficio_justificativa_info
 
 
@@ -73,6 +85,11 @@ DOCUMENT_STATUS_CARD_META = {
     'indefinida': {'label': 'Aguardando roteiro', 'css_class': 'is-muted'},
     'indisponivel': {'label': 'Indisponivel', 'css_class': 'is-unavailable'},
     'pendente': {'label': 'Pendente', 'css_class': 'is-pending'},
+}
+
+TERMO_STATUS_CARD_META = {
+    TermoAutorizacao.STATUS_RASCUNHO: {'label': 'Rascunho', 'css_class': 'is-rascunho'},
+    TermoAutorizacao.STATUS_GERADO: {'label': 'Gerado', 'css_class': 'is-finalizado'},
 }
 
 
@@ -1285,3 +1302,543 @@ def simulacao_diarias_global(request):
             'tabela_valores': tabela_valores,
         },
     )
+
+
+TERMO_MODO_META = {
+    TermoAutorizacao.MODO_RAPIDO: {
+        'label': 'Termo rapido',
+        'description': 'Formulario enxuto para gerar um termo manual usando o modelo base.',
+        'template_name': 'termo_autorizacao.docx',
+    },
+    TermoAutorizacao.MODO_AUTOMATICO_COM_VIATURA: {
+        'label': 'Automatico com viatura',
+        'description': 'Seleciona a viatura e gera um termo por servidor escolhido.',
+        'template_name': 'termo_autorizacao_automatico.docx',
+    },
+    TermoAutorizacao.MODO_AUTOMATICO_SEM_VIATURA: {
+        'label': 'Automatico sem viatura',
+        'description': 'Seleciona apenas os servidores e gera um termo individual para cada um.',
+        'template_name': 'termo_autorizacao_automatico_sem_viatura.docx',
+    },
+}
+
+
+def _build_termo_filters(request):
+    return {
+        'q': _clean(request.GET.get('q')),
+        'evento_id': _clean(request.GET.get('evento_id')),
+        'oficio_id': _clean(request.GET.get('oficio_id')),
+        'status': _clean(request.GET.get('status')),
+        'modo_geracao': _clean(request.GET.get('modo_geracao')),
+    }
+
+
+def _termo_status_meta(termo):
+    fallback_label = getattr(termo, 'get_status_display', lambda: termo.status)() or termo.status or '-'
+    meta = TERMO_STATUS_CARD_META.get(termo.status, {})
+    return {
+        'label': meta.get('label', fallback_label),
+        'css_class': meta.get('css_class', 'is-muted'),
+    }
+
+
+def _termo_mode_meta(modo):
+    return TERMO_MODO_META.get(
+        (modo or '').strip().upper(),
+        {'label': modo or 'Modo', 'description': '', 'template_name': ''},
+    )
+
+
+def _termo_context_display(termo):
+    parts = []
+    if termo.evento_id:
+        parts.append((termo.evento.titulo or '').strip() or f'Evento #{termo.evento_id}')
+    if termo.oficio_id:
+        parts.append(f'Oficio {termo.oficio.numero_formatado}')
+    elif termo.roteiro_id:
+        parts.append(f'Roteiro #{termo.roteiro_id}')
+    return ' | '.join(parts) if parts else 'Termo avulso'
+
+
+def _build_saved_termo_filename(termo, formato):
+    ext = 'docx' if formato == DocumentoFormato.DOCX.value else 'pdf'
+    base = slugify(termo.servidor_display or termo.destino or termo.numero_formatado) or f'termo-{termo.pk}'
+    return f'termo_autorizacao_{termo.pk}_{base}.{ext}'
+
+
+def _build_termo_document_cards(termo):
+    status_key = 'available' if termo.status == TermoAutorizacao.STATUS_GERADO else 'pending'
+    status_meta = _document_card_status_meta(status_key, STATUS_LABELS.get(status_key, 'Pendente'))
+    mode_meta = _termo_mode_meta(termo.modo_geracao)
+    return [
+        {
+            'key': 'termo',
+            'title': 'Termo de autorizacao',
+            'status_key': status_key,
+            'status_label': status_meta['label'],
+            'status_css_class': status_meta['css_class'],
+            'detail': mode_meta['description'],
+            'summary_items': [
+                {'label': 'Modo', 'value': mode_meta['label']},
+                {'label': 'Servidor', 'value': termo.servidor_display or 'Nao informado'},
+                {'label': 'Viatura', 'value': termo.viatura_display or 'Sem viatura'},
+                {'label': 'Contexto', 'value': _termo_context_display(termo)},
+            ],
+            'edit_url': reverse('eventos:documentos-termos-editar', kwargs={'pk': termo.pk}),
+            'actions': [
+                {'label': 'Ver', 'url': reverse('eventos:documentos-termos-detalhe', kwargs={'pk': termo.pk}), 'available': True},
+                {'label': 'DOCX', 'url': reverse('eventos:documentos-termos-download', kwargs={'pk': termo.pk, 'formato': DocumentoFormato.DOCX.value}), 'available': True},
+                {'label': 'PDF', 'url': reverse('eventos:documentos-termos-download', kwargs={'pk': termo.pk, 'formato': DocumentoFormato.PDF.value}), 'available': True},
+            ],
+        }
+    ]
+
+
+def _build_termo_initial(preselected_event, preselected_oficio):
+    initial = {}
+    if preselected_event:
+        initial['evento'] = preselected_event.pk
+        initial['data_evento'] = preselected_event.data_inicio
+        initial['data_evento_fim'] = preselected_event.data_fim
+        destinos = [
+            _label_local(destino.cidade, destino.estado)
+            for destino in preselected_event.destinos.select_related('cidade', 'estado').order_by('ordem', 'id')
+        ]
+        destinos = [item for item in destinos if item and item != '-']
+        if destinos:
+            initial['destino'] = ', '.join(dict.fromkeys(destinos))
+    if preselected_oficio:
+        initial['oficio'] = preselected_oficio.pk
+        if preselected_oficio.roteiro_evento_id:
+            initial['roteiro'] = preselected_oficio.roteiro_evento_id
+        if not initial.get('evento') and preselected_oficio.evento_id:
+            initial['evento'] = preselected_oficio.evento_id
+        if not initial.get('destino'):
+            initial['destino'] = _oficio_destinos_display(preselected_oficio)
+        if not initial.get('data_evento') and preselected_oficio.evento_id:
+            initial['data_evento'] = preselected_oficio.evento.data_inicio
+            initial['data_evento_fim'] = preselected_oficio.evento.data_fim
+    return initial
+
+
+def _build_termo_selector_querystring(return_to, context_source, preselected_event, preselected_oficio):
+    params = {}
+    if return_to:
+        params['return_to'] = return_to
+    if context_source:
+        params['context_source'] = context_source
+    if preselected_event:
+        params['preselected_event_id'] = preselected_event.pk
+    if preselected_oficio:
+        params['preselected_oficio_id'] = preselected_oficio.pk
+    if not params:
+        return ''
+    return '?' + urlencode(params)
+
+
+def _render_termo_form(
+    request,
+    *,
+    form,
+    modo_key,
+    object_instance=None,
+    return_to='',
+    context_source='',
+    preselected_event=None,
+    preselected_oficio=None,
+    read_only_context=False,
+):
+    selected_viajantes = []
+    selected_veiculo_payload = None
+    if object_instance and object_instance.viajante_id:
+        selected_viajantes = [object_instance.viajante]
+    if object_instance and object_instance.veiculo_id:
+        selected_veiculo_payload = serializar_veiculo_para_oficio(object_instance.veiculo)
+        selected_veiculo_payload['id'] = object_instance.veiculo.pk
+        selected_veiculo_payload['label'] = (
+            f"{selected_veiculo_payload['placa_formatada']} - {selected_veiculo_payload['modelo']}"
+        ).strip(' -')
+    return render(
+        request,
+        'eventos/documentos/termos_form.html',
+        {
+            'form': form,
+            'object': object_instance,
+            'mode_key': modo_key,
+            'mode_meta': _termo_mode_meta(modo_key),
+            'return_to': return_to,
+            'context_source': context_source,
+            'preselected_event_id': preselected_event.pk if preselected_event else '',
+            'preselected_oficio_id': preselected_oficio.pk if preselected_oficio else '',
+            'buscar_viajantes_url': reverse('eventos:oficio-step1-viajantes-api'),
+            'buscar_veiculos_url': reverse('eventos:oficio-step2-veiculos-busca-api'),
+            'selected_viajantes_payload': [
+                serializar_viajante_para_autocomplete(viajante) for viajante in selected_viajantes
+            ],
+            'selected_veiculo_payload': selected_veiculo_payload,
+            'read_only_context': read_only_context,
+            'show_viajantes_selector': object_instance is None and 'viajantes_ids' in form.fields,
+            'show_veiculo_selector': object_instance is None and 'veiculo_id' in form.fields,
+            'novo_selector_url': reverse('eventos:documentos-termos-novo'),
+        },
+    )
+
+
+def documentos_hub(request):
+    oficios = list(Oficio.objects.prefetch_related('trechos').all())
+    justificativas_pendentes = 0
+    justificativas_preenchidas = 0
+    for oficio in oficios:
+        info = _build_oficio_justificativa_info(oficio)
+        if info['status_key'] == 'pendente':
+            justificativas_pendentes += 1
+        elif info['status_key'] == 'preenchida':
+            justificativas_preenchidas += 1
+
+    cards = [
+        {
+            'label': 'Planos de trabalho',
+            'count': PlanoTrabalho.objects.count(),
+            'description': 'Modulo documental independente com criacao e edicao proprias.',
+            'url': reverse('eventos:documentos-planos-trabalho'),
+        },
+        {
+            'label': 'Ordens de servico',
+            'count': OrdemServico.objects.count(),
+            'description': 'Modulo documental independente com criacao e edicao proprias.',
+            'url': reverse('eventos:documentos-ordens-servico'),
+        },
+        {
+            'label': 'Justificativas',
+            'count': justificativas_pendentes,
+            'description': f'{justificativas_preenchidas} preenchidas e {justificativas_pendentes} pendentes no momento.',
+            'url': reverse('eventos:documentos-justificativas'),
+        },
+        {
+            'label': 'Termos',
+            'count': TermoAutorizacao.objects.count(),
+            'description': 'Modulo documental com lista propria, criacao por modo e downloads por registro.',
+            'url': reverse('eventos:documentos-termos'),
+        },
+    ]
+    documentos_avulsos_qs = (
+        DocumentoAvulso.objects.select_related('evento', 'roteiro', 'plano_trabalho', 'ordem_servico', 'oficio', 'criado_por')
+        .order_by('-updated_at', '-created_at')
+    )
+    documentos_avulsos = list(documentos_avulsos_qs[:20])
+    for documento in documentos_avulsos:
+        documento.editar_url = reverse('eventos:documentos-avulsos-editar', kwargs={'pk': documento.pk})
+        documento.download_docx_url = reverse(
+            'eventos:documentos-avulsos-download',
+            kwargs={'pk': documento.pk, 'formato': DocumentoFormato.DOCX.value},
+        )
+        documento.download_pdf_url = reverse(
+            'eventos:documentos-avulsos-download',
+            kwargs={'pk': documento.pk, 'formato': DocumentoFormato.PDF.value},
+        )
+        documento.vinculos = [
+            label
+            for label, enabled in [
+                ('Evento', bool(documento.evento_id)),
+                ('Roteiro', bool(documento.roteiro_id)),
+                ('PT', bool(documento.plano_trabalho_id)),
+                ('OS', bool(documento.ordem_servico_id)),
+                ('Oficio', bool(documento.oficio_id)),
+            ]
+            if enabled
+        ]
+    return render(
+        request,
+        'eventos/global/documentos_hub.html',
+        {
+            'cards': cards,
+            'total_oficios': len(oficios),
+            'termos_pendentes': TermoAutorizacao.objects.filter(status=TermoAutorizacao.STATUS_RASCUNHO).count(),
+            'termos_concluidos': TermoAutorizacao.objects.filter(status=TermoAutorizacao.STATUS_GERADO).count(),
+            'justificativas_pendentes': justificativas_pendentes,
+            'justificativas_preenchidas': justificativas_preenchidas,
+            'documentos_avulsos': documentos_avulsos,
+            'documentos_avulsos_total': documentos_avulsos_qs.count(),
+            'documentos_avulsos_count': documentos_avulsos_qs.filter(
+                classificacao=DocumentoAvulso.CLASSIFICACAO_AVULSO
+            ).count(),
+            'documentos_vinculados_count': documentos_avulsos_qs.filter(
+                classificacao=DocumentoAvulso.CLASSIFICACAO_VINCULADO
+            ).count(),
+            'tipos_documento_avulso': DocumentoAvulso.TIPO_CHOICES,
+        },
+    )
+
+
+def termos_global(request):
+    filters = _build_termo_filters(request)
+    queryset = TermoAutorizacao.objects.select_related(
+        'evento',
+        'oficio',
+        'roteiro',
+        'viajante',
+        'viajante__cargo',
+        'veiculo',
+    )
+    if filters['q']:
+        queryset = queryset.filter(
+            Q(destino__icontains=filters['q'])
+            | Q(texto_complementar__icontains=filters['q'])
+            | Q(observacoes__icontains=filters['q'])
+            | Q(evento__titulo__icontains=filters['q'])
+            | Q(oficio__protocolo__icontains=filters['q'])
+            | Q(viajante__nome__icontains=filters['q'])
+            | Q(servidor_nome__icontains=filters['q'])
+            | Q(veiculo_modelo__icontains=filters['q'])
+            | Q(veiculo_placa__icontains=filters['q'])
+        )
+    if filters['evento_id'].isdigit():
+        queryset = queryset.filter(evento_id=int(filters['evento_id']))
+    if filters['oficio_id'].isdigit():
+        queryset = queryset.filter(oficio_id=int(filters['oficio_id']))
+    if filters['status']:
+        queryset = queryset.filter(status=filters['status'])
+    if filters['modo_geracao']:
+        queryset = queryset.filter(modo_geracao=filters['modo_geracao'])
+
+    page_obj = _paginate(queryset.order_by('-updated_at', '-created_at'), request.GET.get('page'))
+    object_list = list(page_obj.object_list)
+    for termo in object_list:
+        termo.process_status = _termo_status_meta(termo)
+        termo.mode_meta = _termo_mode_meta(termo.modo_geracao)
+        termo.context_display = _termo_context_display(termo)
+        termo.evento_url = reverse('eventos:guiado-painel', kwargs={'pk': termo.evento_id}) if termo.evento_id else ''
+        termo.evento_titulo_display = (
+            (termo.evento.titulo or '').strip() if termo.evento_id else 'Termo avulso'
+        ) or 'Termo avulso'
+        termo.detail_url = reverse('eventos:documentos-termos-detalhe', kwargs={'pk': termo.pk})
+        termo.edicao_url = reverse('eventos:documentos-termos-editar', kwargs={'pk': termo.pk})
+        termo.excluir_url = reverse('eventos:documentos-termos-excluir', kwargs={'pk': termo.pk})
+        termo.card_documents = _build_termo_document_cards(termo)
+
+    return render(
+        request,
+        'eventos/documentos/termos_lista.html',
+        {
+            'object_list': object_list,
+            'page_obj': page_obj,
+            'pagination_query': _query_without_page(request),
+            'filters': filters,
+            'eventos_choices': _eventos_choices(),
+            'oficios_choices': Oficio.objects.order_by('-updated_at')[:200],
+            'status_choices': TermoAutorizacao.STATUS_CHOICES,
+            'modo_choices': TermoAutorizacao.MODO_CHOICES,
+        },
+    )
+
+
+@require_http_methods(['GET'])
+def termo_autorizacao_novo(request):
+    return_to = _get_safe_return_to(request, reverse('eventos:documentos-termos'))
+    context_source = _get_context_source(request)
+    preselected_event, preselected_oficio = _resolve_preselected_context(request)
+    querystring = _build_termo_selector_querystring(
+        return_to,
+        context_source,
+        preselected_event,
+        preselected_oficio,
+    )
+    modos = [
+        {
+            'key': TermoAutorizacao.MODO_RAPIDO,
+            'label': TERMO_MODO_META[TermoAutorizacao.MODO_RAPIDO]['label'],
+            'description': TERMO_MODO_META[TermoAutorizacao.MODO_RAPIDO]['description'],
+            'template_name': TERMO_MODO_META[TermoAutorizacao.MODO_RAPIDO]['template_name'],
+            'url': reverse('eventos:documentos-termos-novo-rapido') + querystring,
+        },
+        {
+            'key': TermoAutorizacao.MODO_AUTOMATICO_COM_VIATURA,
+            'label': TERMO_MODO_META[TermoAutorizacao.MODO_AUTOMATICO_COM_VIATURA]['label'],
+            'description': TERMO_MODO_META[TermoAutorizacao.MODO_AUTOMATICO_COM_VIATURA]['description'],
+            'template_name': TERMO_MODO_META[TermoAutorizacao.MODO_AUTOMATICO_COM_VIATURA]['template_name'],
+            'url': reverse('eventos:documentos-termos-novo-automatico-com-viatura') + querystring,
+        },
+        {
+            'key': TermoAutorizacao.MODO_AUTOMATICO_SEM_VIATURA,
+            'label': TERMO_MODO_META[TermoAutorizacao.MODO_AUTOMATICO_SEM_VIATURA]['label'],
+            'description': TERMO_MODO_META[TermoAutorizacao.MODO_AUTOMATICO_SEM_VIATURA]['description'],
+            'template_name': TERMO_MODO_META[TermoAutorizacao.MODO_AUTOMATICO_SEM_VIATURA]['template_name'],
+            'url': reverse('eventos:documentos-termos-novo-automatico-sem-viatura') + querystring,
+        },
+    ]
+    return render(
+        request,
+        'eventos/documentos/termos_selector.html',
+        {
+            'modos': modos,
+            'return_to': return_to,
+            'context_source': context_source,
+            'preselected_event': preselected_event,
+            'preselected_oficio': preselected_oficio,
+        },
+    )
+
+
+@require_http_methods(['GET', 'POST'])
+def termo_autorizacao_novo_rapido(request):
+    return_to = _get_safe_return_to(request, reverse('eventos:documentos-termos'))
+    context_source = _get_context_source(request)
+    preselected_event, preselected_oficio = _resolve_preselected_context(request)
+    form = TermoAutorizacaoRapidoForm(
+        request.POST or None,
+        initial=_build_termo_initial(preselected_event, preselected_oficio),
+    )
+    if request.method == 'POST' and form.is_valid():
+        obj = form.save_term(user=request.user)
+        messages.success(request, 'Termo rapido criado com sucesso.')
+        return redirect(return_to or reverse('eventos:documentos-termos-detalhe', kwargs={'pk': obj.pk}))
+    return _render_termo_form(
+        request,
+        form=form,
+        modo_key=TermoAutorizacao.MODO_RAPIDO,
+        return_to=return_to,
+        context_source=context_source,
+        preselected_event=preselected_event,
+        preselected_oficio=preselected_oficio,
+    )
+
+
+@require_http_methods(['GET', 'POST'])
+def termo_autorizacao_novo_automatico_com_viatura(request):
+    return_to = _get_safe_return_to(request, reverse('eventos:documentos-termos'))
+    context_source = _get_context_source(request)
+    preselected_event, preselected_oficio = _resolve_preselected_context(request)
+    form = TermoAutorizacaoAutomaticoComViaturaForm(
+        request.POST or None,
+        initial=_build_termo_initial(preselected_event, preselected_oficio),
+    )
+    if request.method == 'POST' and form.is_valid():
+        termos = form.save_batch(user=request.user)
+        messages.success(request, f'{len(termos)} termo(s) gerado(s) com viatura.')
+        return redirect(return_to or reverse('eventos:documentos-termos'))
+    return _render_termo_form(
+        request,
+        form=form,
+        modo_key=TermoAutorizacao.MODO_AUTOMATICO_COM_VIATURA,
+        return_to=return_to,
+        context_source=context_source,
+        preselected_event=preselected_event,
+        preselected_oficio=preselected_oficio,
+    )
+
+
+@require_http_methods(['GET', 'POST'])
+def termo_autorizacao_novo_automatico_sem_viatura(request):
+    return_to = _get_safe_return_to(request, reverse('eventos:documentos-termos'))
+    context_source = _get_context_source(request)
+    preselected_event, preselected_oficio = _resolve_preselected_context(request)
+    form = TermoAutorizacaoAutomaticoSemViaturaForm(
+        request.POST or None,
+        initial=_build_termo_initial(preselected_event, preselected_oficio),
+    )
+    if request.method == 'POST' and form.is_valid():
+        termos = form.save_batch(user=request.user)
+        messages.success(request, f'{len(termos)} termo(s) gerado(s) sem viatura.')
+        return redirect(return_to or reverse('eventos:documentos-termos'))
+    return _render_termo_form(
+        request,
+        form=form,
+        modo_key=TermoAutorizacao.MODO_AUTOMATICO_SEM_VIATURA,
+        return_to=return_to,
+        context_source=context_source,
+        preselected_event=preselected_event,
+        preselected_oficio=preselected_oficio,
+    )
+
+
+@require_http_methods(['GET'])
+def termo_autorizacao_detalhe(request, pk):
+    obj = get_object_or_404(
+        TermoAutorizacao.objects.select_related('evento', 'oficio', 'roteiro', 'viajante', 'viajante__cargo', 'veiculo'),
+        pk=pk,
+    )
+    related_lote = []
+    if obj.lote_uuid:
+        related_lote = list(
+            TermoAutorizacao.objects.select_related('viajante')
+            .filter(lote_uuid=obj.lote_uuid)
+            .exclude(pk=obj.pk)
+            .order_by('created_at')[:20]
+        )
+    return render(
+        request,
+        'eventos/documentos/termos_detalhe.html',
+        {
+            'object': obj,
+            'mode_meta': _termo_mode_meta(obj.modo_geracao),
+            'process_status': _termo_status_meta(obj),
+            'context_display': _termo_context_display(obj),
+            'lote_objects': related_lote,
+        },
+    )
+
+
+@require_http_methods(['GET', 'POST'])
+def termo_autorizacao_editar(request, pk):
+    obj = get_object_or_404(
+        TermoAutorizacao.objects.select_related('evento', 'oficio', 'roteiro', 'viajante', 'veiculo'),
+        pk=pk,
+    )
+    return_to = _get_safe_return_to(request, reverse('eventos:documentos-termos'))
+    context_source = _get_context_source(request)
+    form = TermoAutorizacaoEdicaoForm(request.POST or None, instance=obj)
+    if request.method == 'POST' and form.is_valid():
+        form.save()
+        messages.success(request, 'Termo atualizado com sucesso.')
+        return redirect(return_to or reverse('eventos:documentos-termos-detalhe', kwargs={'pk': obj.pk}))
+    return _render_termo_form(
+        request,
+        form=form,
+        modo_key=obj.modo_geracao,
+        object_instance=obj,
+        return_to=return_to,
+        context_source=context_source,
+        preselected_event=obj.evento,
+        preselected_oficio=obj.oficio,
+        read_only_context=True,
+    )
+
+
+@require_http_methods(['GET', 'POST'])
+def termo_autorizacao_excluir(request, pk):
+    obj = get_object_or_404(TermoAutorizacao, pk=pk)
+    return_to = _get_safe_return_to(request, reverse('eventos:documentos-termos'))
+    if request.method == 'POST':
+        obj.delete()
+        messages.success(request, 'Termo excluido com sucesso.')
+        return redirect(return_to)
+    return render(
+        request,
+        'eventos/documentos/termos_excluir.html',
+        {'object': obj, 'return_to': return_to},
+    )
+
+
+@require_http_methods(['GET'])
+def termo_autorizacao_download(request, pk, formato):
+    obj = get_object_or_404(
+        TermoAutorizacao.objects.select_related('viajante', 'veiculo', 'veiculo__combustivel'),
+        pk=pk,
+    )
+    formato = _clean(formato).lower()
+    if formato not in {DocumentoFormato.DOCX.value, DocumentoFormato.PDF.value}:
+        raise Http404('Formato invalido.')
+    docx_bytes = render_saved_termo_autorizacao_docx(obj)
+    payload = docx_bytes
+    content_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    if formato == DocumentoFormato.PDF.value:
+        payload = convert_docx_bytes_to_pdf_bytes(docx_bytes)
+        content_type = 'application/pdf'
+    obj.ultima_geracao_em = timezone.now()
+    obj.ultimo_formato_gerado = formato
+    obj.save(update_fields=['ultima_geracao_em', 'ultimo_formato_gerado', 'updated_at'])
+    response = HttpResponse(payload, content_type=content_type)
+    response['Content-Disposition'] = (
+        f'attachment; filename="{_build_saved_termo_filename(obj, formato)}"'
+    )
+    return response

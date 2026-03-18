@@ -15,7 +15,6 @@ from eventos.services.diarias import (
     calculate_periodized_diarias,
     valor_por_extenso_ptbr,
 )
-from eventos.services.oficio_schema import oficio_justificativa_schema_available
 from eventos.services.justificativa import (
     get_dias_antecedencia_oficio,
     get_prazo_justificativa_dias,
@@ -227,9 +226,10 @@ def _build_custeio_context(oficio):
 
 
 def _get_oficio_justificativa_texto(oficio):
-    if not oficio_justificativa_schema_available():
+    try:
+        return _text_or_empty(oficio.justificativa.texto)
+    except Exception:
         return ''
-    return _text_or_empty(oficio.justificativa_texto)
 
 
 def get_assinaturas_documento(tipo_documento):

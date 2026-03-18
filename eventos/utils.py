@@ -5,7 +5,7 @@ import re
 
 from django.db.models import Q
 
-from cadastros.models import Veiculo
+from cadastros.models import Viajante, Veiculo
 from core.utils.masks import (
     format_placa,
     format_protocolo,
@@ -70,6 +70,22 @@ def buscar_veiculo_finalizado_por_placa(placa):
     )
 
 
+def buscar_viajantes_finalizados(termo, limit=20):
+    """Busca viajantes finalizados por nome, RG ou CPF."""
+    termo_limpo = str(termo or '').strip()
+    if not termo_limpo:
+        return []
+
+    queryset = Viajante.objects.select_related('cargo').filter(status=Viajante.STATUS_FINALIZADO)
+    digits = only_digits(termo_limpo)
+    filtros = Q(nome__icontains=termo_limpo)
+    if digits:
+        filtros |= Q(rg__icontains=digits) | Q(cpf__icontains=digits)
+    else:
+        filtros |= Q(rg__icontains=termo_limpo) | Q(cpf__icontains=termo_limpo)
+    return list(queryset.filter(filtros).order_by('nome')[:limit])
+
+
 def buscar_veiculos_finalizados(termo, limit=10):
     """Busca viaturas finalizadas por placa ou modelo para o Step 2 do ofício."""
     termo_limpo = str(termo or '').strip()
@@ -82,6 +98,31 @@ def buscar_veiculos_finalizados(termo, limit=10):
     if termo_placa:
         filtros |= Q(placa__icontains=termo_placa)
     return list(queryset.filter(filtros).order_by('placa', 'modelo')[:limit])
+
+
+def serializar_viajante_para_autocomplete(viajante):
+    """Serializa o viajante no formato usado pelos autocompletes documentais."""
+    nome = (getattr(viajante, 'nome', '') or '').strip()
+    rg = getattr(viajante, 'rg_formatado', '') or getattr(viajante, 'rg', '') or ''
+    cpf = getattr(viajante, 'cpf_formatado', '') or getattr(viajante, 'cpf', '') or ''
+    cargo = getattr(getattr(viajante, 'cargo', None), 'nome', '') or ''
+    detalhes = []
+    if rg:
+        detalhes.append(f'RG: {rg}')
+    if cpf:
+        detalhes.append(f'CPF: {cpf}')
+    label = nome
+    if detalhes:
+        label = f"{nome} - {' | '.join(detalhes)}"
+    return {
+        'id': viajante.pk,
+        'nome': nome,
+        'label': label,
+        'text': label,
+        'rg': rg,
+        'cpf': cpf,
+        'cargo': cargo,
+    }
 
 
 def serializar_veiculo_para_oficio(veiculo):

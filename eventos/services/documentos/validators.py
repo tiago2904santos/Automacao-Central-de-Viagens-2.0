@@ -1,5 +1,3 @@
-from eventos.services.oficio_schema import get_oficio_justificativa_schema_status
-
 from .backends import get_document_backend_availability
 from .context import (
     build_justificativa_document_context,
@@ -96,7 +94,11 @@ def _validate_oficio_document(oficio):
 def _validate_justificativa_document(oficio):
     context = build_justificativa_document_context(oficio)
     errors = []
-    if not (oficio.justificativa_texto or '').strip():
+    try:
+        texto = (oficio.justificativa.texto or '').strip()
+    except Exception:
+        texto = ''
+    if not texto:
         errors.append('Preencha o texto da justificativa antes de gerar o documento.')
     errors.extend(
         _build_signature_and_config_errors(
@@ -183,9 +185,6 @@ def _validate_ordem_servico_document(oficio):
 
 def validate_oficio_for_document_generation(oficio, tipo_documento):
     meta = get_document_type_meta(tipo_documento)
-    schema_status = get_oficio_justificativa_schema_status()
-    if not schema_status['available']:
-        return _normalize_validation([schema_status['message']])
     if meta.tipo == DocumentoOficioTipo.OFICIO:
         return _validate_oficio_document(oficio)
     if meta.tipo == DocumentoOficioTipo.JUSTIFICATIVA:
@@ -215,15 +214,6 @@ def get_document_generation_status(oficio, tipo_documento, formato=DocumentoForm
             'status': 'unavailable',
             'ok': False,
             'errors': [f'Formato {formato.value.upper()} ainda não disponível nesta fase.'],
-            'format': formato.value,
-            'meta': meta,
-        }
-    schema_status = get_oficio_justificativa_schema_status()
-    if not schema_status['available']:
-        return {
-            'status': 'unavailable',
-            'ok': False,
-            'errors': [schema_status['message']],
             'format': formato.value,
             'meta': meta,
         }

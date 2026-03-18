@@ -1,3 +1,5 @@
+from types import SimpleNamespace
+
 from cadastros.models import ConfiguracaoSistema
 from eventos.services.justificativa import get_primeira_saida_oficio
 
@@ -182,6 +184,8 @@ def _build_termo_placeholder_mapping(
     viatura_data,
     viajante=None,
     institucional=None,
+    texto_complementar='',
+    observacoes='',
 ):
     unidade = (
         (institucional or {}).get('unidade')
@@ -201,6 +205,8 @@ def _build_termo_placeholder_mapping(
         'email': (institucional or {}).get('email') or '',
         'endereco': (institucional or {}).get('endereco') or '',
         'telefone_institucional': (institucional or {}).get('telefone') or '',
+        'texto_complementar': texto_complementar or '',
+        'observacoes': observacoes or '',
     }
     mapping.update(_build_viajante_mapping(viajante, modalidade))
     return mapping
@@ -288,6 +294,8 @@ def build_termo_autorizacao_template_context(oficio, modalidade=TERMO_MODALIDADE
         viatura_data=viatura_data,
         viajante=viajante,
         institucional=context.get('institucional') or {},
+        texto_complementar='',
+        observacoes='',
     )
     return mapping, viatura_data
 
@@ -357,6 +365,8 @@ def render_evento_participante_termo_docx(evento, viajante, modalidade, oficios_
         viatura_data=viatura_data,
         viajante=viajante,
         institucional=institucional,
+        texto_complementar='',
+        observacoes='',
     )
     template_variant = _resolve_termo_template_variant(modalidade, viatura_data['has_viatura'])
     template_path = get_termo_autorizacao_template_path(template_variant)
@@ -381,8 +391,74 @@ def render_evento_termo_padrao_branco_docx(evento, veiculo_override=None):
         viatura_data=viatura_data,
         viajante=None,
         institucional=_build_institucional_context(),
+        texto_complementar='',
+        observacoes='',
     )
     template_path = get_termo_autorizacao_template_path('SEMIPREENCHIDO')
+    return render_docx_template_bytes(
+        template_path,
+        mapping,
+        post_processor=lambda document: _post_process_termo(document, mapping, viatura_data),
+    )
+
+
+def _build_saved_termo_viajante_snapshot(termo):
+    if getattr(termo, 'viajante_id', None) and getattr(termo, 'viajante', None):
+        return termo.viajante
+    if not any(
+        [
+            getattr(termo, 'servidor_nome', ''),
+            getattr(termo, 'servidor_rg', ''),
+            getattr(termo, 'servidor_cpf', ''),
+            getattr(termo, 'servidor_telefone', ''),
+            getattr(termo, 'servidor_lotacao', ''),
+        ]
+    ):
+        return None
+    unidade = None
+    if getattr(termo, 'servidor_lotacao', ''):
+        unidade = SimpleNamespace(nome=getattr(termo, 'servidor_lotacao', ''))
+    return SimpleNamespace(
+        nome=getattr(termo, 'servidor_nome', ''),
+        rg=getattr(termo, 'servidor_rg', ''),
+        cpf=getattr(termo, 'servidor_cpf', ''),
+        telefone=getattr(termo, 'servidor_telefone', ''),
+        unidade_lotacao=unidade,
+    )
+
+
+def build_saved_termo_autorizacao_template_context(termo):
+    modalidade = (
+        TERMO_MODALIDADE_SEMIPREENCHIDO
+        if getattr(termo, 'modo_geracao', '') == 'RAPIDO'
+        else TERMO_MODALIDADE_COMPLETO
+    )
+    data_do_evento = _build_data_do_evento_from_dates(
+        getattr(termo, 'data_evento', None),
+        getattr(termo, 'data_evento_fim', None) or getattr(termo, 'data_evento', None),
+    )
+    viatura_data = _extract_viatura_data(
+        placa=getattr(termo, 'veiculo_placa', ''),
+        modelo=getattr(termo, 'veiculo_modelo', ''),
+        combustivel=getattr(termo, 'veiculo_combustivel', ''),
+    )
+    mapping = _build_termo_placeholder_mapping(
+        modalidade=modalidade,
+        data_do_evento=data_do_evento,
+        destino=getattr(termo, 'destino', ''),
+        viatura_data=viatura_data,
+        viajante=_build_saved_termo_viajante_snapshot(termo),
+        institucional=_build_institucional_context(),
+        texto_complementar=getattr(termo, 'texto_complementar', ''),
+        observacoes=getattr(termo, 'observacoes', ''),
+    )
+    template_variant = getattr(termo, 'template_variant', '') or 'SEMIPREENCHIDO'
+    return mapping, viatura_data, template_variant
+
+
+def render_saved_termo_autorizacao_docx(termo):
+    mapping, viatura_data, template_variant = build_saved_termo_autorizacao_template_context(termo)
+    template_path = get_termo_autorizacao_template_path(template_variant)
     return render_docx_template_bytes(
         template_path,
         mapping,

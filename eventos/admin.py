@@ -13,6 +13,7 @@ from .models import (
     PlanoTrabalho,
     EfetivoPlanoTrabalhoDocumento,
     SolicitantePlanoTrabalho,
+    TermoAutorizacao,
 )
 
 
@@ -105,6 +106,25 @@ class DocumentoAvulsoAdmin(admin.ModelAdmin):
     list_filter = ('tipo_documento', 'classificacao')
     search_fields = ('titulo',)
     raw_id_fields = ('evento', 'roteiro', 'plano_trabalho', 'ordem_servico', 'oficio', 'criado_por')
+    ordering = ('-updated_at',)
+
+
+@admin.register(TermoAutorizacao)
+class TermoAutorizacaoAdmin(admin.ModelAdmin):
+    list_display = (
+        'id',
+        'numero_formatado',
+        'modo_geracao',
+        'status',
+        'servidor_display',
+        'destino',
+        'evento',
+        'oficio',
+        'updated_at',
+    )
+    list_filter = ('modo_geracao', 'status')
+    search_fields = ('servidor_nome', 'destino', 'texto_complementar', 'observacoes')
+    raw_id_fields = ('evento', 'roteiro', 'oficio', 'viajante', 'veiculo', 'criado_por')
     ordering = ('-updated_at',)
 
 

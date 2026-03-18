@@ -1,7 +1,6 @@
 from datetime import datetime
 
 from cadastros.models import ConfiguracaoSistema
-from eventos.services.oficio_schema import oficio_justificativa_schema_available
 
 
 DEFAULT_PRAZO_JUSTIFICATIVA_DIAS = 10
@@ -48,6 +47,7 @@ def oficio_exige_justificativa(oficio):
 
 
 def oficio_tem_justificativa(oficio):
-    if not oficio_justificativa_schema_available():
+    try:
+        return bool((oficio.justificativa.texto or '').strip())
+    except Exception:
         return False
-    return bool((oficio.justificativa_texto or '').strip())

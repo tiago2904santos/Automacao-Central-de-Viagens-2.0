@@ -1,4 +1,5 @@
 import json
+import uuid
 
 from django import forms
 from django.db.models import Q
@@ -18,6 +19,7 @@ from .models import (
     PlanoTrabalho,
     RoteiroEvento,
     SolicitantePlanoTrabalho,
+    TermoAutorizacao,
     CoordenadorOperacional,
     TipoDemandaEvento,
 )
@@ -390,6 +392,209 @@ class DocumentoAvulsoForm(FormComErroInvalidMixin, forms.ModelForm):
             instance.save()
         return instance
 
+
+def _parse_hidden_ids(raw_value):
+    ids = []
+    seen = set()
+    for item in str(raw_value or '').split(','):
+        value = item.strip()
+        if not value.isdigit() or value in seen:
+            continue
+        seen.add(value)
+        ids.append(int(value))
+    return ids
+
+
+class TermoAutorizacaoBaseForm(FormComErroInvalidMixin, forms.ModelForm):
+    class Meta:
+        model = TermoAutorizacao
+        fields = [
+            'evento',
+            'oficio',
+            'roteiro',
+            'destino',
+            'data_evento',
+            'data_evento_fim',
+            'texto_complementar',
+            'observacoes',
+        ]
+        widgets = {
+            'evento': forms.Select(attrs={'class': 'form-select'}),
+            'oficio': forms.Select(attrs={'class': 'form-select'}),
+            'roteiro': forms.Select(attrs={'class': 'form-select'}),
+            'destino': forms.TextInput(attrs={'class': 'form-control', 'placeholder': 'Curitiba/PR, Londrina/PR...'}),
+            'data_evento': forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
+            'data_evento_fim': forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
+            'texto_complementar': forms.Textarea(attrs={'class': 'form-control', 'rows': 4}),
+            'observacoes': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
+        }
+
+    modo_geracao = TermoAutorizacao.MODO_RAPIDO
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['evento'].required = False
+        self.fields['oficio'].required = False
+        self.fields['roteiro'].required = False
+        self.fields['data_evento_fim'].required = False
+        self.fields['texto_complementar'].required = False
+        self.fields['observacoes'].required = False
+        self.fields['evento'].queryset = Evento.objects.order_by('-data_inicio', 'titulo')
+        self.fields['oficio'].queryset = Oficio.objects.select_related('evento').order_by('-updated_at')
+        self.fields['roteiro'].queryset = RoteiroEvento.objects.select_related('evento').order_by('-updated_at')
+
+    def clean(self):
+        data = super().clean()
+        if not data.get('destino'):
+            self.add_error('destino', 'Informe o destino do termo.')
+        if not data.get('data_evento'):
+            self.add_error('data_evento', 'Informe a data do evento.')
+        return data
+
+    def _build_instance(self):
+        instance = self.save(commit=False)
+        instance.modo_geracao = self.modo_geracao
+        return instance
+
+
+class TermoAutorizacaoRapidoForm(TermoAutorizacaoBaseForm):
+    modo_geracao = TermoAutorizacao.MODO_RAPIDO
+
+    def save_term(self, *, user=None):
+        instance = self._build_instance()
+        if user and not instance.criado_por_id:
+            instance.criado_por = user
+        instance.viajante = None
+        instance.veiculo = None
+        instance.servidor_nome = ''
+        instance.servidor_rg = ''
+        instance.servidor_cpf = ''
+        instance.servidor_telefone = ''
+        instance.servidor_lotacao = ''
+        instance.veiculo_placa = ''
+        instance.veiculo_modelo = ''
+        instance.veiculo_combustivel = ''
+        instance.full_clean()
+        instance.save()
+        return instance
+
+
+class TermoAutorizacaoAutomaticoBaseForm(TermoAutorizacaoBaseForm):
+    viajantes_ids = forms.CharField(required=False, widget=forms.HiddenInput())
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cleaned_viajantes = []
+
+    def clean(self):
+        data = super().clean()
+        viajantes_ids = _parse_hidden_ids(data.get('viajantes_ids'))
+        self.cleaned_viajantes = list(
+            Viajante.objects.select_related('cargo', 'unidade_lotacao').filter(
+                status=Viajante.STATUS_FINALIZADO,
+                pk__in=viajantes_ids,
+            )
+        )
+        viajantes_por_id = {viajante.pk: viajante for viajante in self.cleaned_viajantes}
+        self.cleaned_viajantes = [
+            viajantes_por_id[pk] for pk in viajantes_ids if pk in viajantes_por_id
+        ]
+        if not self.cleaned_viajantes:
+            self.add_error('viajantes_ids', 'Selecione ao menos um servidor.')
+        return data
+
+    def _build_terms(self, *, user=None, veiculo=None):
+        base = self._build_instance()
+        lote_uuid = uuid.uuid4()
+        termos = []
+        for viajante in self.cleaned_viajantes:
+            termo = TermoAutorizacao(
+                modo_geracao=self.modo_geracao,
+                evento=base.evento,
+                oficio=base.oficio,
+                roteiro=base.roteiro,
+                viajante=viajante,
+                veiculo=veiculo,
+                destino=base.destino,
+                data_evento=base.data_evento,
+                data_evento_fim=base.data_evento_fim,
+                texto_complementar=base.texto_complementar,
+                observacoes=base.observacoes,
+                criado_por=user or base.criado_por,
+                lote_uuid=lote_uuid,
+            )
+            termo.full_clean()
+            termo.save()
+            termos.append(termo)
+        return termos
+
+
+class TermoAutorizacaoAutomaticoComViaturaForm(TermoAutorizacaoAutomaticoBaseForm):
+    modo_geracao = TermoAutorizacao.MODO_AUTOMATICO_COM_VIATURA
+    veiculo_id = forms.CharField(required=False, widget=forms.HiddenInput())
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.cleaned_veiculo = None
+
+    def clean(self):
+        data = super().clean()
+        veiculo_id = str(data.get('veiculo_id') or '').strip()
+        if veiculo_id.isdigit():
+            self.cleaned_veiculo = Veiculo.objects.select_related('combustivel').filter(
+                status=Veiculo.STATUS_FINALIZADO,
+                pk=int(veiculo_id),
+            ).first()
+        if not self.cleaned_veiculo:
+            self.add_error('veiculo_id', 'Selecione uma viatura.')
+        return data
+
+    def save_batch(self, *, user=None):
+        return self._build_terms(user=user, veiculo=self.cleaned_veiculo)
+
+
+class TermoAutorizacaoAutomaticoSemViaturaForm(TermoAutorizacaoAutomaticoBaseForm):
+    modo_geracao = TermoAutorizacao.MODO_AUTOMATICO_SEM_VIATURA
+
+    def save_batch(self, *, user=None):
+        return self._build_terms(user=user, veiculo=None)
+
+
+class TermoAutorizacaoEdicaoForm(FormComErroInvalidMixin, forms.ModelForm):
+    class Meta:
+        model = TermoAutorizacao
+        fields = [
+            'evento',
+            'oficio',
+            'roteiro',
+            'destino',
+            'data_evento',
+            'data_evento_fim',
+            'texto_complementar',
+            'observacoes',
+        ]
+        widgets = {
+            'evento': forms.Select(attrs={'class': 'form-select'}),
+            'oficio': forms.Select(attrs={'class': 'form-select'}),
+            'roteiro': forms.Select(attrs={'class': 'form-select'}),
+            'destino': forms.TextInput(attrs={'class': 'form-control'}),
+            'data_evento': forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
+            'data_evento_fim': forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
+            'texto_complementar': forms.Textarea(attrs={'class': 'form-control', 'rows': 4}),
+            'observacoes': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['evento'].required = False
+        self.fields['oficio'].required = False
+        self.fields['roteiro'].required = False
+        self.fields['data_evento_fim'].required = False
+        self.fields['texto_complementar'].required = False
+        self.fields['observacoes'].required = False
+        self.fields['evento'].queryset = Evento.objects.order_by('-data_inicio', 'titulo')
+        self.fields['oficio'].queryset = Oficio.objects.select_related('evento').order_by('-updated_at')
+        self.fields['roteiro'].queryset = RoteiroEvento.objects.select_related('evento').order_by('-updated_at')
 
 class TipoDemandaEventoForm(FormComErroInvalidMixin, forms.ModelForm):
     """CRUD de tipos de demanda para eventos."""

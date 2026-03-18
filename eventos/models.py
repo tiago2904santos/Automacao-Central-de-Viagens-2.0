@@ -1,3 +1,5 @@
+import uuid
+
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import IntegrityError, models, transaction
@@ -703,6 +705,275 @@ class DocumentoAvulso(models.Model):
         super().save(*args, **kwargs)
 
 
+class TermoAutorizacao(models.Model):
+    """Documento real de termo de autorizacao."""
+
+    MODO_RAPIDO = 'RAPIDO'
+    MODO_AUTOMATICO_COM_VIATURA = 'AUTOMATICO_COM_VIATURA'
+    MODO_AUTOMATICO_SEM_VIATURA = 'AUTOMATICO_SEM_VIATURA'
+    MODO_CHOICES = [
+        (MODO_RAPIDO, 'Termo rapido'),
+        (MODO_AUTOMATICO_COM_VIATURA, 'Automatico com viatura'),
+        (MODO_AUTOMATICO_SEM_VIATURA, 'Automatico sem viatura'),
+    ]
+
+    STATUS_RASCUNHO = 'RASCUNHO'
+    STATUS_GERADO = 'GERADO'
+    STATUS_CHOICES = [
+        (STATUS_RASCUNHO, 'Rascunho'),
+        (STATUS_GERADO, 'Gerado'),
+    ]
+
+    modo_geracao = models.CharField(
+        'Modo de geracao',
+        max_length=40,
+        choices=MODO_CHOICES,
+        default=MODO_RAPIDO,
+        db_index=True,
+    )
+    template_variant = models.CharField(
+        'Template usado',
+        max_length=30,
+        choices=DocumentoAvulso.TERMO_TEMPLATE_CHOICES,
+        default=DocumentoAvulso.TERMO_TEMPLATE_SEMIPREENCHIDO,
+    )
+    status = models.CharField(
+        'Status',
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_RASCUNHO,
+        db_index=True,
+    )
+    lote_uuid = models.UUIDField('Lote de geracao', null=True, blank=True, editable=False, db_index=True)
+    evento = models.ForeignKey(
+        Evento,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='termos_autorizacao',
+        verbose_name='Evento',
+    )
+    roteiro = models.ForeignKey(
+        'RoteiroEvento',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='termos_autorizacao',
+        verbose_name='Roteiro',
+    )
+    oficio = models.ForeignKey(
+        'Oficio',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='termos_autorizacao',
+        verbose_name='Oficio',
+    )
+    viajante = models.ForeignKey(
+        'cadastros.Viajante',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='termos_autorizacao',
+        verbose_name='Servidor',
+    )
+    veiculo = models.ForeignKey(
+        'cadastros.Veiculo',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='termos_autorizacao',
+        verbose_name='Viatura',
+    )
+    destino = models.CharField('Destino', max_length=255, blank=True, default='')
+    data_evento = models.DateField('Data do evento', null=True, blank=True, db_index=True)
+    data_evento_fim = models.DateField('Data final do evento', null=True, blank=True)
+    texto_complementar = models.TextField('Texto complementar', blank=True, default='')
+    observacoes = models.TextField('Observacoes', blank=True, default='')
+    servidor_nome = models.CharField('Servidor (snapshot)', max_length=255, blank=True, default='')
+    servidor_rg = models.CharField('RG (snapshot)', max_length=40, blank=True, default='')
+    servidor_cpf = models.CharField('CPF (snapshot)', max_length=40, blank=True, default='')
+    servidor_telefone = models.CharField('Telefone (snapshot)', max_length=40, blank=True, default='')
+    servidor_lotacao = models.CharField('Lotacao (snapshot)', max_length=255, blank=True, default='')
+    veiculo_placa = models.CharField('Placa (snapshot)', max_length=12, blank=True, default='')
+    veiculo_modelo = models.CharField('Modelo (snapshot)', max_length=120, blank=True, default='')
+    veiculo_combustivel = models.CharField('Combustivel (snapshot)', max_length=80, blank=True, default='')
+    criado_por = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='termos_autorizacao_criados',
+        verbose_name='Criado por',
+    )
+    ultima_geracao_em = models.DateTimeField('Ultima geracao em', null=True, blank=True)
+    ultimo_formato_gerado = models.CharField(
+        'Ultimo formato gerado',
+        max_length=10,
+        choices=EventoTermoParticipante.FORMATO_CHOICES,
+        blank=True,
+        default='',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at', '-created_at']
+        verbose_name = 'Termo de autorizacao'
+        verbose_name_plural = 'Termos de autorizacao'
+
+    def __str__(self):
+        return self.numero_formatado
+
+    @property
+    def numero_formatado(self):
+        if not self.pk:
+            return 'TA (novo)'
+        return f'TA-{self.pk:04d}'
+
+    @property
+    def servidor_display(self):
+        if self.viajante_id and getattr(self.viajante, 'nome', ''):
+            return (self.viajante.nome or '').strip()
+        return (self.servidor_nome or '').strip()
+
+    @property
+    def viatura_display(self):
+        partes = []
+        placa = (self.veiculo_placa or '').strip()
+        modelo = (self.veiculo_modelo or '').strip()
+        if placa:
+            partes.append(format_placa(placa))
+        if modelo:
+            partes.append(modelo)
+        if partes:
+            return ' - '.join(partes)
+        if self.veiculo_id:
+            return format_placa(getattr(self.veiculo, 'placa', '')) or getattr(self.veiculo, 'modelo', '')
+        return ''
+
+    @property
+    def periodo_display(self):
+        if not self.data_evento:
+            return ''
+        if self.data_evento_fim and self.data_evento_fim != self.data_evento:
+            return f'{self.data_evento:%d/%m/%Y} a {self.data_evento_fim:%d/%m/%Y}'
+        return f'{self.data_evento:%d/%m/%Y}'
+
+    @classmethod
+    def template_variant_for_mode(cls, modo):
+        normalized = (modo or '').strip().upper()
+        if normalized == cls.MODO_AUTOMATICO_COM_VIATURA:
+            return DocumentoAvulso.TERMO_TEMPLATE_COMPLETO_COM_VIATURA
+        if normalized == cls.MODO_AUTOMATICO_SEM_VIATURA:
+            return DocumentoAvulso.TERMO_TEMPLATE_COMPLETO_SEM_VIATURA
+        return DocumentoAvulso.TERMO_TEMPLATE_SEMIPREENCHIDO
+
+    def _sync_context_relations(self):
+        if self.oficio_id:
+            if not self.evento_id and self.oficio.evento_id:
+                self.evento = self.oficio.evento
+            if not self.roteiro_id and self.oficio.roteiro_evento_id:
+                self.roteiro = self.oficio.roteiro_evento
+        if self.roteiro_id and not self.evento_id and self.roteiro.evento_id:
+            self.evento = self.roteiro.evento
+
+    def populate_snapshots_from_relations(self, force=False):
+        viajante = self.viajante
+        if viajante:
+            if force or not self.servidor_nome:
+                self.servidor_nome = (getattr(viajante, 'nome', '') or '').strip()
+            if force or not self.servidor_rg:
+                self.servidor_rg = (
+                    getattr(viajante, 'rg_formatado', '') or getattr(viajante, 'rg', '') or ''
+                ).strip()
+            if force or not self.servidor_cpf:
+                self.servidor_cpf = (
+                    getattr(viajante, 'cpf_formatado', '') or getattr(viajante, 'cpf', '') or ''
+                ).strip()
+            if force or not self.servidor_telefone:
+                self.servidor_telefone = (
+                    getattr(viajante, 'telefone_formatado', '') or getattr(viajante, 'telefone', '') or ''
+                ).strip()
+            if force or not self.servidor_lotacao:
+                self.servidor_lotacao = (
+                    getattr(getattr(viajante, 'unidade_lotacao', None), 'nome', '') or ''
+                ).strip()
+        veiculo = self.veiculo
+        if veiculo:
+            if force or not self.veiculo_placa:
+                self.veiculo_placa = (getattr(veiculo, 'placa', '') or '').strip()
+            if force or not self.veiculo_modelo:
+                self.veiculo_modelo = (getattr(veiculo, 'modelo', '') or '').strip()
+            if force or not self.veiculo_combustivel:
+                self.veiculo_combustivel = (
+                    getattr(getattr(veiculo, 'combustivel', None), 'nome', '') or ''
+                ).strip()
+
+    def is_ready_for_generation(self):
+        if not (self.destino or '').strip():
+            return False
+        if not self.data_evento:
+            return False
+        if self.modo_geracao == self.MODO_AUTOMATICO_COM_VIATURA:
+            return bool((self.servidor_display or '').strip() and (self.viatura_display or '').strip())
+        if self.modo_geracao == self.MODO_AUTOMATICO_SEM_VIATURA:
+            return bool((self.servidor_display or '').strip())
+        return True
+
+    def clean(self):
+        self._sync_context_relations()
+        self.destino = (self.destino or '').strip()
+        self.texto_complementar = (self.texto_complementar or '').strip()
+        self.observacoes = (self.observacoes or '').strip()
+        self.servidor_nome = (self.servidor_nome or '').strip()
+        self.servidor_rg = (self.servidor_rg or '').strip()
+        self.servidor_cpf = (self.servidor_cpf or '').strip()
+        self.servidor_telefone = (self.servidor_telefone or '').strip()
+        self.servidor_lotacao = (self.servidor_lotacao or '').strip()
+        self.veiculo_placa = (self.veiculo_placa or '').strip().upper()
+        self.veiculo_modelo = (self.veiculo_modelo or '').strip()
+        self.veiculo_combustivel = (self.veiculo_combustivel or '').strip()
+
+        errors = {}
+        if self.data_evento and self.data_evento_fim and self.data_evento_fim < self.data_evento:
+            errors['data_evento_fim'] = 'A data final nao pode ser anterior a data inicial.'
+        if self.oficio_id and self.evento_id and self.oficio.evento_id and self.oficio.evento_id != self.evento_id:
+            errors['oficio'] = 'O oficio informado pertence a outro evento.'
+        if self.roteiro_id and self.evento_id and self.roteiro.evento_id and self.roteiro.evento_id != self.evento_id:
+            errors['roteiro'] = 'O roteiro informado pertence a outro evento.'
+        if self.oficio_id and self.roteiro_id:
+            roteiro_oficio_id = getattr(self.oficio, 'roteiro_evento_id', None)
+            if roteiro_oficio_id and roteiro_oficio_id != self.roteiro_id:
+                errors['roteiro'] = 'O roteiro informado nao corresponde ao roteiro do oficio.'
+        if self.modo_geracao == self.MODO_RAPIDO and (self.veiculo_id or self.veiculo_placa or self.veiculo_modelo):
+            errors['veiculo'] = 'O termo rapido nao usa viatura.'
+        if self.modo_geracao == self.MODO_AUTOMATICO_SEM_VIATURA and (
+            self.veiculo_id or self.veiculo_placa or self.veiculo_modelo
+        ):
+            errors['veiculo'] = 'Este modo nao permite viatura.'
+        if self.modo_geracao == self.MODO_AUTOMATICO_COM_VIATURA and not (
+            self.veiculo_id or self.veiculo_placa or self.veiculo_modelo
+        ):
+            errors['veiculo'] = 'Selecione uma viatura para este modo.'
+        if self.modo_geracao in {
+            self.MODO_AUTOMATICO_COM_VIATURA,
+            self.MODO_AUTOMATICO_SEM_VIATURA,
+        } and not ((self.servidor_display or '').strip()):
+            errors['viajante'] = 'Selecione um servidor para este modo.'
+        if errors:
+            raise ValidationError(errors)
+
+    def save(self, *args, **kwargs):
+        self._sync_context_relations()
+        self.template_variant = self.template_variant_for_mode(self.modo_geracao)
+        self.populate_snapshots_from_relations()
+        if self.modo_geracao != self.MODO_RAPIDO and not self.lote_uuid:
+            self.lote_uuid = uuid.uuid4()
+        self.status = self.STATUS_GERADO if self.is_ready_for_generation() else self.STATUS_RASCUNHO
+        super().save(*args, **kwargs)
+
+
 class ModeloMotivoViagem(models.Model):
     """
     Modelos reutilizáveis de motivo de viagem.
@@ -878,16 +1149,7 @@ class Oficio(models.Model):
         ModeloMotivoViagem, on_delete=models.SET_NULL, null=True, blank=True,
         related_name='oficios', verbose_name='Modelo de motivo'
     )
-    justificativa_modelo = models.ForeignKey(
-        ModeloJustificativa,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='oficios',
-        verbose_name='Modelo de justificativa',
-    )
     motivo = models.TextField('Motivo', blank=True, default='')
-    justificativa_texto = models.TextField('Justificativa', blank=True, default='')
     gerar_termo_preenchido = models.BooleanField(
         'Gerar termo de autorização preenchido',
         default=False,
@@ -1208,6 +1470,39 @@ class OficioTrecho(models.Model):
         adicional = self.tempo_adicional_min or 0
         total = cru + adicional
         return total if total > 0 else (self.duracao_estimada_min or None)
+
+
+class Justificativa(models.Model):
+    """
+    Justificativa documental do Ofício.
+    Extensão 1:1 obrigatória — cada Ofício tem no máximo uma Justificativa.
+    """
+
+    oficio = models.OneToOneField(
+        Oficio,
+        on_delete=models.CASCADE,
+        related_name='justificativa',
+        verbose_name='Ofício',
+    )
+    modelo = models.ForeignKey(
+        ModeloJustificativa,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='justificativas',
+        verbose_name='Modelo de justificativa',
+    )
+    texto = models.TextField('Texto da justificativa', blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Justificativa'
+        verbose_name_plural = 'Justificativas'
+        ordering = ['-updated_at', '-created_at']
+
+    def __str__(self):
+        return f'Justificativa do {self.oficio}'
 
 
 class EventoDestino(models.Model):

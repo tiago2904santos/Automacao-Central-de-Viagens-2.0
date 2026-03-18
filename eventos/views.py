@@ -27,6 +27,7 @@ from .models import (
     EventoFinalizacao,
     EventoParticipante,
     EventoTermoParticipante,
+    Justificativa,
     ModeloJustificativa,
     ModeloMotivoViagem,
     OrdemServico,
@@ -92,6 +93,14 @@ from .services.documentos.termo_autorizacao import (
     render_evento_termo_padrao_branco_docx,
     render_evento_participante_termo_docx,
     validate_evento_participante_termo_data,
+)
+from .utils import (
+    buscar_viajantes_finalizados,
+    buscar_veiculo_finalizado_por_placa,
+    buscar_veiculos_finalizados,
+    mapear_tipo_viatura_para_oficio,
+    serializar_viajante_para_autocomplete,
+    serializar_veiculo_para_oficio,
 )
 
 
@@ -1251,8 +1260,6 @@ def guiado_etapa_3(request, evento_id):
     """Ofícios do evento (Etapa 5): listar ofícios, criar novo, editar (wizard)."""
     evento = get_object_or_404(Evento, pk=evento_id)
     oficios_qs = evento.oficios.prefetch_related('trechos').order_by('ano', 'numero', 'id')
-    if not get_oficio_justificativa_schema_status()['available']:
-        oficios_qs = oficios_qs.defer('justificativa_modelo', 'justificativa_texto')
     oficios = list(oficios_qs)
     for oficio in oficios:
         oficio.justificativa_info = _build_oficio_justificativa_info(oficio)
@@ -1875,10 +1882,6 @@ def _get_oficio_or_404_for_user(pk, user=None):
         'roteiro_evento',
         'carona_oficio_referencia',
     )
-    if get_oficio_justificativa_schema_status()['available']:
-        queryset = queryset.select_related('justificativa_modelo')
-    else:
-        queryset = queryset.defer('justificativa_modelo', 'justificativa_texto')
     return get_object_or_404(queryset, pk=pk)
 
 
@@ -1999,27 +2002,7 @@ def _carregar_viajantes_por_ids(viajantes_ids):
 
 
 def _serializar_viajante_oficio(viajante):
-    nome = (viajante.nome or '').strip()
-    rg = viajante.rg_formatado or ''
-    cpf = viajante.cpf_formatado or ''
-    cargo = viajante.cargo.nome if getattr(viajante, 'cargo_id', None) and viajante.cargo else ''
-    detalhes = []
-    if rg:
-        detalhes.append(f'RG: {rg}')
-    if cpf:
-        detalhes.append(f'CPF: {cpf}')
-    label = nome
-    if detalhes:
-        label = f"{nome} - {' | '.join(detalhes)}"
-    return {
-        'id': viajante.pk,
-        'nome': nome,
-        'label': label,
-        'text': label,
-        'rg': rg,
-        'cpf': cpf,
-        'cargo': cargo,
-    }
+    return serializar_viajante_para_autocomplete(viajante)
 
 
 def _build_custeio_preview_text(custeio_tipo, nome_instituicao=''):
@@ -2125,18 +2108,9 @@ def _autosave_oficio_step1(oficio, request):
 @require_http_methods(['GET'])
 def oficio_step1_viajantes_api(request):
     q = (request.GET.get('q') or '').strip()
-    queryset = Viajante.objects.select_related('cargo').filter(status=Viajante.STATUS_FINALIZADO)
     if not q:
         return JsonResponse({'results': []})
-
-    digits = only_digits(q)
-    filtros = Q(nome__icontains=q)
-    if digits:
-        filtros |= Q(rg__icontains=digits) | Q(cpf__icontains=digits)
-    else:
-        filtros |= Q(rg__icontains=q) | Q(cpf__icontains=q)
-
-    viajantes = list(queryset.filter(filtros).order_by('nome')[:20])
+    viajantes = buscar_viajantes_finalizados(q, limit=20)
     return JsonResponse({'results': [_serializar_viajante_oficio(viajante) for viajante in viajantes]})
 
 
@@ -2144,18 +2118,9 @@ def oficio_step1_viajantes_api(request):
 @require_http_methods(['GET'])
 def oficio_step2_motoristas_api(request):
     q = (request.GET.get('q') or '').strip()
-    queryset = Viajante.objects.select_related('cargo').filter(status=Viajante.STATUS_FINALIZADO)
     if not q:
         return JsonResponse({'results': []})
-
-    digits = only_digits(q)
-    filtros = Q(nome__icontains=q)
-    if digits:
-        filtros |= Q(rg__icontains=digits) | Q(cpf__icontains=digits)
-    else:
-        filtros |= Q(rg__icontains=q) | Q(cpf__icontains=q)
-
-    motoristas = list(queryset.filter(filtros).order_by('nome')[:20])
+    motoristas = buscar_viajantes_finalizados(q, limit=20)
     return JsonResponse({'results': [_serializar_viajante_oficio(motorista) for motorista in motoristas]})
 
 
@@ -3664,17 +3629,13 @@ def _build_oficio_step3_preview(oficio, state=None, diarias_resultado=None):
 
 
 def _build_oficio_justificativa_info(oficio):
-    schema_status = get_oficio_justificativa_schema_status()
     prazo_minimo = get_prazo_justificativa_dias()
     primeira_saida = get_primeira_saida_oficio(oficio)
     dias_antecedencia = get_dias_antecedencia_oficio(oficio)
     exige = oficio_exige_justificativa(oficio)
-    preenchida = oficio_tem_justificativa(oficio) if schema_status['available'] else False
+    preenchida = oficio_tem_justificativa(oficio)
 
-    if not schema_status['available']:
-        status_key = 'indisponivel'
-        status_label = 'Indisponível'
-    elif dias_antecedencia is None:
+    if dias_antecedencia is None:
         status_key = 'indefinida'
         status_label = 'Aguardando dados válidos do Step 3'
     elif exige and not preenchida:
@@ -3690,8 +3651,8 @@ def _build_oficio_justificativa_info(oficio):
     return {
         'required': exige,
         'filled': preenchida,
-        'schema_available': schema_status['available'],
-        'schema_message': schema_status['message'],
+        'schema_available': True,
+        'schema_message': '',
         'prazo_minimo_dias': prazo_minimo,
         'dias_antecedencia': dias_antecedencia,
         'primeira_saida': primeira_saida,
@@ -3761,9 +3722,7 @@ def _validate_oficio_for_finalize(oficio):
         errors_by_section['step3'].append('Calcule e salve as diárias do Step 3.')
 
     justificativa_info = _build_oficio_justificativa_info(oficio)
-    if not justificativa_info['schema_available']:
-        errors_by_section['justificativa'].append(justificativa_info['schema_message'])
-    elif justificativa_info['required'] and not justificativa_info['filled']:
+    if justificativa_info['required'] and not justificativa_info['filled']:
         dias_antecedencia = justificativa_info['dias_antecedencia']
         prazo_minimo = justificativa_info['prazo_minimo_dias']
         if dias_antecedencia is None:
@@ -4198,16 +4157,12 @@ def oficio_step3(request, pk):
 
 def _autosave_oficio_justificativa(oficio, request):
     modelo_id = _parse_int(request.POST.get('modelo_justificativa'))
-    oficio.justificativa_modelo = (
-        ModeloJustificativa.objects.filter(pk=modelo_id).first()
-        if modelo_id
-        else None
-    )
-    oficio.justificativa_texto = (request.POST.get('justificativa_texto') or '').strip()
-    _save_oficio_preserving_status(
-        oficio,
-        ['justificativa_modelo', 'justificativa_texto'],
-    )
+    modelo = ModeloJustificativa.objects.filter(pk=modelo_id).first() if modelo_id else None
+    texto = (request.POST.get('justificativa_texto') or '').strip()
+    justificativa, _ = Justificativa.objects.get_or_create(oficio=oficio)
+    justificativa.modelo = modelo
+    justificativa.texto = texto
+    justificativa.save(update_fields=['modelo', 'texto', 'updated_at'])
     return None
 
 
@@ -4314,21 +4269,15 @@ def oficio_justificativa(request, pk):
     oficio = _get_oficio_or_404_for_user(pk, user=request.user)
     default_next_url = reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk})
     next_url = _get_safe_next_url(request, default_next_url)
-    schema_status = get_oficio_justificativa_schema_status()
-    if not schema_status['available']:
-        messages.error(request, schema_status['message'])
-        return redirect(next_url)
     if _is_autosave_request(request):
         _autosave_oficio_justificativa(oficio, request)
         return _autosave_success_response()
     form = OficioJustificativaForm(request.POST or None, oficio=oficio)
     if request.method == 'POST' and form.is_valid():
-        oficio.justificativa_modelo = form.cleaned_data.get('modelo_justificativa')
-        oficio.justificativa_texto = form.cleaned_data.get('justificativa_texto') or ''
-        _save_oficio_preserving_status(
-            oficio,
-            ['justificativa_modelo', 'justificativa_texto'],
-        )
+        justificativa, _ = Justificativa.objects.get_or_create(oficio=oficio)
+        justificativa.modelo = form.cleaned_data.get('modelo_justificativa')
+        justificativa.texto = form.cleaned_data.get('justificativa_texto') or ''
+        justificativa.save(update_fields=['modelo', 'texto', 'updated_at'])
         messages.success(request, 'Justificativa salva com sucesso.')
         return redirect(next_url)
     context = _build_oficio_justificativa_context(oficio, next_url=next_url)
@@ -5253,8 +5202,6 @@ def _autosave_oficio_step2(oficio, request):
 @require_http_methods(['GET'])
 def oficio_step2_veiculos_busca_api(request):
     """Busca viaturas finalizadas por placa/modelo para o autocomplete do Step 2."""
-    from .utils import buscar_veiculos_finalizados, serializar_veiculo_para_oficio
-
     termo = (request.GET.get('q') or request.GET.get('placa') or '').strip()
     veiculos = buscar_veiculos_finalizados(termo, limit=10)
     results = []
@@ -5273,8 +5220,6 @@ def oficio_step2_veiculos_busca_api(request):
 @require_http_methods(['GET'])
 def oficio_step2_veiculo_api(request):
     """Busca veículo finalizado por placa para autopreenchimento do Step 2."""
-    from .utils import buscar_veiculo_finalizado_por_placa, serializar_veiculo_para_oficio
-
     placa = (request.GET.get('placa') or '').strip()
     veiculo = buscar_veiculo_finalizado_por_placa(placa)
     if not veiculo:

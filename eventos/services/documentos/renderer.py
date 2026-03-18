@@ -21,13 +21,13 @@ PLACEHOLDER_RE = re.compile(r'\{\{\s*([^{}]+?)\s*\}\}')
 TEMPLATE_FILENAMES = {
     DocumentoOficioTipo.OFICIO: 'oficio_model.docx',
     DocumentoOficioTipo.JUSTIFICATIVA: 'modelo_justificativa.docx',
-    DocumentoOficioTipo.TERMO_AUTORIZACAO: 'termo_autorizacao_ascom.docx',
+    DocumentoOficioTipo.TERMO_AUTORIZACAO: 'termo_autorizacao.docx',
     DocumentoOficioTipo.ORDEM_SERVICO: 'modelo_ordem_servico.docx',
 }
 TERMO_AUTORIZACAO_TEMPLATE_VARIANTS = {
-    'COMPLETO_COM_VIATURA': 'Termo de Autorização para viagem ASCOM automatico.docx',
-    'COMPLETO_SEM_VIATURA': 'termo_autorizacao_ascom automatico sem viatura.docx',
-    'SEMIPREENCHIDO': 'termo_autorizacao_ascom.docx',
+    'COMPLETO_COM_VIATURA': 'termo_autorizacao_automatico.docx',
+    'COMPLETO_SEM_VIATURA': 'termo_autorizacao_automatico_sem_viatura.docx',
+    'SEMIPREENCHIDO': 'termo_autorizacao.docx',
 }
 
 

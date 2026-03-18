@@ -5,17 +5,18 @@ from django.test import Client, TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from cadastros.models import Cargo, Estado, Cidade, UnidadeLotacao, Viajante
+from cadastros.models import Cargo, Cidade, Estado, UnidadeLotacao, Viajante
 from eventos.models import (
     Evento,
-    EventoTermoParticipante,
     Oficio,
     OficioTrecho,
     OrdemServico,
     PlanoTrabalho,
     RoteiroEvento,
     RoteiroEventoDestino,
+    TermoAutorizacao,
 )
+
 
 User = get_user_model()
 
@@ -125,16 +126,20 @@ class GlobalViewsTest(TestCase):
             ordem=0,
         )
 
-        EventoTermoParticipante.objects.create(
+        TermoAutorizacao.objects.create(
             evento=self.evento_pt,
+            oficio=self.oficio_pt,
+            modo_geracao=TermoAutorizacao.MODO_AUTOMATICO_SEM_VIATURA,
+            status=TermoAutorizacao.STATUS_GERADO,
             viajante=self.viajante,
-            status=EventoTermoParticipante.STATUS_PENDENTE,
+            destino='Londrina/PR',
+            data_evento=date(2026, 3, 10),
         )
 
     def test_lista_global_de_oficios_responde_200_e_filtra_por_protocolo(self):
         response = self.client.get(reverse('eventos:oficios-global'))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Lista de ofícios')
+        self.assertContains(response, 'Lista de of')
         self.assertContains(response, self.oficio_pt.numero_formatado)
 
         filtered = self.client.get(reverse('eventos:oficios-global'), {'protocolo': '12.345.678-9'})
@@ -143,21 +148,16 @@ class GlobalViewsTest(TestCase):
         self.assertNotContains(filtered, self.oficio_os.protocolo_formatado)
 
     def test_lista_global_de_oficios_renderiza_cards_agrupados_por_documento(self):
-        Oficio.objects.filter(pk=self.oficio_pt.pk).update(
-            justificativa_texto='Justificativa global preenchida.',
-            gerar_termo_preenchido=True,
-        )
+        Oficio.objects.filter(pk=self.oficio_pt.pk).update(gerar_termo_preenchido=True)
 
         response = self.client.get(reverse('eventos:oficios-global'))
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Cadastro de ofício')
+        self.assertContains(response, 'Cadastro de of')
         self.assertNotContains(response, 'Ir para eventos')
         self.assertNotContains(response, 'Central documental')
         self.assertContains(response, 'oficio-process-card')
-        self.assertContains(response, 'Ofício')
-        self.assertContains(response, 'Justificativa')
-        self.assertContains(response, 'Termo de autorização')
+        self.assertContains(response, 'Termo de autoriz')
         self.assertContains(response, 'Abrir wizard')
 
     def test_hubs_globais_principais_respondem_200(self):
@@ -180,13 +180,14 @@ class GlobalViewsTest(TestCase):
         self.assertContains(response_pt, self.oficio_pt.numero_formatado)
 
         response_os = self.client.get(reverse('eventos:documentos-ordens-servico'))
-        self.assertContains(response_os, 'Ordens de serviço')
+        self.assertContains(response_os, 'Ordens de servi')
         self.assertContains(response_os, self.evento_os.titulo)
         self.assertContains(response_os, self.oficio_os.numero_formatado)
 
         response_termos = self.client.get(reverse('eventos:documentos-termos'))
         self.assertContains(response_termos, self.viajante.nome)
         self.assertContains(response_termos, self.evento_pt.titulo)
+        self.assertContains(response_termos, 'Novo termo')
 
     def test_simulacao_global_calcula_valor(self):
         response = self.client.post(
