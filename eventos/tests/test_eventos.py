@@ -27,6 +27,7 @@ from eventos.models import (
     EventoFinalizacao,
     EventoParticipante,
     EventoTermoParticipante,
+    Justificativa,
     ModeloJustificativa,
     ModeloMotivoViagem,
     Oficio,
@@ -5530,7 +5531,10 @@ class OficioJustificativaTest(TestCase):
             data_saida=date(2026, 10, 10),
             data_retorno=date(2026, 10, 11),
         )
-        Oficio.objects.filter(pk=oficio.pk).update(justificativa_texto='Necessidade operacional urgente.')
+        Justificativa.objects.update_or_create(
+            oficio=oficio,
+            defaults={'texto': 'Necessidade operacional urgente.'},
+        )
 
         response = self.client.post(reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk}), data={'finalizar': '1'})
 
@@ -5622,8 +5626,8 @@ class OficioJustificativaTest(TestCase):
         )
 
         self.assertRedirects(response, next_url)
-        oficio.refresh_from_db()
-        self.assertEqual(oficio.justificativa_texto, 'Texto final da justificativa.')
+        justificativa = Justificativa.objects.get(oficio=oficio)
+        self.assertEqual(justificativa.texto, 'Texto final da justificativa.')
 
     def test_tela_justificativa_preseleciona_modelo_padrao_quando_texto_ainda_vazio(self):
         oficio = self._criar_oficio(data_criacao=date(2026, 10, 5))
@@ -5905,7 +5909,10 @@ class OficioDocumentosTest(TestCase):
         self._criar_configuracao()
         oficio = self._criar_oficio(data_criacao=date(2026, 10, 5))
         self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
-        Oficio.objects.filter(pk=oficio.pk).update(justificativa_texto='Justificativa documental.')
+        Justificativa.objects.update_or_create(
+            oficio=oficio,
+            defaults={'texto': 'Justificativa documental.'},
+        )
         oficio.refresh_from_db()
 
         context = build_justificativa_document_context(oficio)
@@ -6025,8 +6032,7 @@ class OficioDocumentosTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, 'Preencha a justificativa')
-        oficio.refresh_from_db()
-        self.assertEqual(oficio.justificativa_texto, '')
+        self.assertFalse(Justificativa.objects.filter(oficio=oficio).exists())
 
     def test_download_docx_do_oficio_quando_apto(self):
         self._criar_configuracao()
@@ -6055,7 +6061,10 @@ class OficioDocumentosTest(TestCase):
         self._criar_configuracao()
         oficio = self._criar_oficio(data_criacao=date(2026, 10, 5))
         self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
-        Oficio.objects.filter(pk=oficio.pk).update(justificativa_texto='Justificativa pronta para DOCX.')
+        Justificativa.objects.update_or_create(
+            oficio=oficio,
+            defaults={'texto': 'Justificativa pronta para DOCX.'},
+        )
         oficio.refresh_from_db()
 
         response = self.client.get(
@@ -6170,7 +6179,10 @@ class OficioDocumentosTest(TestCase):
         self._criar_configuracao()
         oficio = self._criar_oficio(data_criacao=date(2026, 10, 5))
         self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
-        Oficio.objects.filter(pk=oficio.pk).update(justificativa_texto='Justificativa pronta para PDF.')
+        Justificativa.objects.update_or_create(
+            oficio=oficio,
+            defaults={'texto': 'Justificativa pronta para PDF.'},
+        )
         oficio.refresh_from_db()
 
         with patch(
@@ -6330,7 +6342,10 @@ class OficioDocumentosTest(TestCase):
         self._criar_configuracao()
         oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
         self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
-        Oficio.objects.filter(pk=oficio.pk).update(justificativa_texto='Justificativa liberada.')
+        Justificativa.objects.update_or_create(
+            oficio=oficio,
+            defaults={'texto': 'Justificativa liberada.'},
+        )
         oficio.refresh_from_db()
 
         response = self.client.get(reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk}))

@@ -9,6 +9,7 @@ from cadastros.models import Cargo, Estado, Cidade, UnidadeLotacao, Viajante
 from eventos.models import (
     Evento,
     EventoTermoParticipante,
+    Justificativa,
     Oficio,
     OficioTrecho,
     OrdemServico,
@@ -143,9 +144,10 @@ class GlobalViewsTest(TestCase):
         self.assertNotContains(filtered, self.oficio_os.protocolo_formatado)
 
     def test_lista_global_de_oficios_renderiza_cards_agrupados_por_documento(self):
-        Oficio.objects.filter(pk=self.oficio_pt.pk).update(
-            justificativa_texto='Justificativa global preenchida.',
-            gerar_termo_preenchido=True,
+        Oficio.objects.filter(pk=self.oficio_pt.pk).update(gerar_termo_preenchido=True)
+        Justificativa.objects.update_or_create(
+            oficio=self.oficio_pt,
+            defaults={'texto': 'Justificativa global preenchida.'},
         )
 
         response = self.client.get(reverse('eventos:oficios-global'))

@@ -17,6 +17,7 @@ from .models import (
     DocumentoAvulso,
     Evento,
     EventoTermoParticipante,
+    Justificativa,
     OrdemServico,
     Oficio,
     OficioTrecho,
@@ -341,10 +342,14 @@ def _build_oficio_document_cards(oficio):
     )
 
     justificativa_info = oficio.justificativa_info
+    try:
+        justificativa = oficio.justificativa
+    except Justificativa.DoesNotExist:
+        justificativa = None
     justificativa_exists = (
         justificativa_info['required']
         or justificativa_info['filled']
-        or bool((oficio.justificativa_texto or '').strip())
+        or bool(((justificativa.texto if justificativa else '') or '').strip())
     )
     if justificativa_exists:
         justificativa_document = _build_oficio_document_actions(oficio, DocumentoOficioTipo.JUSTIFICATIVA)
@@ -414,7 +419,7 @@ def _build_oficio_filters(request):
 def oficio_global_lista(request):
     filters = _build_oficio_filters(request)
     queryset = (
-        Oficio.objects.select_related('evento', 'cidade_sede', 'estado_sede', 'roteiro_evento')
+        Oficio.objects.select_related('evento', 'cidade_sede', 'estado_sede', 'roteiro_evento', 'justificativa')
         .prefetch_related(
             Prefetch(
                 'trechos',
@@ -1039,7 +1044,7 @@ def justificativas_global(request):
         queryset = queryset.filter(
             Q(evento__titulo__icontains=filters['q'])
             | Q(motivo__icontains=filters['q'])
-            | Q(justificativa_texto__icontains=filters['q'])
+            | Q(justificativa__texto__icontains=filters['q'])
             | Q(protocolo__icontains=Oficio.normalize_protocolo(filters['q']) or filters['q'])
             | Q(trechos__destino_cidade__nome__icontains=filters['q'])
         )

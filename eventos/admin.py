@@ -9,6 +9,7 @@ from .models import (
     ModeloJustificativa,
     ModeloMotivoViagem,
     OrdemServico,
+    Justificativa,
     Oficio,
     PlanoTrabalho,
     EfetivoPlanoTrabalhoDocumento,
@@ -131,3 +132,12 @@ class ModeloJustificativaAdmin(admin.ModelAdmin):
     list_filter = ('padrao', 'ativo')
     search_fields = ('nome', 'texto')
     ordering = ('nome',)
+
+
+@admin.register(Justificativa)
+class JustificativaAdmin(admin.ModelAdmin):
+    list_display = ('id', 'oficio', 'modelo', 'updated_at')
+    list_filter = ('modelo',)
+    search_fields = ('texto', 'oficio__protocolo')
+    raw_id_fields = ('oficio', 'modelo')
+    ordering = ('-updated_at',)
