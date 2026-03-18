@@ -10,7 +10,7 @@ from .models import (
     TermoAutorizacao, Justificativa, PlanoTrabalho, OrdemServico,
     Evento, ModeloMotivo, ModeloJustificativa,
 )
-from cadastros.models import Viajante, Veiculo, Estado, Cidade
+from cadastros.models import Viajante, Veiculo, Cidade
 
 
 def _next_safe(request):
@@ -183,7 +183,6 @@ def oficio_step3(request, pk):
     """Step 3 — Roteiro e Diárias."""
     oficio = get_object_or_404(Oficio, pk=pk)
     roteiros = Roteiro.objects.all().order_by('-criado_em')
-    estados = Estado.objects.filter(ativo=True).order_by('nome')
     trechos = list(oficio.trechos.select_related('origem', 'destino').order_by('ordem'))
 
     if request.method == 'POST':
@@ -252,7 +251,6 @@ def oficio_step3(request, pk):
     return render(request, 'documentos/oficios/step3.html', {
         'oficio': oficio,
         'roteiros': roteiros,
-        'estados': estados,
         'trechos': trechos,
         'return_to': _next_safe(request),
         'step': 3,
