@@ -1,0 +1,51 @@
+{% extends 'base.html' %}
+
+{% block title %}{% if object %}Editar{% else %}Novo{% endif %} plano de trabalho - Central de Viagens{% endblock %}
+{% block page_title %}{% if object %}Editar{% else %}Novo{% endif %} plano de trabalho{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <h1 class="h4 mb-0">{% if object %}Editar{% else %}Novo{% endif %} plano de trabalho</h1>
+    <a class="btn btn-outline-secondary" href="{{ return_to|default:'/eventos/documentos/planos-trabalho/' }}">Voltar</a>
+  </div>
+
+  <div class="card"><div class="card-body">
+    <form method="post">
+      {% csrf_token %}
+      <input type="hidden" name="return_to" value="{{ return_to }}">
+      <input type="hidden" name="context_source" value="{{ context_source }}">
+      <input type="hidden" name="preselected_event_id" value="{{ preselected_event_id }}">
+      <input type="hidden" name="preselected_oficio_id" value="{{ preselected_oficio_id }}">
+
+      <div class="row g-3">
+        <div class="col-md-2"><label class="form-label">Número</label>{{ form.numero }}</div>
+        <div class="col-md-2"><label class="form-label">Ano</label>{{ form.ano }}</div>
+        <div class="col-md-3"><label class="form-label">Data</label>{{ form.data_criacao }}</div>
+        <div class="col-md-3"><label class="form-label">Status</label>{{ form.status }}</div>
+        <div class="col-md-6"><label class="form-label">Evento (opcional)</label>{{ form.evento }}</div>
+        <div class="col-md-6"><label class="form-label">Ofício (opcional)</label>{{ form.oficio }}</div>
+        <div class="col-md-6"><label class="form-label">Solicitante</label>{{ form.solicitante }}</div>
+        <div class="col-md-6"><label class="form-label">Solicitante (outros)</label>{{ form.solicitante_outros }}</div>
+        <div class="col-md-6"><label class="form-label">Coord. operacional</label>{{ form.coordenador_operacional }}</div>
+        <div class="col-md-6"><label class="form-label">Coord. administrativo</label>{{ form.coordenador_administrativo }}</div>
+        <div class="col-md-6"><label class="form-label">Coord. municipal</label>{{ form.coordenador_municipal }}</div>
+        <div class="col-md-6"><label class="form-label">Horário de atendimento</label>{{ form.horario_atendimento }}</div>
+        <div class="col-12"><label class="form-label">Objetivo</label>{{ form.objetivo }}</div>
+        <div class="col-12"><label class="form-label">Locais</label>{{ form.locais }}</div>
+        <div class="col-md-4"><label class="form-label">Quantidade de servidores</label>{{ form.quantidade_servidores }}</div>
+        <div class="col-12"><label class="form-label">Atividades</label>{{ form.atividades_codigos }}</div>
+        <div class="col-12"><label class="form-label">Metas formatadas</label>{{ form.metas_formatadas }}</div>
+        <div class="col-12"><label class="form-label">Efetivo resumo</label>{{ form.efetivo_resumo }}</div>
+        <div class="col-12"><label class="form-label">Recursos</label>{{ form.recursos_texto }}</div>
+        <div class="col-12"><label class="form-label">Observações</label>{{ form.observacoes }}</div>
+      </div>
+
+      <div class="d-flex gap-2 mt-4">
+        <button class="btn btn-primary" type="submit">Salvar</button>
+        {% if object %}<a class="btn btn-outline-secondary" href="{% url 'eventos:documentos-planos-trabalho-detalhe' object.pk %}">Detalhe</a>{% endif %}
+      </div>
+    </form>
+  </div></div>
+</div>
+{% endblock %}

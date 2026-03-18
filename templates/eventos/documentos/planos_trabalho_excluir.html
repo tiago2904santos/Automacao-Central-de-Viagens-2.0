@@ -1,0 +1,18 @@
+{% extends 'base.html' %}
+
+{% block title %}Excluir plano de trabalho - Central de Viagens{% endblock %}
+{% block page_title %}Excluir plano de trabalho{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+  <div class="card"><div class="card-body">
+    <p>Confirma excluir o plano de trabalho <strong>#{{ object.pk }}</strong>?</p>
+    <form method="post">
+      {% csrf_token %}
+      <input type="hidden" name="return_to" value="{{ return_to }}">
+      <button class="btn btn-danger" type="submit">Excluir</button>
+      <a class="btn btn-outline-secondary" href="{{ return_to|default:'/eventos/documentos/planos-trabalho/' }}">Cancelar</a>
+    </form>
+  </div></div>
+</div>
+{% endblock %}

@@ -332,6 +332,190 @@ class EventoFundamentacao(models.Model):
         )
 
 
+class PlanoTrabalho(models.Model):
+    """Documento independente de Plano de Trabalho, com vínculo opcional a evento e ofício."""
+
+    STATUS_RASCUNHO = 'RASCUNHO'
+    STATUS_FINALIZADO = 'FINALIZADO'
+    STATUS_CHOICES = [
+        (STATUS_RASCUNHO, 'Rascunho'),
+        (STATUS_FINALIZADO, 'Finalizado'),
+    ]
+
+    numero = models.PositiveIntegerField('Número', null=True, blank=True, db_index=True)
+    ano = models.PositiveIntegerField('Ano', null=True, blank=True, db_index=True)
+    data_criacao = models.DateField('Data de criação', default=timezone.localdate, db_index=True)
+    status = models.CharField(
+        'Status',
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_RASCUNHO,
+        db_index=True,
+    )
+    evento = models.ForeignKey(
+        Evento,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='planos_trabalho',
+        verbose_name='Evento',
+    )
+    oficio = models.ForeignKey(
+        'Oficio',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='planos_trabalho',
+        verbose_name='Ofício',
+    )
+    solicitante = models.ForeignKey(
+        'SolicitantePlanoTrabalho',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='planos_trabalho',
+        verbose_name='Solicitante',
+    )
+    solicitante_outros = models.CharField('Solicitante (outros)', max_length=200, blank=True, default='')
+    coordenador_operacional = models.ForeignKey(
+        'CoordenadorOperacional',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='planos_trabalho',
+        verbose_name='Coordenador operacional',
+    )
+    coordenador_administrativo = models.ForeignKey(
+        'cadastros.Viajante',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='planos_trabalho_coord_adm',
+        verbose_name='Coordenador administrativo',
+    )
+    coordenador_municipal = models.CharField('Coordenador municipal', max_length=200, blank=True, default='')
+    objetivo = models.TextField('Objetivo/finalidade', blank=True, default='')
+    locais = models.TextField('Locais', blank=True, default='')
+    horario_atendimento = models.CharField('Horário de atendimento', max_length=120, blank=True, default='')
+    quantidade_servidores = models.PositiveIntegerField('Quantidade de servidores', null=True, blank=True)
+    atividades_codigos = models.CharField('Atividades (códigos)', max_length=500, blank=True, default='')
+    metas_formatadas = models.TextField('Metas formatadas', blank=True, default='')
+    efetivo_resumo = models.TextField('Efetivo (resumo)', blank=True, default='')
+    recursos_texto = models.TextField('Recursos (texto)', blank=True, default='')
+    observacoes = models.TextField('Observações', blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at', '-created_at']
+        verbose_name = 'Plano de trabalho'
+        verbose_name_plural = 'Planos de trabalho'
+
+    def __str__(self):
+        if self.numero and self.ano:
+            return f'PT {int(self.numero):02d}/{int(self.ano)}'
+        return f'PT #{self.pk} (rascunho)'
+
+    @property
+    def numero_formatado(self):
+        if self.numero and self.ano:
+            return f'{int(self.numero):02d}/{int(self.ano)}'
+        return EMPTY_MASK_DISPLAY
+
+
+class OrdemServico(models.Model):
+    """Documento independente de Ordem de Serviço, com vínculo opcional a evento e ofício."""
+
+    STATUS_RASCUNHO = 'RASCUNHO'
+    STATUS_FINALIZADO = 'FINALIZADO'
+    STATUS_CHOICES = [
+        (STATUS_RASCUNHO, 'Rascunho'),
+        (STATUS_FINALIZADO, 'Finalizado'),
+    ]
+
+    numero = models.PositiveIntegerField('Número', null=True, blank=True, db_index=True)
+    ano = models.PositiveIntegerField('Ano', null=True, blank=True, db_index=True)
+    data_criacao = models.DateField('Data de criação', default=timezone.localdate, db_index=True)
+    status = models.CharField(
+        'Status',
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default=STATUS_RASCUNHO,
+        db_index=True,
+    )
+    evento = models.ForeignKey(
+        Evento,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='ordens_servico',
+        verbose_name='Evento',
+    )
+    oficio = models.ForeignKey(
+        'Oficio',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='ordens_servico',
+        verbose_name='Ofício',
+    )
+    finalidade = models.TextField('Finalidade', blank=True, default='')
+    responsaveis = models.TextField('Responsáveis', blank=True, default='')
+    designacoes = models.TextField('Designações', blank=True, default='')
+    determinacoes = models.TextField('Determinações', blank=True, default='')
+    observacoes = models.TextField('Observações', blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-updated_at', '-created_at']
+        verbose_name = 'Ordem de serviço'
+        verbose_name_plural = 'Ordens de serviço'
+
+    def __str__(self):
+        if self.numero and self.ano:
+            return f'OS {int(self.numero):02d}/{int(self.ano)}'
+        return f'OS #{self.pk} (rascunho)'
+
+    @property
+    def numero_formatado(self):
+        if self.numero and self.ano:
+            return f'{int(self.numero):02d}/{int(self.ano)}'
+        return EMPTY_MASK_DISPLAY
+
+
+class EfetivoPlanoTrabalhoDocumento(models.Model):
+    """Composição de efetivo do plano vinculada ao documento PlanoTrabalho."""
+
+    plano_trabalho = models.ForeignKey(
+        PlanoTrabalho,
+        on_delete=models.CASCADE,
+        related_name='efetivos',
+        verbose_name='Plano de trabalho',
+    )
+    cargo = models.ForeignKey(
+        Cargo,
+        on_delete=models.PROTECT,
+        related_name='efetivos_plano_documento',
+        verbose_name='Cargo',
+    )
+    quantidade = models.PositiveIntegerField('Quantidade', default=1)
+
+    class Meta:
+        ordering = ['plano_trabalho', 'cargo__nome']
+        verbose_name = 'Efetivo do plano de trabalho'
+        verbose_name_plural = 'Efetivos do plano de trabalho'
+        constraints = [
+            models.UniqueConstraint(
+                fields=['plano_trabalho', 'cargo'],
+                name='eventos_efetivoptdocumento_plano_cargo_unique',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.plano_trabalho_id}: {self.quantidade} x {self.cargo}'
+
+
 class EfetivoPlanoTrabalho(models.Model):
     """Composição de efetivo do Plano de Trabalho por cargo e quantidade (por evento)."""
     evento = models.ForeignKey(
@@ -565,12 +749,20 @@ class DocumentoAvulso(models.Model):
         verbose_name='Roteiro vinculado',
     )
     plano_trabalho = models.ForeignKey(
-        'EventoFundamentacao',
+        'PlanoTrabalho',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
         related_name='documentos_avulsos',
-        verbose_name='Plano de trabalho / OS vinculado',
+        verbose_name='Plano de trabalho vinculado',
+    )
+    ordem_servico = models.ForeignKey(
+        'OrdemServico',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='documentos_avulsos',
+        verbose_name='Ordem de serviço vinculada',
     )
     oficio = models.ForeignKey(
         'Oficio',
@@ -601,7 +793,13 @@ class DocumentoAvulso(models.Model):
 
     @property
     def is_vinculado(self):
-        return bool(self.evento_id or self.roteiro_id or self.plano_trabalho_id or self.oficio_id)
+        return bool(
+            self.evento_id
+            or self.roteiro_id
+            or self.plano_trabalho_id
+            or self.ordem_servico_id
+            or self.oficio_id
+        )
 
     def _sync_classificacao(self):
         self.classificacao = (

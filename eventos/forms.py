@@ -14,7 +14,9 @@ from .models import (
     EventoParticipante,
     ModeloJustificativa,
     ModeloMotivoViagem,
+    OrdemServico,
     Oficio,
+    PlanoTrabalho,
     RoteiroEvento,
     SolicitantePlanoTrabalho,
     CoordenadorOperacional,
@@ -256,6 +258,130 @@ class EventoFinalizacaoForm(FormComErroInvalidMixin, forms.ModelForm):
         self.fields['observacoes_finais'].required = False
 
 
+class PlanoTrabalhoForm(FormComErroInvalidMixin, forms.ModelForm):
+    atividades_codigos = forms.MultipleChoiceField(
+        label='Atividades (PT)',
+        choices=[(item['codigo'], item['nome']) for item in ATIVIDADES_CATALOGO],
+        required=False,
+        widget=forms.CheckboxSelectMultiple(attrs={'class': 'form-check-input'}),
+    )
+
+    class Meta:
+        model = PlanoTrabalho
+        fields = [
+            'numero',
+            'ano',
+            'data_criacao',
+            'status',
+            'evento',
+            'oficio',
+            'solicitante',
+            'solicitante_outros',
+            'coordenador_operacional',
+            'coordenador_administrativo',
+            'coordenador_municipal',
+            'objetivo',
+            'locais',
+            'horario_atendimento',
+            'quantidade_servidores',
+            'metas_formatadas',
+            'efetivo_resumo',
+            'recursos_texto',
+            'observacoes',
+        ]
+        widgets = {
+            'numero': forms.NumberInput(attrs={'class': 'form-control', 'min': 1}),
+            'ano': forms.NumberInput(attrs={'class': 'form-control', 'min': 2000}),
+            'data_criacao': forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
+            'status': forms.Select(attrs={'class': 'form-select'}),
+            'evento': forms.Select(attrs={'class': 'form-select'}),
+            'oficio': forms.Select(attrs={'class': 'form-select'}),
+            'solicitante': forms.Select(attrs={'class': 'form-select'}),
+            'solicitante_outros': forms.TextInput(attrs={'class': 'form-control'}),
+            'coordenador_operacional': forms.Select(attrs={'class': 'form-select'}),
+            'coordenador_administrativo': forms.Select(attrs={'class': 'form-select'}),
+            'coordenador_municipal': forms.TextInput(attrs={'class': 'form-control'}),
+            'objetivo': forms.Textarea(attrs={'class': 'form-control', 'rows': 4}),
+            'locais': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
+            'horario_atendimento': forms.TextInput(attrs={'class': 'form-control'}),
+            'quantidade_servidores': forms.NumberInput(attrs={'class': 'form-control', 'min': 1}),
+            'metas_formatadas': forms.Textarea(attrs={'class': 'form-control', 'rows': 4}),
+            'efetivo_resumo': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
+            'recursos_texto': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
+            'observacoes': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['evento'].required = False
+        self.fields['oficio'].required = False
+        self.fields['solicitante'].required = False
+        self.fields['coordenador_operacional'].required = False
+        self.fields['coordenador_administrativo'].required = False
+        self.fields['numero'].required = False
+        self.fields['ano'].required = False
+        self.fields['quantidade_servidores'].required = False
+        self.fields['evento'].queryset = Evento.objects.order_by('-data_inicio', 'titulo')
+        self.fields['oficio'].queryset = Oficio.objects.select_related('evento').order_by('-updated_at')
+        self.fields['solicitante'].queryset = SolicitantePlanoTrabalho.objects.filter(ativo=True).order_by('ordem', 'nome')
+        self.fields['coordenador_operacional'].queryset = CoordenadorOperacional.objects.filter(ativo=True).order_by('ordem', 'nome')
+        self.fields['coordenador_administrativo'].queryset = Viajante.objects.filter(status='ATIVO').order_by('nome')
+        if self.instance and self.instance.pk and self.instance.atividades_codigos:
+            self.initial['atividades_codigos'] = [
+                codigo.strip()
+                for codigo in self.instance.atividades_codigos.split(',')
+                if codigo.strip()
+            ]
+
+    def save(self, commit=True):
+        instance = super().save(commit=False)
+        codigos = self.cleaned_data.get('atividades_codigos', [])
+        instance.atividades_codigos = ','.join(codigos) if codigos else ''
+        if commit:
+            instance.save()
+        return instance
+
+
+class OrdemServicoForm(FormComErroInvalidMixin, forms.ModelForm):
+    class Meta:
+        model = OrdemServico
+        fields = [
+            'numero',
+            'ano',
+            'data_criacao',
+            'status',
+            'evento',
+            'oficio',
+            'finalidade',
+            'responsaveis',
+            'designacoes',
+            'determinacoes',
+            'observacoes',
+        ]
+        widgets = {
+            'numero': forms.NumberInput(attrs={'class': 'form-control', 'min': 1}),
+            'ano': forms.NumberInput(attrs={'class': 'form-control', 'min': 2000}),
+            'data_criacao': forms.DateInput(attrs={'class': 'form-control', 'type': 'date'}),
+            'status': forms.Select(attrs={'class': 'form-select'}),
+            'evento': forms.Select(attrs={'class': 'form-select'}),
+            'oficio': forms.Select(attrs={'class': 'form-select'}),
+            'finalidade': forms.Textarea(attrs={'class': 'form-control', 'rows': 4}),
+            'responsaveis': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
+            'designacoes': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
+            'determinacoes': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
+            'observacoes': forms.Textarea(attrs={'class': 'form-control', 'rows': 3}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields['evento'].required = False
+        self.fields['oficio'].required = False
+        self.fields['numero'].required = False
+        self.fields['ano'].required = False
+        self.fields['evento'].queryset = Evento.objects.order_by('-data_inicio', 'titulo')
+        self.fields['oficio'].queryset = Oficio.objects.select_related('evento').order_by('-updated_at')
+
+
 class DocumentoAvulsoForm(FormComErroInvalidMixin, forms.ModelForm):
     """Formulário de documento avulso com placeholders em JSON e vínculos opcionais."""
 
@@ -282,6 +408,7 @@ class DocumentoAvulsoForm(FormComErroInvalidMixin, forms.ModelForm):
             'evento',
             'roteiro',
             'plano_trabalho',
+            'ordem_servico',
             'oficio',
         ]
         widgets = {
@@ -298,6 +425,7 @@ class DocumentoAvulsoForm(FormComErroInvalidMixin, forms.ModelForm):
             'evento': forms.Select(attrs={'class': 'form-select'}),
             'roteiro': forms.Select(attrs={'class': 'form-select'}),
             'plano_trabalho': forms.Select(attrs={'class': 'form-select'}),
+            'ordem_servico': forms.Select(attrs={'class': 'form-select'}),
             'oficio': forms.Select(attrs={'class': 'form-select'}),
         }
 
@@ -307,12 +435,16 @@ class DocumentoAvulsoForm(FormComErroInvalidMixin, forms.ModelForm):
         self.fields['evento'].required = False
         self.fields['roteiro'].required = False
         self.fields['plano_trabalho'].required = False
+        self.fields['ordem_servico'].required = False
         self.fields['oficio'].required = False
 
         self.fields['evento'].queryset = Evento.objects.order_by('-data_inicio', 'titulo')
         self.fields['roteiro'].queryset = RoteiroEvento.objects.select_related('evento').order_by('-updated_at')
         self.fields['plano_trabalho'].queryset = (
-            EventoFundamentacao.objects.select_related('evento').order_by('-updated_at')
+            PlanoTrabalho.objects.select_related('evento', 'oficio').order_by('-updated_at')
+        )
+        self.fields['ordem_servico'].queryset = (
+            OrdemServico.objects.select_related('evento', 'oficio').order_by('-updated_at')
         )
         self.fields['oficio'].queryset = Oficio.objects.select_related('evento').order_by('-updated_at')
 

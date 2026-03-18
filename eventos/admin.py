@@ -9,7 +9,10 @@ from .models import (
     EventoTermoParticipante,
     ModeloJustificativa,
     ModeloMotivoViagem,
+    OrdemServico,
     Oficio,
+    PlanoTrabalho,
+    EfetivoPlanoTrabalhoDocumento,
     SolicitantePlanoTrabalho,
 )
 
@@ -44,6 +47,32 @@ class EfetivoPlanoTrabalhoAdmin(admin.ModelAdmin):
     list_filter = ('cargo',)
     raw_id_fields = ('evento',)
     ordering = ('evento', 'cargo__nome')
+
+
+@admin.register(PlanoTrabalho)
+class PlanoTrabalhoAdmin(admin.ModelAdmin):
+    list_display = ('id', 'numero_formatado', 'status', 'evento', 'oficio', 'updated_at')
+    list_filter = ('status',)
+    search_fields = ('objetivo', 'observacoes')
+    raw_id_fields = ('evento', 'oficio', 'solicitante', 'coordenador_operacional', 'coordenador_administrativo')
+    ordering = ('-updated_at',)
+
+
+@admin.register(OrdemServico)
+class OrdemServicoAdmin(admin.ModelAdmin):
+    list_display = ('id', 'numero_formatado', 'status', 'evento', 'oficio', 'updated_at')
+    list_filter = ('status',)
+    search_fields = ('finalidade', 'designacoes', 'determinacoes')
+    raw_id_fields = ('evento', 'oficio')
+    ordering = ('-updated_at',)
+
+
+@admin.register(EfetivoPlanoTrabalhoDocumento)
+class EfetivoPlanoTrabalhoDocumentoAdmin(admin.ModelAdmin):
+    list_display = ('plano_trabalho', 'cargo', 'quantidade')
+    list_filter = ('cargo',)
+    raw_id_fields = ('plano_trabalho',)
+    ordering = ('plano_trabalho', 'cargo__nome')
 
 
 @admin.register(EventoFundamentacao)
@@ -84,7 +113,7 @@ class DocumentoAvulsoAdmin(admin.ModelAdmin):
     )
     list_filter = ('tipo_documento', 'classificacao')
     search_fields = ('titulo',)
-    raw_id_fields = ('evento', 'roteiro', 'plano_trabalho', 'oficio', 'criado_por')
+    raw_id_fields = ('evento', 'roteiro', 'plano_trabalho', 'ordem_servico', 'oficio', 'criado_por')
     ordering = ('-updated_at',)
 
 

@@ -12,14 +12,15 @@ from django.urls import reverse
 from django.utils.text import slugify
 from django.views.decorators.http import require_http_methods
 
-from .forms import DocumentoAvulsoForm
+from .forms import DocumentoAvulsoForm, OrdemServicoForm, PlanoTrabalhoForm
 from .models import (
     DocumentoAvulso,
     Evento,
-    EventoFundamentacao,
     EventoTermoParticipante,
+    OrdemServico,
     Oficio,
     OficioTrecho,
+    PlanoTrabalho,
     RoteiroEvento,
 )
 from .services.diarias import PeriodMarker, TABELA_DIARIAS, calculate_periodized_diarias, formatar_valor_diarias
@@ -39,6 +40,8 @@ from .services.documentos.renderer import (
     get_termo_autorizacao_template_path,
     render_docx_template_bytes,
 )
+from .services.documentos.ordem_servico import render_ordem_servico_docx, render_ordem_servico_model_docx
+from .services.documentos.plano_trabalho import render_plano_trabalho_docx, render_plano_trabalho_model_docx
 from .views import _build_oficio_justificativa_info
 
 
@@ -106,6 +109,25 @@ def _append_next(url, next_url):
         return url
     separator = '&' if '?' in url else '?'
     return f'{url}{separator}{urlencode({"next": next_url})}'
+
+
+def _get_safe_return_to(request, default_url=''):
+    candidate = _clean(request.POST.get('return_to') or request.GET.get('return_to'))
+    if candidate and candidate.startswith('/'):
+        return candidate
+    return default_url
+
+
+def _get_context_source(request):
+    value = _clean(request.GET.get('context_source') or request.POST.get('context_source')).lower()
+    return value if value in {'evento', 'oficio', 'global'} else ''
+
+
+def _parse_int(value):
+    raw = _clean(value)
+    if raw.isdigit():
+        return int(raw)
+    return None
 
 
 def _normalize_documento_avulso_tipo(value):
@@ -467,7 +489,7 @@ def _build_oficio_filters(request):
 def oficio_global_lista(request):
     filters = _build_oficio_filters(request)
     queryset = (
-        Oficio.objects.select_related('evento', 'evento__fundamentacao', 'cidade_sede', 'estado_sede', 'roteiro_evento')
+        Oficio.objects.select_related('evento', 'cidade_sede', 'estado_sede', 'roteiro_evento')
         .prefetch_related(
             Prefetch(
                 'trechos',
@@ -640,14 +662,14 @@ def documentos_hub(request):
     cards = [
         {
             'label': 'Planos de trabalho',
-            'count': Oficio.objects.filter(evento__fundamentacao__tipo_documento=EventoFundamentacao.TIPO_PT).count(),
-            'description': 'Lista global derivada dos oficios e da etapa 4 do evento.',
+            'count': PlanoTrabalho.objects.count(),
+            'description': 'Módulo documental independente com criação e edição próprias.',
             'url': reverse('eventos:documentos-planos-trabalho'),
         },
         {
             'label': 'Ordens de servico',
-            'count': Oficio.objects.filter(evento__fundamentacao__tipo_documento=EventoFundamentacao.TIPO_OS).count(),
-            'description': 'Acompanhamento global dos documentos de missao gerados por oficio.',
+            'count': OrdemServico.objects.count(),
+            'description': 'Módulo documental independente com criação e edição próprias.',
             'url': reverse('eventos:documentos-ordens-servico'),
         },
         {
@@ -664,7 +686,7 @@ def documentos_hub(request):
         },
     ]
     documentos_avulsos_qs = (
-        DocumentoAvulso.objects.select_related('evento', 'roteiro', 'plano_trabalho', 'oficio', 'criado_por')
+        DocumentoAvulso.objects.select_related('evento', 'roteiro', 'plano_trabalho', 'ordem_servico', 'oficio', 'criado_por')
         .order_by('-updated_at', '-created_at')
     )
     documentos_avulsos = list(documentos_avulsos_qs[:20])
@@ -683,7 +705,8 @@ def documentos_hub(request):
             for label, enabled in [
                 ('Evento', bool(documento.evento_id)),
                 ('Roteiro', bool(documento.roteiro_id)),
-                ('PT/OS', bool(documento.plano_trabalho_id)),
+                ('PT', bool(documento.plano_trabalho_id)),
+                ('OS', bool(documento.ordem_servico_id)),
                 ('Ofício', bool(documento.oficio_id)),
             ]
             if enabled
@@ -753,7 +776,7 @@ def documento_avulso_novo(request):
 @require_http_methods(['GET', 'POST'])
 def documento_avulso_editar(request, pk):
     documento = get_object_or_404(
-        DocumentoAvulso.objects.select_related('evento', 'roteiro', 'plano_trabalho', 'oficio', 'criado_por'),
+        DocumentoAvulso.objects.select_related('evento', 'roteiro', 'plano_trabalho', 'ordem_servico', 'oficio', 'criado_por'),
         pk=pk,
     )
     form = DocumentoAvulsoForm(request.POST or None, instance=documento)
@@ -796,111 +819,287 @@ def documento_avulso_download(request, pk, formato):
     return response
 
 
-def _build_documento_derivado_rows(queryset, *, request, tipo_documento, fundamentacao_tipo, situacao):
-    next_url = request.get_full_path()
-    rows = []
-    for oficio in queryset:
-        status_info = _document_status_summary(oficio, tipo_documento, fundamentacao_tipo)
-        if situacao and situacao != 'todos' and status_info['status_key'] != situacao:
-            continue
-        rows.append(
-            {
-                'oficio': oficio,
-                'evento': oficio.evento,
-                'destinos_display': _oficio_destinos_display(oficio),
-                'status': status_info,
-                'oficio_url': reverse('eventos:oficio-editar', kwargs={'pk': oficio.pk}),
-                'documentos_url': reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk}),
-                'evento_url': reverse('eventos:guiado-painel', kwargs={'pk': oficio.evento_id}) if oficio.evento_id else '',
-                'justificativa_url': _append_next(
-                    reverse('eventos:oficio-justificativa', kwargs={'pk': oficio.pk}),
-                    next_url,
-                ),
-            }
-        )
-    return rows
-
-
-def _documento_derivado_global(request, *, template_title, template_page_title, template_subtitle, tipo_documento, fundamentacao_tipo):
-    filters = {
+def _base_documento_filters(request):
+    return {
         'q': _clean(request.GET.get('q')),
         'evento_id': _clean(request.GET.get('evento_id')),
-        'ano': _clean(request.GET.get('ano')),
-        'situacao': _clean(request.GET.get('situacao')) or 'todos',
-        'oficio_status': _clean(request.GET.get('oficio_status')),
+        'oficio_id': _clean(request.GET.get('oficio_id')),
+        'status': _clean(request.GET.get('status')),
     }
-    queryset = (
-        Oficio.objects.select_related('evento', 'evento__fundamentacao')
-        .prefetch_related('trechos', 'viajantes', 'viajantes__cargo')
-        .all()
-    )
+
+
+def _resolve_preselected_context(request):
+    preselected_event_id = _parse_int(request.GET.get('preselected_event_id') or request.POST.get('preselected_event_id'))
+    preselected_oficio_id = _parse_int(request.GET.get('preselected_oficio_id') or request.POST.get('preselected_oficio_id'))
+    preselected_event = Evento.objects.filter(pk=preselected_event_id).first() if preselected_event_id else None
+    preselected_oficio = Oficio.objects.filter(pk=preselected_oficio_id).first() if preselected_oficio_id else None
+    return preselected_event, preselected_oficio
+
+
+def planos_trabalho_global(request):
+    filters = _base_documento_filters(request)
+    queryset = PlanoTrabalho.objects.select_related('evento', 'oficio', 'solicitante').all()
     if filters['q']:
         queryset = queryset.filter(
-            Q(evento__titulo__icontains=filters['q'])
-            | Q(motivo__icontains=filters['q'])
-            | Q(protocolo__icontains=Oficio.normalize_protocolo(filters['q']) or filters['q'])
-            | Q(trechos__destino_cidade__nome__icontains=filters['q'])
-            | Q(viajantes__nome__icontains=filters['q'])
+            Q(objetivo__icontains=filters['q'])
+            | Q(observacoes__icontains=filters['q'])
+            | Q(evento__titulo__icontains=filters['q'])
+            | Q(oficio__motivo__icontains=filters['q'])
         )
     if filters['evento_id'].isdigit():
         queryset = queryset.filter(evento_id=int(filters['evento_id']))
-    if filters['ano'].isdigit():
-        queryset = queryset.filter(ano=int(filters['ano']))
-    if filters['oficio_status']:
-        queryset = queryset.filter(status=filters['oficio_status'])
+    if filters['oficio_id'].isdigit():
+        queryset = queryset.filter(oficio_id=int(filters['oficio_id']))
+    if filters['status']:
+        queryset = queryset.filter(status=filters['status'])
 
-    rows = _build_documento_derivado_rows(
-        queryset.distinct().order_by('-updated_at', '-created_at'),
-        request=request,
-        tipo_documento=tipo_documento,
-        fundamentacao_tipo=fundamentacao_tipo,
-        situacao=filters['situacao'],
-    )
-    page_obj = _paginate(rows, request.GET.get('page'))
+    page_obj = _paginate(queryset.order_by('-updated_at', '-created_at'), request.GET.get('page'))
     return render(
         request,
-        'eventos/global/documento_derivado_lista.html',
+        'eventos/documentos/planos_trabalho_lista.html',
         {
             'object_list': list(page_obj.object_list),
             'page_obj': page_obj,
             'pagination_query': _query_without_page(request),
             'filters': filters,
             'eventos_choices': _eventos_choices(),
-            'oficio_status_choices': Oficio.STATUS_CHOICES,
-            'page_title': template_title,
-            'header_title': template_page_title,
-            'subtitle': template_subtitle,
-            'situacao_choices': [
-                ('todos', 'Todos'),
-                ('available', 'Disponiveis'),
-                ('pending', 'Pendentes'),
-                ('unavailable', 'Indisponiveis'),
-                ('not_applicable', 'Nao aplicaveis'),
-            ],
+            'oficios_choices': Oficio.objects.order_by('-updated_at')[:200],
+            'status_choices': PlanoTrabalho.STATUS_CHOICES,
         },
     )
 
 
-def planos_trabalho_global(request):
-    return _documento_derivado_global(
+@require_http_methods(['GET', 'POST'])
+def plano_trabalho_novo(request):
+    return_to_default = reverse('eventos:documentos-planos-trabalho')
+    return_to = _get_safe_return_to(request, return_to_default)
+    context_source = _get_context_source(request)
+    preselected_event, preselected_oficio = _resolve_preselected_context(request)
+
+    initial = {}
+    if preselected_event:
+        initial['evento'] = preselected_event.pk
+    if preselected_oficio:
+        initial['oficio'] = preselected_oficio.pk
+
+    form = PlanoTrabalhoForm(request.POST or None, initial=initial)
+    if request.method == 'POST' and form.is_valid():
+        obj = form.save()
+        messages.success(request, 'Plano de trabalho criado com sucesso.')
+        return redirect(return_to or reverse('eventos:documentos-planos-trabalho-detalhe', kwargs={'pk': obj.pk}))
+
+    return render(
         request,
-        template_title='Planos de trabalho - Central de Viagens',
-        template_page_title='Planos de trabalho',
-        template_subtitle='Hub global derivado dos oficios e da fundamentacao do evento.',
-        tipo_documento=DocumentoOficioTipo.PLANO_TRABALHO,
-        fundamentacao_tipo=EventoFundamentacao.TIPO_PT,
+        'eventos/documentos/planos_trabalho_form.html',
+        {
+            'form': form,
+            'object': None,
+            'return_to': return_to,
+            'context_source': context_source,
+            'preselected_event_id': preselected_event.pk if preselected_event else '',
+            'preselected_oficio_id': preselected_oficio.pk if preselected_oficio else '',
+        },
     )
+
+
+@require_http_methods(['GET', 'POST'])
+def plano_trabalho_editar(request, pk):
+    obj = get_object_or_404(PlanoTrabalho.objects.select_related('evento', 'oficio'), pk=pk)
+    return_to = _get_safe_return_to(request, reverse('eventos:documentos-planos-trabalho'))
+    context_source = _get_context_source(request)
+    form = PlanoTrabalhoForm(request.POST or None, instance=obj)
+    if request.method == 'POST' and form.is_valid():
+        form.save()
+        messages.success(request, 'Plano de trabalho atualizado.')
+        return redirect(return_to or reverse('eventos:documentos-planos-trabalho-detalhe', kwargs={'pk': obj.pk}))
+    return render(
+        request,
+        'eventos/documentos/planos_trabalho_form.html',
+        {
+            'form': form,
+            'object': obj,
+            'return_to': return_to,
+            'context_source': context_source,
+            'preselected_event_id': obj.evento_id or '',
+            'preselected_oficio_id': obj.oficio_id or '',
+        },
+    )
+
+
+@require_http_methods(['GET'])
+def plano_trabalho_detalhe(request, pk):
+    obj = get_object_or_404(PlanoTrabalho.objects.select_related('evento', 'oficio', 'solicitante'), pk=pk)
+    return render(request, 'eventos/documentos/planos_trabalho_detalhe.html', {'object': obj})
+
+
+@require_http_methods(['GET', 'POST'])
+def plano_trabalho_excluir(request, pk):
+    obj = get_object_or_404(PlanoTrabalho, pk=pk)
+    return_to = _get_safe_return_to(request, reverse('eventos:documentos-planos-trabalho'))
+    if request.method == 'POST':
+        obj.delete()
+        messages.success(request, 'Plano de trabalho excluído.')
+        return redirect(return_to)
+    return render(
+        request,
+        'eventos/documentos/planos_trabalho_excluir.html',
+        {'object': obj, 'return_to': return_to},
+    )
+
+
+@require_http_methods(['GET'])
+def plano_trabalho_download(request, pk, formato):
+    obj = get_object_or_404(PlanoTrabalho.objects.select_related('oficio'), pk=pk)
+    formato = _clean(formato).lower()
+    if formato not in {DocumentoFormato.DOCX.value, DocumentoFormato.PDF.value}:
+        raise Http404('Formato inválido.')
+    docx_bytes = (
+        render_plano_trabalho_docx(obj.oficio)
+        if obj.oficio_id
+        else render_plano_trabalho_model_docx(obj)
+    )
+    payload = docx_bytes
+    content_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    if formato == DocumentoFormato.PDF.value:
+        payload = convert_docx_bytes_to_pdf_bytes(docx_bytes)
+        content_type = 'application/pdf'
+    response = HttpResponse(payload, content_type=content_type)
+    ext = 'docx' if formato == DocumentoFormato.DOCX.value else 'pdf'
+    response['Content-Disposition'] = f'attachment; filename="plano_trabalho_{obj.pk}.{ext}"'
+    return response
 
 
 def ordens_servico_global(request):
-    return _documento_derivado_global(
+    filters = _base_documento_filters(request)
+    queryset = OrdemServico.objects.select_related('evento', 'oficio').all()
+    if filters['q']:
+        queryset = queryset.filter(
+            Q(finalidade__icontains=filters['q'])
+            | Q(observacoes__icontains=filters['q'])
+            | Q(evento__titulo__icontains=filters['q'])
+            | Q(oficio__motivo__icontains=filters['q'])
+        )
+    if filters['evento_id'].isdigit():
+        queryset = queryset.filter(evento_id=int(filters['evento_id']))
+    if filters['oficio_id'].isdigit():
+        queryset = queryset.filter(oficio_id=int(filters['oficio_id']))
+    if filters['status']:
+        queryset = queryset.filter(status=filters['status'])
+
+    page_obj = _paginate(queryset.order_by('-updated_at', '-created_at'), request.GET.get('page'))
+    return render(
         request,
-        template_title='Ordens de servico - Central de Viagens',
-        template_page_title='Ordens de servico',
-        template_subtitle='Hub global derivado dos oficios e da configuracao documental do evento.',
-        tipo_documento=DocumentoOficioTipo.ORDEM_SERVICO,
-        fundamentacao_tipo=EventoFundamentacao.TIPO_OS,
+        'eventos/documentos/ordens_servico_lista.html',
+        {
+            'object_list': list(page_obj.object_list),
+            'page_obj': page_obj,
+            'pagination_query': _query_without_page(request),
+            'filters': filters,
+            'eventos_choices': _eventos_choices(),
+            'oficios_choices': Oficio.objects.order_by('-updated_at')[:200],
+            'status_choices': OrdemServico.STATUS_CHOICES,
+        },
     )
+
+
+@require_http_methods(['GET', 'POST'])
+def ordem_servico_novo(request):
+    return_to_default = reverse('eventos:documentos-ordens-servico')
+    return_to = _get_safe_return_to(request, return_to_default)
+    context_source = _get_context_source(request)
+    preselected_event, preselected_oficio = _resolve_preselected_context(request)
+
+    initial = {}
+    if preselected_event:
+        initial['evento'] = preselected_event.pk
+    if preselected_oficio:
+        initial['oficio'] = preselected_oficio.pk
+
+    form = OrdemServicoForm(request.POST or None, initial=initial)
+    if request.method == 'POST' and form.is_valid():
+        obj = form.save()
+        messages.success(request, 'Ordem de serviço criada com sucesso.')
+        return redirect(return_to or reverse('eventos:documentos-ordens-servico-detalhe', kwargs={'pk': obj.pk}))
+
+    return render(
+        request,
+        'eventos/documentos/ordens_servico_form.html',
+        {
+            'form': form,
+            'object': None,
+            'return_to': return_to,
+            'context_source': context_source,
+            'preselected_event_id': preselected_event.pk if preselected_event else '',
+            'preselected_oficio_id': preselected_oficio.pk if preselected_oficio else '',
+        },
+    )
+
+
+@require_http_methods(['GET', 'POST'])
+def ordem_servico_editar(request, pk):
+    obj = get_object_or_404(OrdemServico.objects.select_related('evento', 'oficio'), pk=pk)
+    return_to = _get_safe_return_to(request, reverse('eventos:documentos-ordens-servico'))
+    context_source = _get_context_source(request)
+    form = OrdemServicoForm(request.POST or None, instance=obj)
+    if request.method == 'POST' and form.is_valid():
+        form.save()
+        messages.success(request, 'Ordem de serviço atualizada.')
+        return redirect(return_to or reverse('eventos:documentos-ordens-servico-detalhe', kwargs={'pk': obj.pk}))
+    return render(
+        request,
+        'eventos/documentos/ordens_servico_form.html',
+        {
+            'form': form,
+            'object': obj,
+            'return_to': return_to,
+            'context_source': context_source,
+            'preselected_event_id': obj.evento_id or '',
+            'preselected_oficio_id': obj.oficio_id or '',
+        },
+    )
+
+
+@require_http_methods(['GET'])
+def ordem_servico_detalhe(request, pk):
+    obj = get_object_or_404(OrdemServico.objects.select_related('evento', 'oficio'), pk=pk)
+    return render(request, 'eventos/documentos/ordens_servico_detalhe.html', {'object': obj})
+
+
+@require_http_methods(['GET', 'POST'])
+def ordem_servico_excluir(request, pk):
+    obj = get_object_or_404(OrdemServico, pk=pk)
+    return_to = _get_safe_return_to(request, reverse('eventos:documentos-ordens-servico'))
+    if request.method == 'POST':
+        obj.delete()
+        messages.success(request, 'Ordem de serviço excluída.')
+        return redirect(return_to)
+    return render(
+        request,
+        'eventos/documentos/ordens_servico_excluir.html',
+        {'object': obj, 'return_to': return_to},
+    )
+
+
+@require_http_methods(['GET'])
+def ordem_servico_download(request, pk, formato):
+    obj = get_object_or_404(OrdemServico.objects.select_related('oficio'), pk=pk)
+    formato = _clean(formato).lower()
+    if formato not in {DocumentoFormato.DOCX.value, DocumentoFormato.PDF.value}:
+        raise Http404('Formato inválido.')
+    docx_bytes = (
+        render_ordem_servico_docx(obj.oficio)
+        if obj.oficio_id
+        else render_ordem_servico_model_docx(obj)
+    )
+    payload = docx_bytes
+    content_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+    if formato == DocumentoFormato.PDF.value:
+        payload = convert_docx_bytes_to_pdf_bytes(docx_bytes)
+        content_type = 'application/pdf'
+    response = HttpResponse(payload, content_type=content_type)
+    ext = 'docx' if formato == DocumentoFormato.DOCX.value else 'pdf'
+    response['Content-Disposition'] = f'attachment; filename="ordem_servico_{obj.pk}.{ext}"'
+    return response
 
 
 def justificativas_global(request):

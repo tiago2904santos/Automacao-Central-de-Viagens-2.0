@@ -25,13 +25,14 @@ from .models import (
     Evento,
     EventoDestino,
     EventoFinalizacao,
-    EventoFundamentacao,
     EventoParticipante,
     EventoTermoParticipante,
     ModeloJustificativa,
     ModeloMotivoViagem,
+    OrdemServico,
     Oficio,
     OficioTrecho,
+    PlanoTrabalho,
     RoteiroEvento,
     RoteiroEventoDestino,
     RoteiroEventoTrecho,
@@ -40,7 +41,6 @@ from .models import (
 from .forms import (
     EventoEtapa1Form,
     EventoFinalizacaoForm,
-    EventoFundamentacaoForm,
     ModeloJustificativaForm,
     ModeloMotivoViagemForm,
     OficioJustificativaForm,
@@ -654,19 +654,19 @@ def _evento_oficios_em_andamento(evento):
 
 
 def _evento_pt_os_ok(evento):
-    """True quando tipo e texto da fundamentação estiverem preenchidos (etapa concluída)."""
-    try:
-        return evento.fundamentacao.concluido
-    except EventoFundamentacao.DoesNotExist:
-        return False
+    """True quando existe ao menos um PT/OS finalizado vinculado ao evento."""
+    return (
+        PlanoTrabalho.objects.filter(evento=evento, status=PlanoTrabalho.STATUS_FINALIZADO).exists()
+        or OrdemServico.objects.filter(evento=evento, status=OrdemServico.STATUS_FINALIZADO).exists()
+    )
 
 
 def _evento_pt_os_em_andamento(evento):
-    """True quando existe registro de PT/OS mas ainda incompleto (salvo como rascunho)."""
-    try:
-        return evento.fundamentacao.em_andamento
-    except EventoFundamentacao.DoesNotExist:
-        return False
+    """True quando há PT/OS em rascunho vinculados ao evento."""
+    return (
+        PlanoTrabalho.objects.filter(evento=evento, status=PlanoTrabalho.STATUS_RASCUNHO).exists()
+        or OrdemServico.objects.filter(evento=evento, status=OrdemServico.STATUS_RASCUNHO).exists()
+    )
 
 
 def _evento_justificativa_ok(evento):
@@ -1299,38 +1299,38 @@ def _guiado_etapa_em_breve(request, evento_id, numero, nome):
 @login_required
 @require_http_methods(['GET', 'POST'])
 def guiado_etapa_4(request, evento_id):
-    """PT / OS do evento (Etapa 4): formulário real, salvar e reabrir."""
+    """PT / OS do evento (Etapa 4): apenas consumo dos cadastros reais de PT e OS."""
     evento = get_object_or_404(
         Evento.objects.prefetch_related('oficios', 'destinos', 'tipos_demanda'),
         pk=evento_id,
     )
 
-    fundamentacao, _ = EventoFundamentacao.objects.get_or_create(
-        evento=evento,
-        defaults={'tipo_documento': '', 'texto_fundamentacao': '', 'observacoes_pt_os': ''},
-    )
     oficios = list(evento.oficios.order_by('ano', 'numero', 'id'))
     for oficio in oficios:
         oficio.justificativa_info = _build_oficio_justificativa_info(oficio)
 
-    if request.method == 'POST':
-        form = EventoFundamentacaoForm(request.POST, instance=fundamentacao)
-        if form.is_valid():
-            form.save()
-            messages.success(request, 'Fundamentação salva com sucesso.')
-            voltar = request.POST.get('voltar_painel')
-            if voltar:
-                return redirect('eventos:guiado-painel', pk=evento.pk)
-            return redirect('eventos:guiado-etapa-4', evento_id=evento.pk)
-    else:
-        form = EventoFundamentacaoForm(instance=fundamentacao)
+    planos = list(PlanoTrabalho.objects.filter(evento=evento).select_related('oficio').order_by('-updated_at'))
+    ordens = list(OrdemServico.objects.filter(evento=evento).select_related('oficio').order_by('-updated_at'))
+
+    return_to = reverse('eventos:guiado-etapa-4', kwargs={'evento_id': evento.pk})
+    novo_pt_url = (
+        f"{reverse('eventos:documentos-planos-trabalho-novo')}?"
+        f"context_source=evento&preselected_event_id={evento.pk}&return_to={quote(return_to)}"
+    )
+    novo_os_url = (
+        f"{reverse('eventos:documentos-ordens-servico-novo')}?"
+        f"context_source=evento&preselected_event_id={evento.pk}&return_to={quote(return_to)}"
+    )
 
     context = {
         'evento': evento,
         'object': evento,
-        'form': form,
-        'fundamentacao': fundamentacao,
         'oficios': oficios,
+        'planos_trabalho': planos,
+        'ordens_servico': ordens,
+        'novo_plano_trabalho_url': novo_pt_url,
+        'nova_ordem_servico_url': novo_os_url,
+        'return_to': return_to,
     }
     return render(request, 'eventos/guiado/etapa_4.html', context)
 
@@ -1869,9 +1869,6 @@ def _get_oficio_or_404_for_user(pk, user=None):
     """
     queryset = Oficio.objects.prefetch_related('viajantes', 'trechos').select_related(
         'evento',
-        'evento__fundamentacao__coordenador_operacional',
-        'evento__fundamentacao__coordenador_administrativo',
-        'evento__fundamentacao__solicitante',
         'veiculo',
         'motorista_viajante',
         'modelo_motivo',
@@ -5049,13 +5046,15 @@ def _build_step2_preview_data(oficio, form):
     }
 
 
-def _get_evento_fundamentacao_safe(evento):
-    if not evento:
+def _get_plano_trabalho_preferencial(oficio):
+    if not oficio:
         return None
-    try:
-        return evento.fundamentacao
-    except EventoFundamentacao.DoesNotExist:
-        return None
+    plano = PlanoTrabalho.objects.filter(oficio=oficio).order_by('-updated_at').first()
+    if plano:
+        return plano
+    if oficio.evento_id:
+        return PlanoTrabalho.objects.filter(evento=oficio.evento).order_by('-updated_at').first()
+    return None
 
 
 def _display_name_or_str(obj):
@@ -5065,16 +5064,16 @@ def _display_name_or_str(obj):
 
 
 def _build_oficio_responsavel_label(oficio):
-    fundamentacao = _get_evento_fundamentacao_safe(oficio.evento)
-    if not fundamentacao:
+    plano = _get_plano_trabalho_preferencial(oficio)
+    if not plano:
         return ''
-    if fundamentacao.coordenador_operacional_id and fundamentacao.coordenador_operacional:
-        return _display_name_or_str(fundamentacao.coordenador_operacional)
-    if fundamentacao.coordenador_administrativo_id and fundamentacao.coordenador_administrativo:
-        return _display_name_or_str(fundamentacao.coordenador_administrativo)
-    if fundamentacao.solicitante_id and fundamentacao.solicitante:
-        return _display_name_or_str(fundamentacao.solicitante)
-    return (fundamentacao.solicitante_outros or '').strip()
+    if plano.coordenador_operacional_id and plano.coordenador_operacional:
+        return _display_name_or_str(plano.coordenador_operacional)
+    if plano.coordenador_administrativo_id and plano.coordenador_administrativo:
+        return _display_name_or_str(plano.coordenador_administrativo)
+    if plano.solicitante_id and plano.solicitante:
+        return _display_name_or_str(plano.solicitante)
+    return (plano.solicitante_outros or '').strip()
 
 
 def _build_step3_periodo_display_from_state(state):

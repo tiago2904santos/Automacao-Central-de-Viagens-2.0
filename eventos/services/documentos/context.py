@@ -1,8 +1,15 @@
 from datetime import datetime
+from django.db import models
 
 from cadastros.models import AssinaturaConfiguracao, ConfiguracaoSistema
 
-from eventos.models import EventoFundamentacao, EfetivoPlanoTrabalho, OficioTrecho
+from eventos.models import (
+    EfetivoPlanoTrabalho,
+    EfetivoPlanoTrabalhoDocumento,
+    OficioTrecho,
+    OrdemServico,
+    PlanoTrabalho,
+)
 from eventos.services.diarias import (
     PeriodMarker,
     calculate_periodized_diarias,
@@ -430,16 +437,21 @@ def build_termo_autorizacao_document_context(oficio):
     return context
 
 
-def _get_fundamentacao_texto_para_tipo(oficio, tipo_documento):
-    """Retorna texto_fundamentacao do evento quando existir fundamentação do tipo indicado."""
-    if not oficio.evento_id:
-        return None
-    try:
-        fund = getattr(oficio.evento, 'fundamentacao', None)
-        if fund and (fund.tipo_documento or '').strip() == tipo_documento:
-            return _text_or_empty(fund.texto_fundamentacao) or None
-    except Exception:
-        pass
+def _get_plano_trabalho_for_oficio(oficio):
+    plano = PlanoTrabalho.objects.filter(oficio=oficio).order_by('-updated_at').first()
+    if plano:
+        return plano
+    if oficio.evento_id:
+        return PlanoTrabalho.objects.filter(evento=oficio.evento).order_by('-updated_at').first()
+    return None
+
+
+def _get_ordem_servico_for_oficio(oficio):
+    ordem = OrdemServico.objects.filter(oficio=oficio).order_by('-updated_at').first()
+    if ordem:
+        return ordem
+    if oficio.evento_id:
+        return OrdemServico.objects.filter(evento=oficio.evento).order_by('-updated_at').first()
     return None
 
 
@@ -475,8 +487,14 @@ def _get_plano_trabalho_markers_chegada(oficio):
     return markers, chegada_final
 
 
-def _get_pt_total_servidores(evento):
-    """Total de servidores do plano a partir da composição de efetivo do evento; fallback para 1."""
+def _get_pt_total_servidores(plano, evento):
+    """Total de servidores do plano a partir do documento; fallback para composição legada por evento."""
+    if plano:
+        total_doc = plano.efetivos.aggregate(total=models.Sum('quantidade')).get('total')
+        if total_doc:
+            return max(1, total_doc)
+        if plano.quantidade_servidores:
+            return max(1, plano.quantidade_servidores)
     return _pt_total_servidores_safe(evento)
 
 
@@ -511,12 +529,11 @@ def _format_data_extenso(data_value):
         return ''
 
 
-def _build_coordenacao_formatada(fund):
-    """Monta o texto {{coordenacao_formatada}} a partir da fundamentação (coordenador operacional + administrativo)."""
-    from django.utils import timezone
+def _build_coordenacao_formatada(plano):
+    """Monta o texto {{coordenacao_formatada}} a partir do PlanoTrabalho."""
     partes = []
-    if fund and fund.coordenador_operacional_id:
-        co = fund.coordenador_operacional
+    if plano and plano.coordenador_operacional_id:
+        co = plano.coordenador_operacional
         cargo = _text_or_empty(co.cargo) or 'Delegado(a)'
         partes.append(
             f'Fica designado como Coordenador Operacional do Evento o {cargo} {co.nome}, '
@@ -525,7 +542,7 @@ def _build_coordenacao_formatada(fund):
             'durante a execução da ação.'
         )
     config = _get_configuracao_sistema()
-    coord_adm = fund.coordenador_administrativo if fund else None
+    coord_adm = plano.coordenador_administrativo if plano else None
     if not coord_adm and config and getattr(config, 'coordenador_adm_plano_trabalho_id', None):
         coord_adm = config.coordenador_adm_plano_trabalho
     if coord_adm:
@@ -554,27 +571,24 @@ def _pt_total_servidores_safe(evento):
 def build_plano_trabalho_document_context(oficio):
     from django.utils import timezone
     context = _build_common_context(oficio)
-    objetivo = _get_fundamentacao_texto_para_tipo(oficio, EventoFundamentacao.TIPO_PT)
-    if objetivo is None:
+    evento = oficio.evento
+    plano = _get_plano_trabalho_for_oficio(oficio)
+    objetivo = _text_or_empty(plano.objetivo) if plano else ''
+    if not objetivo:
         objetivo = context['conteudo']['motivo']
 
-    evento = oficio.evento
-    fund = getattr(evento, 'fundamentacao', None) if evento else None
-    if fund and (fund.tipo_documento or '').strip() != EventoFundamentacao.TIPO_PT:
-        fund = None
-
     solicitante_texto = ''
-    if fund:
-        if fund.solicitante_id:
-            solicitante_texto = _text_or_empty(fund.solicitante.nome)
+    if plano:
+        if plano.solicitante_id:
+            solicitante_texto = _text_or_empty(plano.solicitante.nome)
         else:
-            solicitante_texto = _text_or_empty(fund.solicitante_outros)
+            solicitante_texto = _text_or_empty(plano.solicitante_outros)
 
-    atividades_codigos = (fund.atividades_codigos if fund else '') or ''
-    horario_atendimento = _text_or_empty(fund.horario_atendimento if fund else '')
-    recursos_formatado = _text_or_empty(fund.recursos_texto if fund else '')
+    atividades_codigos = (plano.atividades_codigos if plano else '') or ''
+    horario_atendimento = _text_or_empty(plano.horario_atendimento if plano else '')
+    recursos_formatado = _text_or_empty(plano.recursos_texto if plano else '')
 
-    total_servidores_pt = _pt_total_servidores_safe(evento)
+    total_servidores_pt = _get_pt_total_servidores(plano, evento)
     markers, chegada_final = _get_plano_trabalho_markers_chegada(oficio)
     diarias_pt = {}
     if markers and chegada_final:
@@ -639,7 +653,7 @@ def build_plano_trabalho_document_context(oficio):
             'valor_unitario': valor_unitario_str,
             'valor_unitario_por_extenso': valor_unitario_extenso,
             'recursos_formatado': recursos_formatado,
-            'coordenacao_formatada': _build_coordenacao_formatada(fund) if fund else '',
+            'coordenacao_formatada': _build_coordenacao_formatada(plano) if plano else '',
             'plano_trabalho': {
                 'objetivo': objetivo,
                 'local_periodo': (
@@ -679,8 +693,9 @@ def build_plano_trabalho_document_context(oficio):
 
 def build_ordem_servico_document_context(oficio):
     context = _build_common_context(oficio)
-    finalidade = _get_fundamentacao_texto_para_tipo(oficio, EventoFundamentacao.TIPO_OS)
-    if finalidade is None:
+    ordem = _get_ordem_servico_for_oficio(oficio)
+    finalidade = _text_or_empty(ordem.finalidade) if ordem else ''
+    if not finalidade:
         finalidade = context['conteudo']['motivo']
     context.update(
         {

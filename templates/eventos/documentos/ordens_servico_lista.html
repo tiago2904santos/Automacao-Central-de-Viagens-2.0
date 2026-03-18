@@ -1,0 +1,57 @@
+{% extends 'base.html' %}
+
+{% block title %}Ordens de serviço - Central de Viagens{% endblock %}
+{% block page_title %}Ordens de serviço{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+  <div class="d-flex justify-content-between align-items-center mb-3 flex-wrap gap-2">
+    <h1 class="h4 mb-0">Ordens de serviço</h1>
+    <a class="btn btn-primary" href="{% url 'eventos:documentos-ordens-servico-novo' %}">Nova ordem de serviço</a>
+  </div>
+
+  <form method="get" class="card card-body mb-3">
+    <div class="row g-2">
+      <div class="col-md-4"><input class="form-control" type="text" name="q" placeholder="Buscar" value="{{ filters.q }}"></div>
+      <div class="col-md-3">
+        <select class="form-select" name="evento_id">
+          <option value="">Evento (todos)</option>
+          {% for e in eventos_choices %}<option value="{{ e.pk }}" {% if filters.evento_id == e.pk|stringformat:'s' %}selected{% endif %}>{{ e.titulo|default:'(sem título)' }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="col-md-3">
+        <select class="form-select" name="status">
+          <option value="">Status (todos)</option>
+          {% for value,label in status_choices %}<option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+        </select>
+      </div>
+      <div class="col-md-2 d-grid"><button class="btn btn-outline-secondary" type="submit">Filtrar</button></div>
+    </div>
+  </form>
+
+  <div class="card">
+    <div class="table-responsive">
+      <table class="table table-sm table-hover mb-0">
+        <thead class="table-light"><tr><th>ID</th><th>Número</th><th>Status</th><th>Evento</th><th>Ofício</th><th class="text-end">Ações</th></tr></thead>
+        <tbody>
+          {% for object in object_list %}
+          <tr>
+            <td>{{ object.pk }}</td>
+            <td>{{ object.numero_formatado|default:'—' }}</td>
+            <td>{{ object.get_status_display }}</td>
+            <td>{% if object.evento %}{{ object.evento.titulo|default:'(sem título)' }}{% else %}—{% endif %}</td>
+            <td>{% if object.oficio %}{{ object.oficio.numero_formatado|default:'—' }}{% else %}—{% endif %}</td>
+            <td class="text-end">
+              <a class="btn btn-outline-secondary btn-sm" href="{% url 'eventos:documentos-ordens-servico-detalhe' object.pk %}">Detalhe</a>
+              <a class="btn btn-outline-primary btn-sm" href="{% url 'eventos:documentos-ordens-servico-editar' object.pk %}">Editar</a>
+            </td>
+          </tr>
+          {% empty %}
+          <tr><td colspan="6" class="text-center text-muted py-4">Nenhuma ordem de serviço encontrada.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

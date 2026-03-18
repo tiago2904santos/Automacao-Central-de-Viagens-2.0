@@ -1,7 +1,15 @@
 from eventos.services.justificativa import get_primeira_saida_oficio
 
 from .context import build_ordem_servico_document_context
-from .renderer import get_document_template_path, render_docx_template_bytes
+from .renderer import (
+    add_label_value,
+    add_multiline_value,
+    add_section_heading,
+    create_base_document,
+    document_to_bytes,
+    get_document_template_path,
+    render_docx_template_bytes,
+)
 from .types import DocumentoOficioTipo
 
 
@@ -84,3 +92,29 @@ def render_ordem_servico_docx(oficio):
     template_path = get_document_template_path(DocumentoOficioTipo.ORDEM_SERVICO)
     mapping = build_ordem_servico_template_context(oficio)
     return render_docx_template_bytes(template_path, mapping)
+
+
+def render_ordem_servico_model_docx(ordem_servico):
+    """Renderização DOCX a partir da entidade OrdemServico, sem exigir Ofício/Evento."""
+    titulo = f"ORDEM DE SERVIÇO {ordem_servico.numero_formatado or f'#{ordem_servico.pk}'}"
+    subtitulo = (
+        (ordem_servico.evento.titulo or '').strip()
+        if ordem_servico.evento_id and ordem_servico.evento
+        else 'Documento avulso'
+    )
+    document = create_base_document(titulo, subtitulo)
+
+    add_section_heading(document, 'Identificação')
+    add_label_value(document, 'Número', ordem_servico.numero_formatado)
+    add_label_value(document, 'Data de criação', ordem_servico.data_criacao.strftime('%d/%m/%Y') if ordem_servico.data_criacao else '')
+    add_label_value(document, 'Status', ordem_servico.get_status_display())
+    add_label_value(document, 'Evento', (ordem_servico.evento.titulo if ordem_servico.evento_id and ordem_servico.evento else ''))
+    add_label_value(document, 'Ofício', (ordem_servico.oficio.numero_formatado if ordem_servico.oficio_id and ordem_servico.oficio else ''))
+
+    add_multiline_value(document, 'Finalidade', ordem_servico.finalidade)
+    add_multiline_value(document, 'Responsáveis', ordem_servico.responsaveis)
+    add_multiline_value(document, 'Designações', ordem_servico.designacoes)
+    add_multiline_value(document, 'Determinações', ordem_servico.determinacoes)
+    add_multiline_value(document, 'Observações', ordem_servico.observacoes)
+
+    return document_to_bytes(document)

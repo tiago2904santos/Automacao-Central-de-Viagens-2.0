@@ -92,3 +92,39 @@ def render_plano_trabalho_docx(oficio):
 
     add_signature_blocks(document, context['assinaturas'])
     return document_to_bytes(document)
+
+
+def render_plano_trabalho_model_docx(plano_trabalho):
+    """Renderização DOCX a partir da entidade PlanoTrabalho, sem exigir Ofício/Evento."""
+    titulo = f"PLANO DE TRABALHO {plano_trabalho.numero_formatado or f'#{plano_trabalho.pk}'}"
+    subtitulo = (
+        (plano_trabalho.evento.titulo or '').strip()
+        if plano_trabalho.evento_id and plano_trabalho.evento
+        else 'Documento avulso'
+    )
+    document = create_base_document(titulo, subtitulo)
+
+    add_section_heading(document, 'Identificação')
+    add_label_value(document, 'Número', plano_trabalho.numero_formatado)
+    add_label_value(document, 'Data de criação', plano_trabalho.data_criacao.strftime('%d/%m/%Y') if plano_trabalho.data_criacao else '')
+    add_label_value(document, 'Status', plano_trabalho.get_status_display())
+    add_label_value(document, 'Evento', (plano_trabalho.evento.titulo if plano_trabalho.evento_id and plano_trabalho.evento else ''))
+    add_label_value(document, 'Ofício', (plano_trabalho.oficio.numero_formatado if plano_trabalho.oficio_id and plano_trabalho.oficio else ''))
+
+    add_multiline_value(document, 'Objetivo / finalidade', plano_trabalho.objetivo)
+    add_multiline_value(document, 'Locais', plano_trabalho.locais)
+    add_label_value(document, 'Horário de atendimento', plano_trabalho.horario_atendimento)
+    add_label_value(document, 'Quantidade de servidores', str(plano_trabalho.quantidade_servidores or ''))
+
+    if plano_trabalho.atividades_codigos:
+        add_label_value(document, 'Atividades (códigos)', plano_trabalho.atividades_codigos)
+    if plano_trabalho.metas_formatadas:
+        add_multiline_value(document, 'Metas', plano_trabalho.metas_formatadas)
+    if plano_trabalho.efetivo_resumo:
+        add_multiline_value(document, 'Efetivo', plano_trabalho.efetivo_resumo)
+    if plano_trabalho.recursos_texto:
+        add_multiline_value(document, 'Recursos', plano_trabalho.recursos_texto)
+    if plano_trabalho.observacoes:
+        add_multiline_value(document, 'Observações', plano_trabalho.observacoes)
+
+    return document_to_bytes(document)
