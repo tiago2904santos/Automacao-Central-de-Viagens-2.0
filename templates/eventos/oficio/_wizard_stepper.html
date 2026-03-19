@@ -1,4 +1,4 @@
-<nav class="oficio-stepper" aria-label="Etapas do ofício">
+<nav class="oficio-stepper" aria-label="Etapas do ofício" style="--oficio-step-count: {{ wizard_steps|length }};">
   {% for item in wizard_steps %}
   <a
     href="{{ item.url }}"

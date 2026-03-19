@@ -752,10 +752,17 @@ class OficioStep1Form(FormComErroInvalidMixin, forms.Form):
     )
     protocolo = forms.CharField(
         required=True,
-        max_length=80,
+        max_length=12,
         label='Protocolo',
         widget=forms.TextInput(
-            attrs={'class': 'form-control', 'data-mask': 'protocolo', 'inputmode': 'numeric'}
+            attrs={
+                'class': 'form-control',
+                'data-mask': 'protocolo',
+                'inputmode': 'numeric',
+                'maxlength': 12,
+                'placeholder': '12.345.678-9',
+                'autocomplete': 'off',
+            }
         ),
     )
     data_criacao = forms.DateField(
@@ -882,9 +889,18 @@ class LegacyOficioStep2Form(FormComErroInvalidMixin, forms.Form):
     motorista_oficio_ano = forms.IntegerField(required=False, min_value=2000, max_value=2100, label='Ano ofício motorista', widget=forms.NumberInput(attrs={'class': 'form-control'}))
     motorista_protocolo = forms.CharField(
         required=False,
-        max_length=80,
+        max_length=12,
         label='Protocolo motorista',
-        widget=forms.TextInput(attrs={'class': 'form-control', 'data-mask': 'protocolo', 'inputmode': 'numeric'}),
+        widget=forms.TextInput(
+            attrs={
+                'class': 'form-control',
+                'data-mask': 'protocolo',
+                'inputmode': 'numeric',
+                'maxlength': 12,
+                'placeholder': '12.345.678-9',
+                'autocomplete': 'off',
+            }
+        ),
     )
 
     def __init__(self, *args, **kwargs):
@@ -995,9 +1011,18 @@ class OficioStep2Form(FormComErroInvalidMixin, forms.Form):
     )
     motorista_protocolo = forms.CharField(
         required=False,
-        max_length=80,
+        max_length=12,
         label='Protocolo do motorista',
-        widget=forms.TextInput(attrs={'class': 'form-control', 'data-mask': 'protocolo', 'inputmode': 'numeric'}),
+        widget=forms.TextInput(
+            attrs={
+                'class': 'form-control',
+                'data-mask': 'protocolo',
+                'inputmode': 'numeric',
+                'maxlength': 12,
+                'placeholder': '12.345.678-9',
+                'autocomplete': 'off',
+            }
+        ),
     )
 
     def __init__(self, *args, **kwargs):

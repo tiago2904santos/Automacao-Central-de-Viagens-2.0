@@ -31,8 +31,8 @@
 
     if (meta) {
       meta.textContent = travelers.length
-        ? (travelers.length + ' viajante' + (travelers.length > 1 ? 's' : ''))
-        : getEmptyText(meta, 'Nenhum viajante');
+        ? (travelers.length + ' servidor' + (travelers.length > 1 ? 'es' : ''))
+        : getEmptyText(meta, 'Nenhum servidor');
     }
 
     if (!list) {
@@ -43,7 +43,7 @@
     if (!travelers.length) {
       var empty = document.createElement('span');
       empty.className = 'oficio-glance-empty';
-      empty.textContent = 'Selecione ao menos um viajante.';
+      empty.textContent = 'Adicione ao menos um servidor para visualizar a equipe aqui.';
       list.appendChild(empty);
       return;
     }
@@ -96,7 +96,7 @@
         button.setAttribute('aria-expanded', open ? 'true' : 'false');
         button.classList.toggle('is-active', open);
         if (label) {
-          label.textContent = open ? 'Fechar submenu' : 'Abrir submenu';
+          label.textContent = open ? 'Recolher painel' : 'Expandir painel';
         }
       });
     }
@@ -121,7 +121,7 @@
     if (!form) {
       return null;
     }
-    var statusElement = options.statusElement || qs('#oficio-autosave-status');
+    var statusElement = options.statusElement || null;
     var url = options.url || window.location.href;
     var beforeSerialize = typeof options.beforeSerialize === 'function' ? options.beforeSerialize : function() {};
     var captureSubmit = options.captureSubmit !== false;
@@ -130,11 +130,10 @@
     var activeRequest = null;
     var queuedAfterActive = false;
 
-    function setStatus(text, state) {
+    function setStatus(state) {
       if (!statusElement) {
         return;
       }
-      statusElement.textContent = text;
       statusElement.dataset.state = state || '';
     }
 
@@ -154,7 +153,7 @@
         return Promise.resolve(true);
       }
       dirty = false;
-      setStatus('Salvando...', 'saving');
+      setStatus('saving');
       activeRequest = fetch(url, {
         method: 'POST',
         headers: { 'X-Requested-With': 'XMLHttpRequest' },
@@ -166,14 +165,13 @@
             if (!response.ok || data.ok === false) {
               throw new Error(data.error || 'Falha no autosave.');
             }
-            var savedAt = data.saved_at || '';
-            setStatus(savedAt ? ('Autosave salvo às ' + savedAt) : 'Autosave salvo', 'saved');
+            setStatus('saved');
             return true;
           });
         })
         .catch(function(error) {
           dirty = true;
-          setStatus(error && error.message ? error.message : 'Falha no autosave.', 'error');
+          setStatus('error');
           return false;
         })
         .finally(function() {
@@ -262,7 +260,7 @@
       }
     });
 
-    setStatus('Autosave ativo', 'idle');
+    setStatus('idle');
     return {
       schedule: schedule,
       flush: flush,

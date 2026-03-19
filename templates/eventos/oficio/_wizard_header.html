@@ -1,32 +1,50 @@
-<div class="oficio-wizard-header mb-3" data-oficio-sticky-header>
+<div class="oficio-wizard-header" data-oficio-sticky-header>
   <div class="oficio-wizard-header-card">
     <div class="oficio-wizard-header-main">
       <div class="oficio-wizard-header-copy">
-        <span class="oficio-wizard-eyebrow">Ofício</span>
+        <span class="oficio-wizard-eyebrow">Cadastro de ofício</span>
         <h1>{{ wizard_page_title }}</h1>
+        <p class="oficio-wizard-header-support">
+          Fluxo guiado com resumo essencial integrado ao topo e sem atalhos soltos no cabeçalho.
+        </p>
+      </div>
+
+      <div class="oficio-wizard-header-badges" aria-label="Contexto do ofício">
+        <span class="oficio-wizard-header-badge">
+          <span class="oficio-wizard-header-badge-label">Ofício</span>
+          <strong>{{ oficio.numero_formatado|default:"Novo rascunho" }}</strong>
+        </span>
+        <span class="oficio-wizard-header-badge">
+          <span class="oficio-wizard-header-badge-label">Status</span>
+          <strong>{{ oficio.get_status_display }}</strong>
+        </span>
       </div>
     </div>
+
     {% include 'eventos/oficio/_wizard_stepper.html' %}
-    <div class="oficio-wizard-submenu-bar" role="toolbar" aria-label="Ações do wizard">
+
+    <div class="oficio-wizard-submenu-bar" aria-label="Acionamento do resumo essencial">
       <button
         type="button"
-        class="btn btn-outline-secondary btn-sm oficio-wizard-submenu-trigger cv-btn cv-btn--secondary"
+        class="oficio-wizard-submenu-trigger"
         data-oficio-glance-toggle
+        data-oficio-glance-rail="1"
         aria-expanded="false"
         aria-controls="oficio-glance-panel"
-        title="Mostrar/ocultar submenu com resumo do ofício"
+        title="Mostrar ou ocultar o resumo essencial do ofício"
       >
-        <i class="bi bi-layout-text-sidebar-reverse"></i>
-        <span data-oficio-glance-toggle-label>Abrir submenu</span>
+        <span class="oficio-wizard-submenu-copy">
+          <span class="oficio-wizard-submenu-kicker">Resumo essencial</span>
+          <span class="oficio-wizard-submenu-title">Ofício, protocolo, destino, data do evento e servidores</span>
+          <span class="oficio-wizard-submenu-text">Abra a barra abaixo para revisar o núcleo do cadastro sem perder a etapa atual.</span>
+        </span>
+        <span class="oficio-wizard-submenu-pill">
+          <span data-oficio-glance-toggle-label>Expandir painel</span>
+          <i class="bi bi-chevron-down" aria-hidden="true"></i>
+        </span>
       </button>
-      <div class="oficio-wizard-submenu-actions">
-        <a href="{% url 'eventos:oficios-global' %}" class="btn btn-outline-secondary btn-sm cv-btn cv-btn--secondary" data-autosave-link="1">Lista</a>
-        {% if oficio.pk %}
-        <a href="{% url 'eventos:oficio-excluir' oficio.pk %}" class="btn btn-outline-danger btn-sm cv-btn cv-btn--danger" data-autosave-link="1">Excluir</a>
-        {% endif %}
-      </div>
     </div>
-    <!-- Submenu expansível integrado ao header -->
+
     {% include 'eventos/oficio/_wizard_glance.html' %}
   </div>
 </div>

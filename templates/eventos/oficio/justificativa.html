@@ -6,11 +6,10 @@
 
 {% block content %}
 <div class="container-fluid pt-0 pb-4 oficio-wizard-page" data-glance-state="closed">
-  {% include 'eventos/oficio/_wizard_header.html' %}
+  <div class="oficio-wizard-shell">
+    {% include 'eventos/oficio/_wizard_header.html' %}
 
-  <div class="row g-4">
-    <div class="col-12">
-      <div class="card oficio-stage-panel">
+    <div class="card oficio-stage-panel">
         <div class="card-body">
           <div class="oficio-stage-intro">
             <div>
@@ -58,7 +57,7 @@
             {% if form.justificativa_texto.errors %}<div class="invalid-feedback d-block">{{ form.justificativa_texto.errors.0 }}</div>{% endif %}
         </section>
 
-        <div class="oficio-wizard-footer-actions">
+        <div class="oficio-wizard-footer-actions" data-oficio-footer-actions="1">
           <a href="{{ voltar_step4_url }}" class="btn btn-outline-secondary" data-autosave-link="1">Voltar</a>
           <a href="{% url 'eventos:oficios-global' %}" class="btn btn-outline-secondary" data-autosave-link="1">Voltar para lista</a>
           {% if oficio.pk %}
@@ -68,7 +67,6 @@
         </div>
       </form>
         </div>
-      </div>
     </div>
   </div>
 </div>

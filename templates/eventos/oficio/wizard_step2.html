@@ -6,7 +6,8 @@
 
 {% block content %}
 <div class="container-fluid pt-0 pb-4 oficio-wizard-page" data-glance-state="closed">
-  {% include 'eventos/oficio/_wizard_header.html' %}
+  <div class="oficio-wizard-shell">
+    {% include 'eventos/oficio/_wizard_header.html' %}
   {% comment %}
   <div class="oficio-sticky-header">
     <div class="card shadow-sm border-0">
@@ -33,9 +34,7 @@
   </div>
   {% endcomment %}
 
-  <div class="row g-4">
-    <div class="col-12">
-      <div class="card oficio-stage-panel">
+    <div class="card oficio-stage-panel">
         <div class="card-body">
           <div class="oficio-stage-intro">
             <div>
@@ -247,7 +246,7 @@
               </div>
             </section>
 
-            <div class="oficio-wizard-footer-actions">
+            <div class="oficio-wizard-footer-actions" data-oficio-footer-actions="1">
               <a href="{% url 'eventos:oficio-step1' oficio.pk %}" class="btn btn-outline-secondary" data-autosave-link="1">Voltar</a>
               <a href="{% url 'eventos:oficios-global' %}" class="btn btn-outline-secondary" data-autosave-link="1">Voltar para lista</a>
               {% if oficio.pk %}
@@ -258,7 +257,6 @@
 
           </form>
         </div>
-      </div>
     </div>
   </div>
 </div>
@@ -458,9 +456,6 @@
       modeloInput ? String(modeloInput.value || '').trim() : ''
     ].filter(Boolean).join(' • ');
     setPreview('vehicle-inline-summary', summaryText || 'Defina a viatura');
-    if (window.OficioWizard) {
-      window.OficioWizard.setGlanceValue('summary-veiculo', summaryText);
-    }
   }
 
   function renderMotoristaChip() {

@@ -2030,14 +2030,14 @@ def _build_oficio_wizard_glance_data(oficio, step1_preview=None, step2_preview=N
         fim = evento.data_fim.strftime('%d/%m/%Y') if evento.data_fim else ''
         data_label = inicio if not fim or fim == inicio else f'{inicio} até {fim}'
     else:
-        data_label = step3_preview.get('periodo_display') or step1_preview.get('data_criacao') or ''
+        data_label = step3_preview.get('periodo_display') or ''
     return {
         'oficio': step1_preview.get('oficio') or '',
         'protocolo': step1_preview.get('protocolo') or '',
         'viajantes_count': len(viajantes),
         'viajantes': [viajante.nome for viajante in viajantes if getattr(viajante, 'nome', '').strip()],
         'destino': step3_preview.get('destino_principal') or '',
-        'data': data_label,
+        'data_evento': data_label,
     }
 
 

@@ -6,6 +6,7 @@
 
 {% block content %}
 <div class="container-fluid pt-0 pb-4 oficio-wizard-page" data-glance-state="closed">
+  <div class="oficio-wizard-shell">
   {% include 'eventos/oficio/_wizard_header.html' %}
 
   <div class="card oficio-stage-panel">
@@ -224,8 +225,16 @@
     </section>
       </div>
 
-      <div class="oficio-summary-actions mt-4 p-3 bg-white">
+      <div class="oficio-summary-actions mt-4 p-3 bg-white" data-oficio-footer-actions="1">
         <div class="oficio-summary-actions-group">
+          <a href="{% url 'eventos:oficios-global' %}" class="btn btn-outline-secondary" data-autosave-link="1">
+            <span>Voltar para lista</span>
+          </a>
+          {% if oficio.pk %}
+          <a href="{% url 'eventos:oficio-excluir' oficio.pk %}" class="btn btn-outline-danger" data-autosave-link="1">
+            <span>Excluir</span>
+          </a>
+          {% endif %}
           {% if oficio.status != 'FINALIZADO' %}
           <button type="submit" form="oficio-step4-form" name="finalizar" value="1" class="btn btn-doc-action btn-doc-action--primary" data-autosave-bypass="1">
             <i class="bi bi-check2-circle"></i>
@@ -251,6 +260,7 @@
       </div>
     </div>
   </div>
+</div>
 </div>
 {% endblock %}
 
