@@ -6552,20 +6552,13 @@ class OficioDocumentosTest(TestCase):
         oficio = self._criar_oficio(data_criacao=date(2026, 10, 5))
         self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
 
-        response = self.client.get(reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk}))
+        response = self.client.get(reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk}), follow=True)
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Justificativa')
-        self.assertContains(response, 'Documentos principais')
-        self.assertContains(response, 'Documentos complementares')
-        self.assertContains(response, 'Termo de autoriza')
-        self.assertContains(response, 'Plano de trabalho')
-        self.assertContains(response, 'Ordem de servi')
-        self.assertContains(response, 'Pendente')
-        self.assertContains(response, 'Preencha a justificativa')
-        self.assertContains(response, 'PDF pendente')
-        self.assertTrue(all(item['status'] != 'planned' for item in response.context['documentos']))
-        self.assertTrue(all(item['status'] == 'pending' for item in response.context['documentos_complementares']))
+        self.assertRedirects(response, reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk}))
+        self.assertContains(response, 'Os downloads agora acontecem diretamente no resumo do oficio.')
+        self.assertContains(response, 'Resumo do of')
+        self.assertNotContains(response, 'Documentos do of')
 
     def test_tela_de_documentos_mostra_acoes_docx_e_pdf_quando_apto(self):
         self._criar_configuracao()
@@ -6577,13 +6570,62 @@ class OficioDocumentosTest(TestCase):
         )
         oficio.refresh_from_db()
 
-        response = self.client.get(reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk}))
+        response = self.client.get(reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk}), follow=True)
 
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Baixar DOCX')
-        self.assertContains(response, 'Baixar PDF')
-        self.assertTrue(any(item['docx'] and item['docx']['status'] == 'available' for item in response.context['documentos']))
-        self.assertTrue(any(item['pdf'] and item['pdf']['status'] == 'available' for item in response.context['documentos']))
+        self.assertRedirects(response, reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk}))
+        self.assertContains(response, 'Os downloads agora acontecem diretamente no resumo do oficio.')
+        self.assertContains(response, 'Resumo do of')
+
+    def test_download_docx_indisponivel_redireciona_para_resumo_do_oficio(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        with patch(
+            'eventos.views.get_document_generation_status',
+            return_value={
+                'status': 'unavailable',
+                'errors': ['Backend DOCX nao instalado neste ambiente atual.'],
+            },
+        ):
+            response = self.client.get(
+                reverse(
+                    'eventos:oficio-documento-download',
+                    kwargs={'pk': oficio.pk, 'tipo_documento': 'oficio', 'formato': 'docx'},
+                ),
+                follow=True,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertRedirects(response, reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk}))
+        self.assertContains(response, 'Backend DOCX nao instalado neste ambiente atual.')
+        self.assertNotContains(response, 'Documentos do of')
+
+    def test_download_pdf_indisponivel_redireciona_para_resumo_do_oficio(self):
+        self._criar_configuracao()
+        oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
+        self._salvar_oficio_finalizavel(oficio, date(2026, 10, 10), date(2026, 10, 11))
+
+        with patch(
+            'eventos.views.get_document_generation_status',
+            return_value={
+                'status': 'unavailable',
+                'errors': ['Backend PDF indisponivel neste ambiente atual.'],
+            },
+        ):
+            response = self.client.get(
+                reverse(
+                    'eventos:oficio-documento-download',
+                    kwargs={'pk': oficio.pk, 'tipo_documento': 'oficio', 'formato': 'pdf'},
+                ),
+                follow=True,
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertRedirects(response, reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk}))
+        self.assertContains(response, 'Backend PDF indisponivel neste ambiente atual.')
+        self.assertNotContains(response, 'Documentos do of')
 
     def test_leitura_de_configuracoes_e_assinaturas_nao_quebra_sem_dados(self):
         oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
@@ -6728,6 +6770,7 @@ class OficioDocumentosTest(TestCase):
             'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         )
 
+    @unittest.skip('Fluxo antigo de tela de documentos removido; cobertura migrada para downloads diretos e lista global.')
     def test_tela_documentos_mostra_status_separados_por_formato(self):
         self._criar_configuracao()
         oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
@@ -6753,7 +6796,7 @@ class OficioDocumentosTest(TestCase):
             'eventos.services.documentos.validators.get_document_backend_availability',
             side_effect=backend_side_effect,
         ):
-            response = self.client.get(reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk}))
+            response = self.client.get(reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk}), follow=True)
 
         self.assertEqual(response.status_code, 200)
         oficio_item = next(item for item in response.context['documentos'] if item['slug'] == 'oficio')
@@ -6763,6 +6806,7 @@ class OficioDocumentosTest(TestCase):
         self.assertContains(response, 'PDF: Indispon')
         self.assertContains(response, 'docx2pdf não está instalado')
 
+    @unittest.skip('Fluxo antigo de tela de documentos removido; cobertura migrada para downloads diretos e lista global.')
     def test_tela_documentos_abre_com_backend_docx_indisponivel(self):
         self._criar_configuracao()
         oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
@@ -6781,6 +6825,7 @@ class OficioDocumentosTest(TestCase):
         self.assertContains(response, 'Backend DOCX')
         self.assertContains(response, 'DOCX indispon')
 
+    @unittest.skip('Fluxo antigo de tela de documentos removido; cobertura migrada para downloads diretos e lista global.')
     def test_download_redireciona_com_mensagem_quando_backend_docx_indisponivel(self):
         self._criar_configuracao()
         oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
@@ -6802,6 +6847,7 @@ class OficioDocumentosTest(TestCase):
         self.assertContains(response, 'Backend DOCX')
         self.assertContains(response, 'Documentos do of')
 
+    @unittest.skip('Fluxo antigo de tela de documentos removido; cobertura migrada para downloads diretos e lista global.')
     def test_tela_documentos_abre_com_backend_pdf_indisponivel(self):
         self._criar_configuracao()
         oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
@@ -6825,6 +6871,7 @@ class OficioDocumentosTest(TestCase):
         self.assertContains(response, 'Backend PDF indispon')
         self.assertContains(response, 'PDF indispon')
 
+    @unittest.skip('Fluxo antigo de tela de documentos removido; cobertura migrada para downloads diretos e lista global.')
     def test_download_pdf_redireciona_com_mensagem_quando_backend_pdf_indisponivel(self):
         self._criar_configuracao()
         oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
@@ -6851,6 +6898,7 @@ class OficioDocumentosTest(TestCase):
         self.assertContains(response, 'Backend PDF indispon')
         self.assertContains(response, 'Documentos do of')
 
+    @unittest.skip('Fluxo antigo de tela de documentos removido; cobertura migrada para downloads diretos e lista global.')
     def test_tela_documentos_abre_sem_dependencia_do_check_legado_de_schema(self):
         oficio = self._criar_oficio(data_criacao=date(2026, 9, 20))
         response = self.client.get(reverse('eventos:oficio-documentos', kwargs={'pk': oficio.pk}))

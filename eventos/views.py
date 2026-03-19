@@ -2171,7 +2171,7 @@ def oficio_step1(request, pk):
     """Wizard Step 1 — Dados gerais + viajantes (fiel ao legado)."""
     oficio = _get_oficio_or_404_for_user(pk, user=request.user)
     if _bloquear_edicao_oficio_se_evento_finalizado(request, oficio):
-        return redirect('eventos:oficio-documentos', pk=oficio.pk)
+        return redirect('eventos:oficio-step4', pk=oficio.pk)
     evento = oficio.evento
     if _is_autosave_request(request):
         _autosave_oficio_step1(oficio, request)
@@ -4097,7 +4097,7 @@ def _build_oficio_documentos_context(oficio):
 def oficio_step3(request, pk):
     oficio = _get_oficio_or_404_for_user(pk, user=request.user)
     if _bloquear_edicao_oficio_se_evento_finalizado(request, oficio):
-        return redirect('eventos:oficio-documentos', pk=oficio.pk)
+        return redirect('eventos:oficio-step4', pk=oficio.pk)
     evento = oficio.evento
     validation_errors = []
     route_options, route_state_map = _build_step3_route_options(oficio)
@@ -4364,11 +4364,8 @@ def oficio_justificativa(request, pk):
 @require_http_methods(['GET'])
 def oficio_documentos(request, pk):
     oficio = _get_oficio_or_404_for_user(pk, user=request.user)
-    return render(
-        request,
-        'eventos/oficio/documentos.html',
-        _build_oficio_documentos_context(oficio),
-    )
+    messages.info(request, 'Os downloads agora acontecem diretamente no resumo do oficio.')
+    return redirect('eventos:oficio-step4', pk=oficio.pk)
 
 
 def _get_or_create_termos_from_oficio(oficio, user=None):
@@ -4464,7 +4461,7 @@ def _download_oficio_documento(request, oficio, tipo_documento, formato):
         termos, created = _get_or_create_termos_from_oficio(oficio, user=request.user)
         if not termos:
             messages.error(request, 'Não foi possível registrar o termo de autorização para este ofício.')
-            return redirect('eventos:oficio-documentos', pk=oficio.pk)
+            return redirect('eventos:oficio-step4', pk=oficio.pk)
         if created:
             messages.success(
                 request,
@@ -4482,12 +4479,12 @@ def _download_oficio_documento(request, oficio, tipo_documento, formato):
             request,
             (status_info.get('errors') or ['O documento solicitado não está disponível para download.'])[0],
         )
-        return redirect('eventos:oficio-documentos', pk=oficio.pk)
+        return redirect('eventos:oficio-step4', pk=oficio.pk)
     try:
         payload = render_document_bytes(oficio, meta.tipo, formato)
     except (DocumentGenerationError, DocumentRendererUnavailable) as exc:
         messages.error(request, str(exc))
-        return redirect('eventos:oficio-documentos', pk=oficio.pk)
+        return redirect('eventos:oficio-step4', pk=oficio.pk)
     filename = build_document_filename(oficio, meta.tipo, formato)
     content_type = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
     if formato == DocumentoFormato.PDF:
@@ -4509,7 +4506,7 @@ def oficio_documento_download(request, pk, tipo_documento, formato):
 def oficio_step4(request, pk):
     oficio = _get_oficio_or_404_for_user(pk, user=request.user)
     if _bloquear_edicao_oficio_se_evento_finalizado(request, oficio):
-        return redirect('eventos:oficio-documentos', pk=oficio.pk)
+        return redirect('eventos:oficios-global')
     evento = oficio.evento
     step4_url = reverse('eventos:oficio-step4', kwargs={'pk': oficio.pk})
     if _is_autosave_request(request):
@@ -5407,7 +5404,7 @@ def oficio_step2(request, pk):
 
     oficio = _get_oficio_or_404_for_user(pk, user=request.user)
     if _bloquear_edicao_oficio_se_evento_finalizado(request, oficio):
-        return redirect('eventos:oficio-documentos', pk=oficio.pk)
+        return redirect('eventos:oficio-step4', pk=oficio.pk)
     evento = oficio.evento
     if _is_autosave_request(request):
         _autosave_oficio_step2(oficio, request)

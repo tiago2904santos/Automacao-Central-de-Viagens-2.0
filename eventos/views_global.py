@@ -572,16 +572,6 @@ def _oficio_list_chip(label, value, css_class=''):
     }
 
 
-def _oficio_list_status_item(value, css_class=''):
-    text = _clean(value)
-    if not text or text == EMPTY_DISPLAY:
-        return None
-    return {
-        'value': text,
-        'css_class': css_class,
-    }
-
-
 def _oficio_list_display_or_default(value, fallback):
     text = _clean(value)
     if not text or text == EMPTY_DISPLAY:
@@ -598,24 +588,26 @@ def _oficio_list_header_chips(oficio, destinos_display, periodo_display):
     ]
 
 
-def _oficio_list_status_chips(oficio, viagem_status):
+def _oficio_list_corner_badges(oficio, viagem_status):
     oficio_status = _oficio_process_status_meta(oficio)
-    items = [
-        _oficio_list_status_item(oficio_status['label'], oficio_status['css_class']),
-        _oficio_list_status_item(viagem_status['label'], viagem_status['css_class']),
-        _oficio_list_status_item(viagem_status.get('relative_label', ''), viagem_status['css_class']),
-    ]
-    chips = []
+    badges = []
     seen = set()
-    for item in items:
-        if not item:
-            continue
-        normalized = item['value'].lower()
+
+    def append_badge(value, css_class):
+        text = _clean(value)
+        if not text or text == EMPTY_DISPLAY:
+            return
+        normalized = text.lower()
         if normalized in seen:
-            continue
+            return
         seen.add(normalized)
-        chips.append(item)
-    return chips
+        badges.append({'value': text, 'css_class': css_class})
+
+    append_badge(oficio_status['label'], oficio_status['css_class'])
+    relative_label = _clean(viagem_status.get('relative_label'))
+    if relative_label.lower() == 'termina hoje':
+        append_badge(relative_label, viagem_status['css_class'])
+    return badges
 
 
 def _oficio_list_initials(value):
@@ -671,32 +663,29 @@ def _oficio_list_driver_display(oficio):
     return _clean(oficio.motorista) or 'Nao informado'
 
 
-def _oficio_list_vehicle_block(oficio):
+def _oficio_list_transport_block(oficio):
     placa = _clean(getattr(oficio, 'placa_formatada', ''))
     modelo = _clean(oficio.modelo)
     if placa == EMPTY_DISPLAY:
         placa = ''
-
-    primary = placa or modelo or 'Nao informado'
-    secondary = modelo if placa and modelo and modelo != placa else ''
-    if not secondary and placa and not modelo:
-        secondary = 'Placa da viagem'
-    return {
-        'title': 'Veiculo',
-        'primary': primary,
-        'secondary': secondary,
-    }
-
-
-def _oficio_list_driver_block(oficio):
+    vehicle_display = _oficio_list_vehicle_display(oficio)
     driver_display = _oficio_list_driver_display(oficio)
-    secondary = ''
+
+    vehicle_secondary = modelo if placa and modelo and modelo != placa else ''
+    if not vehicle_secondary and placa and not modelo:
+        vehicle_secondary = 'Placa da viagem'
+
+    driver_secondary = ''
     if driver_display != 'Nao informado':
-        secondary = 'Servidor cadastrado' if getattr(oficio, 'motorista_viajante_id', None) else 'Informado manualmente'
+        driver_secondary = 'Servidor cadastrado' if getattr(oficio, 'motorista_viajante_id', None) else 'Informado manualmente'
+
     return {
-        'title': 'Motorista',
-        'primary': driver_display,
-        'secondary': secondary,
+        'title': 'Veiculo e motorista',
+        'compact_summary': f'{vehicle_display} - {driver_display}',
+        'vehicle_primary': vehicle_display,
+        'vehicle_secondary': vehicle_secondary,
+        'driver_primary': driver_display,
+        'driver_secondary': driver_secondary,
     }
 
 
@@ -917,10 +906,9 @@ def _oficio_list_card(oficio):
         'periodo_display': periodo_display,
         'theme': theme,
         'header_chips': [chip for chip in _oficio_list_header_chips(oficio, destinos_display, periodo_display) if chip],
-        'status_chips': _oficio_list_status_chips(oficio, viagem_status),
+        'corner_badges': _oficio_list_corner_badges(oficio, viagem_status),
         'viajantes_block': _oficio_list_viajantes_block(oficio),
-        'vehicle_block': _oficio_list_vehicle_block(oficio),
-        'driver_block': _oficio_list_driver_block(oficio),
+        'transport_block': _oficio_list_transport_block(oficio),
         'oficio_status': _oficio_process_status_meta(oficio),
         'viagem_status': viagem_status,
         'justificativa': justificativa,
@@ -1576,7 +1564,7 @@ def termos_global(request):
         termo.oficios_url = reverse('eventos:guiado-etapa-5', kwargs={'evento_id': termo.evento_id})
         termo.evento_url = reverse('eventos:guiado-painel', kwargs={'pk': termo.evento_id})
         termo.documentos_url = (
-            reverse('eventos:oficio-documentos', kwargs={'pk': oficios_relacionados[0].pk})
+            reverse('eventos:oficio-step4', kwargs={'pk': oficios_relacionados[0].pk})
             if len(oficios_relacionados) == 1
             else ''
         )

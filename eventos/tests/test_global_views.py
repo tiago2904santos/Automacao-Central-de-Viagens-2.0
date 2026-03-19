@@ -1,6 +1,7 @@
 import re
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
+from unittest.mock import patch
 
 from django.conf import settings
 from django.contrib.auth import get_user_model
@@ -192,14 +193,28 @@ class GlobalViewsTest(TestCase):
         self.assertContains(filtered, self.oficio_pt.numero_formatado)
         self.assertNotContains(filtered, self.oficio_os.numero_formatado)
 
+    def test_lista_global_de_oficios_renderiza_toggle_de_visualizacao_com_persistencia_local(self):
+        response = self.client.get(reverse('eventos:oficios-global'))
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'data-oficios-view-root', html=False)
+        self.assertContains(response, 'data-oficios-view-toggle="rich"', html=False)
+        self.assertContains(response, 'data-oficios-view-toggle="basic"', html=False)
+        self.assertContains(response, 'js/oficios_list.js', html=False)
+
+        js = (Path(settings.BASE_DIR) / 'static' / 'js' / 'oficios_list.js').read_text(encoding='utf-8')
+        self.assertIn("central-viagens.oficios.view-mode", js)
+        self.assertIn("data-view-mode", js)
+        self.assertIn("data-oficios-view-toggle", js)
+
     def test_lista_global_de_oficios_exibe_periodo_sem_horario_status_da_viagem_e_dias_relativos(self):
         hoje = timezone.localdate()
         protocolos = ['111111119', '222222228', '333333337']
         datas = [
             (hoje + timedelta(days=5), hoje + timedelta(days=6)),
-            (hoje - timedelta(days=1), hoje + timedelta(days=1)),
+            (hoje - timedelta(days=1), hoje),
             (hoje - timedelta(days=4), hoje - timedelta(days=2)),
         ]
+        created_oficios = []
         for protocolo, (inicio, fim) in zip(protocolos, datas):
             oficio = Oficio.objects.create(
                 protocolo=protocolo,
@@ -220,14 +235,20 @@ class GlobalViewsTest(TestCase):
                 chegada_data=fim,
                 chegada_hora=time(12, 0),
             )
+            created_oficios.append(oficio)
 
         response = self.client.get(reverse('eventos:oficios-global'))
         self.assertEqual(response.status_code, 200)
-        self.assertContains(response, 'Vai acontecer')
-        self.assertContains(response, 'Faltam 5 dia(s)')
-        self.assertContains(response, 'Em andamento')
-        self.assertContains(response, 'Ja aconteceu')
-        self.assertContains(response, 'Aconteceu ha 2 dia(s)')
+        future_card = self._extract_oficio_article_html(response, created_oficios[0].pk)
+        today_card = self._extract_oficio_article_html(response, created_oficios[1].pk)
+        past_card = self._extract_oficio_article_html(response, created_oficios[2].pk)
+
+        self.assertIn('Termina hoje', today_card)
+        self.assertNotContains(response, 'Faltam 5 dia(s)')
+        self.assertNotContains(response, 'Aconteceu ha 2 dia(s)')
+        self.assertNotIn('Em andamento', future_card)
+        self.assertNotIn('Em andamento', today_card)
+        self.assertNotIn('Em andamento', past_card)
         self.assertNotContains(response, '08:00')
         self.assertNotContains(response, '09:00')
         self.assertNotContains(response, '12:00')
@@ -272,6 +293,8 @@ class GlobalViewsTest(TestCase):
         self.assertNotIn('Contexto do oficio', card_html)
         self.assertNotIn('Motivo', card_html)
         self.assertNotIn('Contexto', card_html)
+        self.assertIn('Veiculo e motorista', card_html)
+        self.assertIn('oficio-list-core-card--transport', card_html)
         self.assertIn('Veiculo', card_html)
         self.assertIn('Motorista', card_html)
         self.assertIn('class="oficio-list-term-row"', termos_html)
@@ -314,9 +337,12 @@ class GlobalViewsTest(TestCase):
 
         self.assertIn('oficio-list-card is-tone-green', card_html)
         self.assertEqual(card_html.count('oficio-list-chip oficio-list-chip--meta'), 4)
-        self.assertIn('oficio-list-status-row', card_html)
+        self.assertIn('oficio-list-card__header-status', card_html)
+        self.assertIn('oficio-list-basic-summary', card_html)
+        self.assertIn('oficio-list-basic-summary__item--stacked', card_html)
         self.assertIn('oficio-list-core-grid', card_html)
         self.assertIn('oficio-list-core-card', card_html)
+        self.assertIn('oficio-list-core-card--transport', card_html)
         self.assertIn('oficio-list-traveler-pill', card_html)
         self.assertIn('Oficio', card_html)
         self.assertIn('Protocolo', card_html)
@@ -324,11 +350,11 @@ class GlobalViewsTest(TestCase):
         self.assertIn('Data do evento', card_html)
         self.assertNotIn('Contexto do oficio', card_html)
         self.assertIn('Viajantes', card_html)
-        self.assertIn('Veiculo', card_html)
-        self.assertIn('Motorista', card_html)
+        self.assertIn('Transporte', card_html)
+        self.assertIn('Veiculo e motorista', card_html)
         self.assertIn('Motorista Avulso', card_html)
         self.assertIn('Spin', card_html)
-        self.assertIn('Ja aconteceu', card_html)
+        self.assertNotIn('Aconteceu ha 8 dia(s)', card_html)
         self.assertNotIn('oficio-list-meta-group', card_html)
         self.assertNotIn('Oficio avulso', card_html)
 
@@ -399,22 +425,51 @@ class GlobalViewsTest(TestCase):
             self.assertIn('oficio-list-badge', card_html)
             self.assertNotIn('Documento', card_html)
             self.assertNotIn('Viagem', card_html)
+            self.assertNotIn('Em andamento', card_html)
+
+    def test_lista_global_de_oficios_expoe_links_de_download_direto_sem_fluxo_documental_intermediario(self):
+        with patch('eventos.views_global.get_document_generation_status') as mocked_status:
+            mocked_status.return_value = {'status': 'available', 'errors': []}
+            response = self.client.get(reverse('eventos:oficios-global'))
+
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode('utf-8')
+        self.assertIn(reverse('eventos:oficio-documento-download', kwargs={
+            'pk': self.oficio_pt.pk,
+            'tipo_documento': 'oficio',
+            'formato': 'pdf',
+        }), content)
+        self.assertIn(reverse('eventos:oficio-documento-download', kwargs={
+            'pk': self.oficio_pt.pk,
+            'tipo_documento': 'oficio',
+            'formato': 'docx',
+        }), content)
+        self.assertIn('data-direct-download="true"', content)
+        self.assertNotIn(
+            f'href="{reverse("eventos:oficio-documentos", kwargs={"pk": self.oficio_pt.pk})}"',
+            content,
+        )
 
     def test_lista_global_de_oficios_mantem_chips_com_css_compacto(self):
         css = (Path(settings.BASE_DIR) / 'static' / 'css' / 'style.css').read_text(encoding='utf-8')
 
+        self.assertIn('.oficios-view-toggle {', css)
         self.assertIn('.oficio-list-chip {', css)
-        self.assertIn('padding: 0.72rem 0.9rem;', css)
+        self.assertIn('padding: 0.58rem 0.74rem;', css)
         self.assertIn('.oficio-list-chip__value {', css)
-        self.assertIn('font-size: 0.99rem;', css)
+        self.assertIn('font-size: 0.92rem;', css)
         self.assertIn('.oficio-list-core-card {', css)
-        self.assertIn('padding: 0.94rem 1rem;', css)
+        self.assertIn('padding: 0.78rem 0.82rem;', css)
+        self.assertIn('.oficio-list-transport-item__value {', css)
+        self.assertIn('.oficio-list-basic-summary {', css)
+        self.assertIn('.oficio-list-basic-summary__item--stacked {', css)
+        self.assertIn('[data-view-mode="basic"] .oficio-list-basic-summary {', css)
         self.assertIn('.oficio-list-traveler-pill {', css)
         self.assertIn('.oficio-list-subcard--justificativa .oficio-list-subcard__actions {', css)
         self.assertIn('margin-top: auto;', css)
         self.assertIn('.oficio-list-term-row {', css)
         self.assertIn('.oficio-list-term-row .btn-doc-action {', css)
-        self.assertIn('padding: 0.3rem 0.56rem;', css)
+        self.assertIn('padding: 0.26rem 0.5rem;', css)
 
     def test_hubs_globais_principais_respondem_200(self):
         urls = [

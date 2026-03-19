@@ -1,17 +1,36 @@
 {% extends 'base.html' %}
+{% load static %}
 
 {% block title %}Lista de oficios - Central de Viagens{% endblock %}
 {% block page_title %}Lista de oficios{% endblock %}
 
 {% block content %}
-<div class="container-fluid py-4 oficios-list-page">
+<div class="container-fluid py-4 oficios-list-page" data-oficios-view-root data-view-mode="rich">
     <div class="oficios-list-hero">
         <div>
             <p class="oficios-list-hero__eyebrow">Central documental</p>
             <h1 class="mb-1">Lista de oficios</h1>
-            <p class="text-muted mb-0">Cards mais limpos, com hierarquia forte e leitura rapida para oficio, viagem, justificativa e termos.</p>
+            <p class="text-muted mb-0">Visual refinado com dois modos de leitura, downloads diretos e cards mais compactos para acompanhar o oficio sem telas intermediarias.</p>
         </div>
         <div class="oficios-list-hero__actions">
+            <div class="oficios-view-toggle" role="group" aria-label="Alternar visualizacao da lista de oficios">
+                <button
+                    type="button"
+                    class="oficios-view-toggle__button is-active"
+                    data-oficios-view-toggle="rich"
+                    aria-pressed="true"
+                >
+                    Visual rico
+                </button>
+                <button
+                    type="button"
+                    class="oficios-view-toggle__button"
+                    data-oficios-view-toggle="basic"
+                    aria-pressed="false"
+                >
+                    Visual basico
+                </button>
+            </div>
             <a href="{% url 'eventos:oficio-novo' %}" class="btn btn-primary btn-lg oficios-list-hero__primary">
                 <i class="bi bi-plus-lg me-1"></i>
                 Novo oficio
@@ -121,14 +140,26 @@
                     </span>
                     {% endfor %}
                 </div>
+                {% if oficio.corner_badges %}
+                <div class="oficio-list-card__header-status">
+                    {% for badge in oficio.corner_badges %}
+                    <span class="oficio-list-badge {{ badge.css_class }}">
+                        <span>{{ badge.value }}</span>
+                    </span>
+                    {% endfor %}
+                </div>
+                {% endif %}
             </div>
 
-            <div class="oficio-list-status-row">
-                {% for chip in oficio.status_chips %}
-                <span class="oficio-list-badge {{ chip.css_class }}">
-                    <span>{{ chip.value }}</span>
+            <div class="oficio-list-basic-summary">
+                <span class="oficio-list-basic-summary__item">
+                    <span class="oficio-list-basic-summary__label">Viajantes</span>
+                    <span class="oficio-list-basic-summary__value">{{ oficio.viajantes_block.count_label }}</span>
                 </span>
-                {% endfor %}
+                <span class="oficio-list-basic-summary__item oficio-list-basic-summary__item--stacked">
+                    <span class="oficio-list-basic-summary__label">Transporte</span>
+                    <span class="oficio-list-basic-summary__value">{{ oficio.transport_block.compact_summary }}</span>
+                </span>
             </div>
 
             <div class="oficio-list-core-grid">
@@ -147,24 +178,26 @@
                     </div>
                 </section>
 
-                <section class="oficio-list-core-card">
+                <section class="oficio-list-core-card oficio-list-core-card--transport">
                     <div class="oficio-list-core-card__header">
-                        <h3 class="oficio-list-core-card__title">{{ oficio.vehicle_block.title }}</h3>
+                        <h3 class="oficio-list-core-card__title">{{ oficio.transport_block.title }}</h3>
                     </div>
-                    <div class="oficio-list-core-card__value">{{ oficio.vehicle_block.primary }}</div>
-                    {% if oficio.vehicle_block.secondary %}
-                    <p class="oficio-list-core-card__support">{{ oficio.vehicle_block.secondary }}</p>
-                    {% endif %}
-                </section>
-
-                <section class="oficio-list-core-card">
-                    <div class="oficio-list-core-card__header">
-                        <h3 class="oficio-list-core-card__title">{{ oficio.driver_block.title }}</h3>
+                    <div class="oficio-list-transport-grid">
+                        <div class="oficio-list-transport-item">
+                            <span class="oficio-list-transport-item__label">Veiculo</span>
+                            <div class="oficio-list-transport-item__value">{{ oficio.transport_block.vehicle_primary }}</div>
+                            {% if oficio.transport_block.vehicle_secondary %}
+                            <p class="oficio-list-transport-item__support">{{ oficio.transport_block.vehicle_secondary }}</p>
+                            {% endif %}
+                        </div>
+                        <div class="oficio-list-transport-item">
+                            <span class="oficio-list-transport-item__label">Motorista</span>
+                            <div class="oficio-list-transport-item__value">{{ oficio.transport_block.driver_primary }}</div>
+                            {% if oficio.transport_block.driver_secondary %}
+                            <p class="oficio-list-transport-item__support">{{ oficio.transport_block.driver_secondary }}</p>
+                            {% endif %}
+                        </div>
                     </div>
-                    <div class="oficio-list-core-card__value">{{ oficio.driver_block.primary }}</div>
-                    {% if oficio.driver_block.secondary %}
-                    <p class="oficio-list-core-card__support">{{ oficio.driver_block.secondary }}</p>
-                    {% endif %}
                 </section>
             </div>
 
@@ -197,7 +230,11 @@
                         </a>
                         {% for action in oficio.justificativa.downloads %}
                         {% if action.available %}
-                        <a href="{{ action.url }}" class="btn btn-sm btn-doc-action {% if action.label == 'PDF' %}btn-doc-action--pdf{% else %}btn-doc-action--secondary{% endif %}">
+                        <a
+                            href="{{ action.url }}"
+                            class="btn btn-sm btn-doc-action {% if action.label == 'PDF' %}btn-doc-action--pdf{% else %}btn-doc-action--secondary{% endif %}"
+                            data-direct-download="true"
+                        >
                             <i class="bi {% if action.label == 'PDF' %}bi-filetype-pdf{% else %}bi-filetype-docx{% endif %}"></i>
                             <span>{{ action.label }}</span>
                         </a>
@@ -229,13 +266,13 @@
                                     </a>
                                     {% endif %}
                                     {% if termo.download_docx_url %}
-                                    <a href="{{ termo.download_docx_url }}" class="btn btn-sm btn-doc-action btn-doc-action--secondary">
+                                    <a href="{{ termo.download_docx_url }}" class="btn btn-sm btn-doc-action btn-doc-action--secondary" data-direct-download="true">
                                         <i class="bi bi-filetype-docx"></i>
                                         <span>DOCX</span>
                                     </a>
                                     {% endif %}
                                     {% if termo.download_pdf_url %}
-                                    <a href="{{ termo.download_pdf_url }}" class="btn btn-sm btn-doc-action btn-doc-action--pdf">
+                                    <a href="{{ termo.download_pdf_url }}" class="btn btn-sm btn-doc-action btn-doc-action--pdf" data-direct-download="true">
                                         <i class="bi bi-filetype-pdf"></i>
                                         <span>PDF</span>
                                     </a>
@@ -258,7 +295,11 @@
                     </a>
                     {% for action in oficio.downloads %}
                     {% if action.available %}
-                    <a href="{{ action.url }}" class="btn btn-sm btn-doc-action {% if action.label == 'PDF' %}btn-doc-action--pdf{% else %}btn-doc-action--secondary{% endif %}">
+                    <a
+                        href="{{ action.url }}"
+                        class="btn btn-sm btn-doc-action {% if action.label == 'PDF' %}btn-doc-action--pdf{% else %}btn-doc-action--secondary{% endif %}"
+                        data-direct-download="true"
+                    >
                         <i class="bi {% if action.label == 'PDF' %}bi-filetype-pdf{% else %}bi-filetype-docx{% endif %}"></i>
                         <span>{{ action.label }}</span>
                     </a>
@@ -282,4 +323,8 @@
 
     {% include 'includes/pagination.html' %}
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/oficios_list.js' %}"></script>
 {% endblock %}
