@@ -35,18 +35,103 @@
         </header>
 
         <section class="oficios-quick-filter" aria-label="Filtro rapido">
-            <div class="oficios-quick-filter__label">Filtro rapido</div>
-            <form method="get" class="oficios-quick-filter__form">
-                <input
-                    id="oficios-search"
-                    type="text"
-                    name="q"
-                    class="form-control oficios-quick-filter__input"
-                    value="{{ filters.q }}"
-                    placeholder="Buscar por oficio, protocolo, destino ou servidor"
-                >
-                <button type="submit" class="btn btn-primary oficios-quick-filter__button">Filtrar</button>
-                <a href="{% url 'eventos:oficios-global' %}" class="btn btn-outline-secondary oficios-quick-filter__button">Limpar</a>
+            <div class="oficios-quick-filter__label">Filtro rapido e ordenacao</div>
+            <form method="get" class="oficios-quick-filter__form" data-oficios-filters-form>
+                <div class="oficios-filter-main-row">
+                    <input
+                        id="oficios-search"
+                        type="text"
+                        name="q"
+                        class="form-control oficios-quick-filter__input"
+                        value="{{ filters.q }}"
+                        placeholder="Buscar por oficio, protocolo, destino ou servidor"
+                        data-oficios-autosubmit
+                    >
+
+                    <select class="form-select oficios-sort-select" name="order_by" data-oficios-autosubmit>
+                        {% for key, label in order_by_choices %}
+                        <option value="{{ key }}" {% if filters.order_by == key %}selected{% endif %}>Ordenar por: {{ label }}</option>
+                        {% endfor %}
+                    </select>
+
+                    <select class="form-select oficios-sort-select" name="order_dir" data-oficios-autosubmit>
+                        {% for key, label in order_dir_choices %}
+                        <option value="{{ key }}" {% if filters.order_dir == key %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+
+                <div class="oficios-filter-chip-group">
+                    <div class="oficios-filter-chip-group__title">Status</div>
+                    <div class="oficios-filter-chip-list">
+                        {% for key, label in status_choices %}
+                        <label class="oficios-filter-chip">
+                            <input type="checkbox" name="status" value="{{ key }}" {% if key in filters.status %}checked{% endif %} data-oficios-autosubmit>
+                            <span>{{ label }}</span>
+                        </label>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <div class="oficios-filter-chip-group">
+                    <div class="oficios-filter-chip-group__title">Situacao da viagem</div>
+                    <div class="oficios-filter-chip-list">
+                        {% for key, label in viagem_status_choices %}
+                        <label class="oficios-filter-chip">
+                            <input type="checkbox" name="viagem_status" value="{{ key }}" {% if key in filters.viagem_status %}checked{% endif %} data-oficios-autosubmit>
+                            <span>{{ label }}</span>
+                        </label>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <div class="oficios-filter-chip-group">
+                    <div class="oficios-filter-chip-group__title">Termos e justificativa</div>
+                    <div class="oficios-filter-chip-list">
+                        <label class="oficios-filter-chip">
+                            <input type="checkbox" name="termo" value="COM" {% if 'COM' in filters.termo %}checked{% endif %} data-oficios-autosubmit>
+                            <span>Com termos</span>
+                        </label>
+                        <label class="oficios-filter-chip">
+                            <input type="checkbox" name="termo" value="SEM" {% if 'SEM' in filters.termo %}checked{% endif %} data-oficios-autosubmit>
+                            <span>Sem termos</span>
+                        </label>
+                        <label class="oficios-filter-chip">
+                            <input type="checkbox" name="justificativa" value="COM" {% if 'COM' in filters.justificativa %}checked{% endif %} data-oficios-autosubmit>
+                            <span>Com justificativa</span>
+                        </label>
+                        <label class="oficios-filter-chip">
+                            <input type="checkbox" name="justificativa" value="SEM" {% if 'SEM' in filters.justificativa %}checked{% endif %} data-oficios-autosubmit>
+                            <span>Sem justificativa</span>
+                        </label>
+                    </div>
+                </div>
+
+                <div class="oficios-filter-main-row oficios-filter-main-row--dates">
+                    <select class="form-select oficios-sort-select" name="date_scope" data-oficios-autosubmit>
+                        {% for key, label in date_scope_choices %}
+                        <option value="{{ key }}" {% if filters.date_scope == key %}selected{% endif %}>Periodo: {{ label }}</option>
+                        {% endfor %}
+                    </select>
+
+                    <input
+                        type="date"
+                        name="date_start"
+                        value="{% if filters.date_start %}{{ filters.date_start|date:'Y-m-d' }}{% endif %}"
+                        class="form-control oficios-date-input"
+                        data-oficios-autosubmit
+                    >
+
+                    <input
+                        type="date"
+                        name="date_end"
+                        value="{% if filters.date_end %}{{ filters.date_end|date:'Y-m-d' }}{% endif %}"
+                        class="form-control oficios-date-input"
+                        data-oficios-autosubmit
+                    >
+
+                    <a href="{% url 'eventos:oficios-global' %}" class="btn btn-outline-secondary oficios-quick-filter__button">Limpar</a>
+                </div>
             </form>
             <div class="oficios-quick-filter__result">{{ page_obj.paginator.count }} oficio(s) encontrado(s)</div>
         </section>
@@ -160,9 +245,24 @@
                                 <div class="oficio-list-transport-panel__divider"></div>
                                 <div class="oficio-list-transport-panel__detail">
                                     <span class="oficio-list-transport-panel__kicker">Motorista</span>
+                                    {% if oficio.transport_block.is_carona %}
+                                    <div class="oficio-list-driver-carona-grid">
+                                        <div class="oficio-list-driver-carona-col">
+                                            <div class="oficio-list-transport-panel__detail-value">{{ oficio.transport_block.driver_primary }}</div>
+                                            <p class="oficio-list-transport-panel__support">Carona</p>
+                                        </div>
+                                        <div class="oficio-list-driver-carona-col">
+                                            <div class="oficio-list-driver-carona-meta-title">Oficio do motorista</div>
+                                            <div class="oficio-list-driver-carona-meta-value">{{ oficio.transport_block.driver_oficio }}</div>
+                                            <div class="oficio-list-driver-carona-meta-title">Protocolo</div>
+                                            <div class="oficio-list-driver-carona-meta-value">{{ oficio.transport_block.driver_protocolo }}</div>
+                                        </div>
+                                    </div>
+                                    {% else %}
                                     <div class="oficio-list-transport-panel__detail-value">{{ oficio.transport_block.driver_primary }}</div>
                                     {% if oficio.transport_block.driver_secondary %}
                                     <p class="oficio-list-transport-panel__support">{{ oficio.transport_block.driver_secondary }}</p>
+                                    {% endif %}
                                     {% endif %}
                                 </div>
                             </div>
@@ -230,7 +330,7 @@
                                             {% if termo.open_url %}
                                             <a href="{{ termo.open_url }}" class="btn btn-sm btn-doc-action btn-doc-action--primary">
                                                 <i class="bi bi-box-arrow-up-right"></i>
-                                                <span>{% if termo.is_saved %}Abrir{% else %}Resumo{% endif %}</span>
+                                                <span>Abrir</span>
                                             </a>
                                             {% endif %}
                                             {% if termo.download_docx_url %}
@@ -257,14 +357,19 @@
 
                     <div class="oficio-list-card__footer">
                         <div class="oficio-list-card__footer-actions">
-                            {% for action in oficio.table_actions %}
+                            {% for action in oficio.footer_actions %}
                             <a
                                 href="{{ action.url }}"
-                                class="btn btn-sm btn-doc-action {{ action.css_class }}"
+                                class="btn btn-sm btn-doc-action {{ action.css_class }}{% if action.icon_only %} is-icon-only{% endif %}"
+                                aria-label="{{ action.aria_label|default:action.label }}"
                                 {% if action.download %}data-direct-download="true"{% endif %}
                             >
                                 <i class="bi {{ action.icon }}"></i>
+                                {% if action.icon_only %}
+                                <span class="visually-hidden">{{ action.label }}</span>
+                                {% else %}
                                 <span>{{ action.label }}</span>
+                                {% endif %}
                             </a>
                             {% endfor %}
                         </div>

@@ -211,7 +211,7 @@ class GlobalViewsTest(TestCase):
         oficio.refresh_from_db()
         return oficio
 
-    def test_lista_global_de_oficios_renderiza_header_unico_filtros_enxutos_e_busca_ampla(self):
+    def test_lista_global_de_oficios_renderiza_header_e_filtros_completos_da_lista(self):
         response = self.client.get(reverse('eventos:oficios-global'))
         self.assertEqual(response.status_code, 200)
         content = response.content.decode('utf-8')
@@ -222,14 +222,17 @@ class GlobalViewsTest(TestCase):
         self.assertContains(response, '+ Novo oficio')
         self.assertContains(response, 'name="q"', html=False)
         self.assertContains(response, 'Buscar por oficio, protocolo, destino ou servidor')
-        self.assertContains(response, 'Filtrar')
+        self.assertContains(response, 'name="status"', html=False)
+        self.assertContains(response, 'name="viagem_status"', html=False)
+        self.assertContains(response, 'name="justificativa"', html=False)
+        self.assertContains(response, 'name="termo"', html=False)
+        self.assertContains(response, 'name="order_by"', html=False)
+        self.assertContains(response, 'name="order_dir"', html=False)
+        self.assertContains(response, 'name="date_scope"', html=False)
+        self.assertContains(response, 'name="date_start"', html=False)
+        self.assertContains(response, 'name="date_end"', html=False)
         self.assertContains(response, 'Limpar')
         self.assertNotContains(response, 'name="contexto"', html=False)
-        self.assertNotContains(response, 'name="viagem_status"', html=False)
-        self.assertNotContains(response, 'name="justificativa"', html=False)
-        self.assertNotContains(response, 'name="termo"', html=False)
-        self.assertNotContains(response, 'name="order_by"', html=False)
-        self.assertNotContains(response, 'name="order_dir"', html=False)
         self.assertNotContains(response, 'name="evento_id"', html=False)
         self.assertNotContains(response, 'name="ano"', html=False)
         self.assertNotContains(response, 'name="numero"', html=False)
@@ -268,9 +271,10 @@ class GlobalViewsTest(TestCase):
         self.assertIn('Servidores', card_html)
         self.assertIn('Veiculo e motorista', card_html)
         self.assertIn('oficio-list-card__footer-actions', card_html)
-        self.assertIn('Editar', card_html)
+        self.assertNotIn('Editar', card_html)
         self.assertIn('VIAJANTE GLOBAL', card_html)
-        self.assertIn('Excluir', card_html)
+        self.assertIn('aria-label="Excluir oficio"', card_html)
+        self.assertIn('is-icon-only', card_html)
         self.assertNotIn('Documentos', card_html)
 
     def test_lista_global_de_oficios_expoe_hook_de_persistencia_do_modo_no_javascript(self):
@@ -288,8 +292,8 @@ class GlobalViewsTest(TestCase):
         row_html = self._extract_oficio_row_html(response, self.oficio_pt.pk)
         card_html = self._extract_oficio_card_html(response, self.oficio_pt.pk)
         pacote_url = reverse('eventos:guiado-painel', kwargs={'pk': self.evento_pt.pk})
-        self.assertIn('Pacote evento', row_html)
-        self.assertIn('Pacote evento', card_html)
+        self.assertIn('Abrir', row_html)
+        self.assertIn('Abrir', card_html)
         self.assertIn(pacote_url, row_html)
         self.assertIn(pacote_url, card_html)
 
@@ -313,8 +317,8 @@ class GlobalViewsTest(TestCase):
         response_avulso = self.client.get(reverse('eventos:oficios-global'), {'q': '123123123'})
         avulso_row_html = self._extract_oficio_row_html(response_avulso, oficio_avulso.pk)
         avulso_card_html = self._extract_oficio_card_html(response_avulso, oficio_avulso.pk)
-        self.assertNotIn('Pacote evento', avulso_row_html)
-        self.assertNotIn('Pacote evento', avulso_card_html)
+        self.assertNotIn('Abrir', avulso_row_html)
+        self.assertNotIn('Abrir pacote do evento', avulso_card_html)
 
     def test_lista_global_de_oficios_modo_basico_mostra_apenas_campos_essenciais_e_acoes_do_oficio(self):
         with patch('eventos.views_global.get_document_generation_status') as mocked_status:
@@ -333,7 +337,6 @@ class GlobalViewsTest(TestCase):
         self.assertIn('VEICULO', table_html)
         self.assertIn('STATUS', table_html)
         self.assertIn('ACOES', table_html)
-        self.assertIn('Editar', row_html)
         self.assertIn('VIAJANTE GLOBAL', row_html)
         self.assertIn('Excluir', row_html)
         self.assertNotIn('Documentos', row_html)
@@ -421,8 +424,12 @@ class GlobalViewsTest(TestCase):
         self.assertIn(f'{(hoje + timedelta(days=5)):%d/%m/%Y}', future_row)
         self.assertIn(f'{(hoje - timedelta(days=1)):%d/%m/%Y}', today_row)
         self.assertIn(f'{(hoje - timedelta(days=4)):%d/%m/%Y}', past_row)
-        self.assertNotContains(response, 'Faltam 5 dia(s)')
-        self.assertNotContains(response, 'Aconteceu ha 2 dia(s)')
+        self.assertContains(response, 'faltam')
+        self.assertContains(response, 'aconteceu ha')
+        self.assertTrue(
+            any(token in response.content.decode('utf-8') for token in ['acontece hoje', 'termina hoje', 'comecou hoje']),
+            "Esperava encontrar um rótulo relativo para viagem no dia atual.",
+        )
         self.assertNotIn('Em andamento', future_row)
         self.assertNotIn('Em andamento', today_row)
         self.assertNotIn('Em andamento', past_row)
@@ -531,7 +538,7 @@ class GlobalViewsTest(TestCase):
         self.assertIn('Spin', card_html)
         self.assertIn('Finalizado', row_html)
         self.assertIn('oficio-list-card', content)
-        self.assertNotIn('oficio-list-subcard', content)
+        self.assertNotIn('oficio-list-subcard', row_html)
         self.assertNotIn('Contexto do oficio', content)
         self.assertNotIn('Aconteceu ha 8 dia(s)', content)
         self.assertNotIn('Oficio avulso', content)
@@ -632,6 +639,9 @@ class GlobalViewsTest(TestCase):
         self.assertIn('[data-view-mode="rich"] .oficios-view-pane--basic {', css)
         self.assertIn('.oficios-quick-filter {', css)
         self.assertIn('.oficios-quick-filter__form {', css)
+        self.assertIn('.oficios-filter-main-row {', css)
+        self.assertIn('.oficios-filter-chip {', css)
+        self.assertIn('.oficio-list-driver-carona-grid {', css)
         self.assertIn('.oficios-table-panel {', css)
         self.assertIn('.oficios-table {', css)
         self.assertIn('.oficios-table thead th {', css)
@@ -773,6 +783,74 @@ class GlobalViewsTest(TestCase):
         order = self._extract_oficio_ids_order(response)
         self.assertEqual(order[:1], [oficio_finalizado.pk])
         self.assertNotIn(oficio_rascunho.pk, order)
+
+    def test_lista_global_de_oficios_filtra_por_data_com_presets_e_intervalo(self):
+        hoje = timezone.localdate()
+        oficio_passado = self._criar_oficio_ordenacao(
+            numero=14,
+            protocolo='700000014',
+            data_criacao=hoje - timedelta(days=10),
+            updated_at=timezone.now(),
+            data_evento=hoje - timedelta(days=8),
+        )
+        oficio_futuro = self._criar_oficio_ordenacao(
+            numero=15,
+            protocolo='700000015',
+            data_criacao=hoje,
+            updated_at=timezone.now(),
+            data_evento=hoje + timedelta(days=4),
+        )
+
+        response_scope = self.client.get(reverse('eventos:oficios-global'), {'q': 'ORDTEST', 'date_scope': 'upcoming'})
+        order_scope = self._extract_oficio_ids_order(response_scope)
+        self.assertIn(oficio_futuro.pk, order_scope)
+        self.assertNotIn(oficio_passado.pk, order_scope)
+
+        response_range = self.client.get(
+            reverse('eventos:oficios-global'),
+            {
+                'q': 'ORDTEST',
+                'date_start': (hoje - timedelta(days=9)).isoformat(),
+                'date_end': (hoje - timedelta(days=7)).isoformat(),
+            },
+        )
+        order_range = self._extract_oficio_ids_order(response_range)
+        self.assertIn(oficio_passado.pk, order_range)
+        self.assertNotIn(oficio_futuro.pk, order_range)
+
+    def test_lista_global_de_oficios_termos_exibem_pdf_docx_e_sem_resumo(self):
+        response = self.client.get(reverse('eventos:oficios-global'))
+        self.assertEqual(response.status_code, 200)
+
+        card_html = self._extract_oficio_card_html(response, self.oficio_pt.pk)
+        self.assertIn('Termos de autorizacao', card_html)
+        self.assertIn('bi-filetype-docx', card_html)
+        self.assertIn('bi-filetype-pdf', card_html)
+        self.assertNotIn('Resumo', card_html)
+
+    def test_lista_global_de_oficios_renderiza_layout_de_carona_no_bloco_motorista(self):
+        self.oficio_pt.motorista = 'MOTORISTA CARONA'
+        self.oficio_pt.motorista_oficio_numero = 999
+        self.oficio_pt.motorista_protocolo = '556677889'
+        self.oficio_pt.save(update_fields=['motorista', 'motorista_oficio_numero', 'motorista_protocolo'])
+
+        response = self.client.get(reverse('eventos:oficios-global'))
+        card_html = self._extract_oficio_card_html(response, self.oficio_pt.pk)
+
+        self.assertIn('oficio-list-driver-carona-grid', card_html)
+        self.assertIn('Carona', card_html)
+        self.assertIn('Oficio do motorista', card_html)
+        self.assertIn('556677889', card_html)
+
+    def test_lista_global_de_oficios_expoe_hooks_de_filtro_em_tempo_real(self):
+        response = self.client.get(reverse('eventos:oficios-global'))
+        self.assertContains(response, 'data-oficios-filters-form', html=False)
+        self.assertContains(response, 'data-oficios-autosubmit', html=False)
+
+        js = (Path(settings.BASE_DIR) / 'static' / 'js' / 'oficios_list.js').read_text(encoding='utf-8')
+        self.assertIn('data-oficios-filters-form', js)
+        self.assertIn('data-oficios-autosubmit', js)
+        self.assertIn('scheduleSubmit', js)
 
     def test_hubs_globais_principais_respondem_200(self):
         urls = [

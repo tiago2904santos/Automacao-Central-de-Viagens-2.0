@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, time
+from datetime import date, datetime, time, timedelta
 from urllib.parse import urlencode
 
 from django.contrib import messages
@@ -98,6 +98,7 @@ OFICIO_VIAGEM_STATUS_CHOICES = [
     ('FUTURA', 'Viagem futura'),
     ('EM_ANDAMENTO', 'Em andamento'),
     ('CONCLUIDA', 'Concluida'),
+    ('HOJE', 'Viagens de hoje'),
 ]
 OFICIO_PRESENCE_CHOICES = [
     ('COM', 'Com'),
@@ -113,6 +114,13 @@ OFICIO_ORDER_BY_CHOICES = [
 OFICIO_ORDER_DIR_CHOICES = [
     ('desc', 'Decrescente'),
     ('asc', 'Crescente'),
+]
+OFICIO_DATE_SCOPE_CHOICES = [
+    ('all', 'Periodo livre'),
+    ('today', 'Hoje'),
+    ('next_7', 'Proximos 7 dias'),
+    ('upcoming', 'Viagens futuras'),
+    ('past', 'Viagens passadas'),
 ]
 OFICIO_ORDER_BY_DEFAULT = 'updated_at'
 OFICIO_ORDER_DIR_DEFAULT = 'desc'
@@ -195,6 +203,16 @@ def _parse_choice_list(values, allowed_values):
 def _parse_single_choice(value, allowed_values, default):
     item = _clean(value)
     return item if item in set(allowed_values) else default
+
+
+def _parse_date(value):
+    item = _clean(value)
+    if not item:
+        return None
+    try:
+        return date.fromisoformat(item)
+    except ValueError:
+        return None
 
 
 def _full_route_name(request):
@@ -503,6 +521,13 @@ def _build_oficio_list_filters(request):
             dict(OFICIO_ORDER_DIR_CHOICES).keys(),
             OFICIO_ORDER_DIR_DEFAULT,
         ),
+        'date_start': _parse_date(request.GET.get('date_start')),
+        'date_end': _parse_date(request.GET.get('date_end')),
+        'date_scope': _parse_single_choice(
+            request.GET.get('date_scope'),
+            dict(OFICIO_DATE_SCOPE_CHOICES).keys(),
+            'all',
+        ),
     }
 
 
@@ -627,12 +652,13 @@ def _oficio_list_display_or_default(value, fallback):
     return text
 
 
-def _oficio_list_header_chips(oficio, destinos_display, periodo_display):
+def _oficio_list_header_chips(oficio, destinos_display, periodo_display, status_display):
     return [
         _oficio_list_chip('Oficio', _oficio_list_display_or_default(oficio.numero_formatado, 'A definir'), 'is-key'),
         _oficio_list_chip('Protocolo', _oficio_list_display_or_default(oficio.protocolo_formatado, 'Nao informado')),
         _oficio_list_chip('Destino', _oficio_list_display_or_default(destinos_display, 'Nao definido')),
         _oficio_list_chip('Data do evento', _oficio_list_display_or_default(periodo_display, 'A definir'), 'is-date'),
+        _oficio_list_chip('Status', _oficio_list_display_or_default(status_display, 'Sem status')),
     ]
 
 
@@ -682,20 +708,12 @@ def _oficio_list_download_action(actions, label):
 
 
 def _oficio_list_table_actions(oficio, oficio_downloads):
-    actions = [
-        {
-            'label': 'Editar',
-            'url': reverse('eventos:oficio-editar', kwargs={'pk': oficio.pk}),
-            'css_class': 'btn-doc-action--secondary',
-            'icon': 'bi-pencil-square',
-            'download': False,
-        }
-    ]
+    actions = []
 
     if oficio.evento_id:
         actions.append(
             {
-                'label': 'Pacote evento',
+                'label': 'Abrir',
                 'url': reverse('eventos:guiado-painel', kwargs={'pk': oficio.evento_id}),
                 'css_class': 'btn-doc-action--primary',
                 'icon': 'bi-box-arrow-up-right',
@@ -707,7 +725,7 @@ def _oficio_list_table_actions(oficio, oficio_downloads):
     if docx_action:
         actions.append(
             {
-                'label': 'W',
+                'label': 'DOCX',
                 'url': docx_action['url'],
                 'css_class': 'btn-doc-action--secondary',
                 'icon': 'bi-filetype-docx',
@@ -739,6 +757,63 @@ def _oficio_list_table_actions(oficio, oficio_downloads):
     return actions
 
 
+def _oficio_list_footer_actions(oficio, oficio_downloads):
+    actions = []
+    if oficio.evento_id:
+        actions.append(
+            {
+                'label': 'Abrir',
+                'aria_label': 'Abrir pacote do evento',
+                'url': reverse('eventos:guiado-painel', kwargs={'pk': oficio.evento_id}),
+                'css_class': 'btn-doc-action--primary',
+                'icon': 'bi-box-arrow-up-right',
+                'download': False,
+                'icon_only': False,
+            }
+        )
+
+    docx_action = _oficio_list_download_action(oficio_downloads['actions'], 'DOCX')
+    if docx_action:
+        actions.append(
+            {
+                'label': 'DOCX',
+                'aria_label': 'Baixar DOCX do oficio',
+                'url': docx_action['url'],
+                'css_class': 'btn-doc-action--secondary',
+                'icon': 'bi-filetype-docx',
+                'download': True,
+                'icon_only': True,
+            }
+        )
+
+    pdf_action = _oficio_list_download_action(oficio_downloads['actions'], 'PDF')
+    if pdf_action:
+        actions.append(
+            {
+                'label': 'PDF',
+                'aria_label': 'Baixar PDF do oficio',
+                'url': pdf_action['url'],
+                'css_class': 'btn-doc-action--pdf',
+                'icon': 'bi-filetype-pdf',
+                'download': True,
+                'icon_only': True,
+            }
+        )
+
+    actions.append(
+        {
+            'label': 'Excluir',
+            'aria_label': 'Excluir oficio',
+            'url': reverse('eventos:oficio-excluir', kwargs={'pk': oficio.pk}),
+            'css_class': 'btn-doc-action--danger',
+            'icon': 'bi-trash3',
+            'download': False,
+            'icon_only': True,
+        }
+    )
+    return actions
+
+
 def _oficio_list_corner_badges(oficio, viagem_status):
     oficio_status = _oficio_process_status_meta(oficio)
     badges = []
@@ -756,7 +831,7 @@ def _oficio_list_corner_badges(oficio, viagem_status):
 
     append_badge(oficio_status['label'], oficio_status['css_class'])
     relative_label = _clean(viagem_status.get('relative_label'))
-    if relative_label.lower() == 'termina hoje':
+    if relative_label:
         append_badge(relative_label, viagem_status['css_class'])
     return badges
 
@@ -825,25 +900,38 @@ def _oficio_list_protocol_sort_value(oficio):
 def _oficio_list_transport_block(oficio):
     placa = _clean(getattr(oficio, 'placa_formatada', ''))
     modelo = _clean(oficio.modelo)
-    if placa == EMPTY_DISPLAY:
+    if _is_empty_display_value(placa):
         placa = ''
-    vehicle_display = _oficio_list_vehicle_display(oficio)
+    if _is_empty_display_value(modelo):
+        modelo = ''
+
+    vehicle_primary = 'Nao informado'
+    vehicle_secondary = ''
+    if placa and modelo:
+        vehicle_primary = f'{placa} - {modelo}'
+    elif placa:
+        vehicle_primary = placa
+        vehicle_secondary = 'Modelo nao informado'
+    elif modelo:
+        vehicle_primary = modelo
+
     driver_display = _oficio_list_driver_display(oficio)
-
-    vehicle_secondary = modelo if placa and modelo and modelo != placa else ''
-    if not vehicle_secondary and placa and not modelo:
-        vehicle_secondary = 'Placa da viagem'
-
-    driver_secondary = ''
-    if driver_display != 'Nao informado':
-        driver_secondary = 'Servidor cadastrado' if getattr(oficio, 'motorista_viajante_id', None) else 'Informado manualmente'
+    driver_secondary = 'Servidor cadastrado' if getattr(oficio, 'motorista_viajante_id', None) else 'Informado manualmente'
+    driver_oficio = _clean(getattr(oficio, 'motorista_oficio_numero', ''))
+    driver_protocolo = _clean(getattr(oficio, 'motorista_protocolo', ''))
+    is_carona = bool(driver_oficio or driver_protocolo)
+    if driver_display == 'Nao informado':
+        driver_secondary = ''
 
     return {
         'title': 'Veiculo e motorista',
-        'vehicle_primary': vehicle_display,
+        'vehicle_primary': vehicle_primary,
         'vehicle_secondary': vehicle_secondary,
         'driver_primary': driver_display,
         'driver_secondary': driver_secondary,
+        'is_carona': is_carona,
+        'driver_oficio': driver_oficio or 'Nao informado',
+        'driver_protocolo': driver_protocolo or 'Nao informado',
     }
 
 
@@ -867,7 +955,7 @@ def _oficio_list_trip_status(oficio, today=None):
             'key': 'FUTURA',
             'label': meta['label'],
             'css_class': meta['css_class'],
-            'relative_label': 'Comeca hoje' if delta == 0 else f'Faltam {delta} dia(s)',
+            'relative_label': 'acontece hoje' if delta == 0 else f'faltam {delta} dias',
         }
     if hoje > fim:
         delta = (hoje - fim).days
@@ -876,18 +964,18 @@ def _oficio_list_trip_status(oficio, today=None):
             'key': 'CONCLUIDA',
             'label': meta['label'],
             'css_class': meta['css_class'],
-            'relative_label': 'Aconteceu hoje' if delta == 0 else f'Aconteceu ha {delta} dia(s)',
+            'relative_label': 'aconteceu hoje' if delta == 0 else f'aconteceu ha {delta} dias',
         }
 
     meta = VIAGEM_STATUS_CARD_META['EM_ANDAMENTO']
     if inicio == fim == hoje:
-        relative_label = 'Acontece hoje'
+        relative_label = 'acontece hoje'
     elif hoje == inicio:
-        relative_label = 'Comecou hoje'
+        relative_label = 'comecou hoje'
     elif hoje == fim:
-        relative_label = 'Termina hoje'
+        relative_label = 'termina hoje'
     else:
-        relative_label = 'Em andamento'
+        relative_label = 'em andamento'
     return {
         'key': 'EM_ANDAMENTO',
         'label': meta['label'],
@@ -1012,7 +1100,7 @@ def _oficio_list_term_block(oficio):
             termos_map[termo.pk] = termo
 
     saved_terms = sorted(termos_map.values(), key=lambda item: (item.created_at, item.pk))
-    if not saved_terms and not oficio.gerar_termo_preenchido:
+    if not saved_terms:
         return None
 
     subcards = []
@@ -1021,12 +1109,6 @@ def _oficio_list_term_block(oficio):
         if termo.viajante_id:
             saved_viajante_ids.add(termo.viajante_id)
         subcards.append(_oficio_list_saved_term_card(termo))
-
-    if oficio.gerar_termo_preenchido:
-        for viajante in oficio.viajantes.all():
-            if viajante.pk in saved_viajante_ids:
-                continue
-            subcards.append(_oficio_list_pending_term_card(oficio, viajante))
 
     saved_count = len([card for card in subcards if card['is_saved']])
     pending_count = len(subcards) - saved_count
@@ -1057,6 +1139,10 @@ def _oficio_list_card(oficio):
     driver_display = _oficio_list_driver_display(oficio)
     oficio_status = _oficio_process_status_meta(oficio)
     table_actions = _oficio_list_table_actions(oficio, oficio_downloads)
+    footer_actions = _oficio_list_footer_actions(oficio, oficio_downloads)
+    status_display = oficio_status['label']
+    if viagem_status.get('relative_label'):
+        status_display = f"{status_display} - {viagem_status['relative_label']}"
     return {
         'pk': oficio.pk,
         'numero_display': _oficio_list_display_or_default(oficio.numero_formatado, 'A definir'),
@@ -1067,8 +1153,13 @@ def _oficio_list_card(oficio):
         'veiculo_display': vehicle_display,
         'status_badge': oficio_status,
         'table_actions': table_actions,
+        'footer_actions': footer_actions,
         'theme': theme,
-        'header_chips': [chip for chip in _oficio_list_header_chips(oficio, destinos_display, periodo_display) if chip],
+        'header_chips': [
+            chip
+            for chip in _oficio_list_header_chips(oficio, destinos_display, periodo_display, status_display)
+            if chip
+        ],
         'corner_badges': _oficio_list_corner_badges(oficio, viagem_status),
         'viajantes_block': _oficio_list_viajantes_block(oficio),
         'transport_block': _oficio_list_transport_block(oficio),
@@ -1096,8 +1187,11 @@ def _oficio_list_card(oficio):
             'status': oficio.status,
             'contexto': 'EVENTO' if oficio.evento_id else 'AVULSO',
             'viagem_status': viagem_status['key'],
+            'is_today_trip': viagem_status['key'] == 'EM_ANDAMENTO' and viagem_status.get('relative_label') == 'acontece hoje',
             'has_justificativa': justificativa_info['filled'],
             'has_termo': bool(termos),
+            'data_inicio': data_evento_inicio,
+            'data_fim': data_evento_fim or data_evento_inicio,
         },
         'sort_meta': {
             'numero': (
@@ -1123,6 +1217,32 @@ def _matches_oficio_list_presence(selected_values, present):
     if not selected_values or set(selected_values) == {'COM', 'SEM'}:
         return True
     return ('COM' if present else 'SEM') in selected_values
+
+
+def _matches_oficio_list_date(card, filters, today=None):
+    inicio = card['filter_meta'].get('data_inicio')
+    fim = card['filter_meta'].get('data_fim') or inicio
+    if not inicio:
+        return not (filters['date_start'] or filters['date_end'] or filters['date_scope'] != 'all')
+
+    if filters['date_start'] and fim and fim < filters['date_start']:
+        return False
+    if filters['date_end'] and inicio > filters['date_end']:
+        return False
+
+    base_today = today or timezone.localdate()
+    scope = filters['date_scope']
+    if scope == 'all':
+        return True
+    if scope == 'today':
+        return inicio <= base_today <= (fim or inicio)
+    if scope == 'next_7':
+        return base_today <= inicio <= (base_today + timedelta(days=7))
+    if scope == 'upcoming':
+        return inicio > base_today
+    if scope == 'past':
+        return (fim or inicio) < base_today
+    return True
 
 
 def _is_missing_oficio_sort_value(value):
@@ -1209,9 +1329,15 @@ def oficio_global_lista(request):
             continue
         if not _matches_oficio_list_choice(
             filters['viagem_status'],
-            card['filter_meta']['viagem_status'],
+            'HOJE' if card['filter_meta']['is_today_trip'] else card['filter_meta']['viagem_status'],
             dict(OFICIO_VIAGEM_STATUS_CHOICES).keys(),
         ):
+            continue
+        if not _matches_oficio_list_presence(filters['justificativa'], card['filter_meta']['has_justificativa']):
+            continue
+        if not _matches_oficio_list_presence(filters['termo'], card['filter_meta']['has_termo']):
+            continue
+        if not _matches_oficio_list_date(card, filters):
             continue
         cards.append(card)
 
@@ -1225,6 +1351,13 @@ def oficio_global_lista(request):
             'page_obj': page_obj,
             'pagination_query': _query_without_page(request),
             'filters': filters,
+            'status_choices': Oficio.STATUS_CHOICES,
+            'contexto_choices': OFICIO_CONTEXT_CHOICES,
+            'viagem_status_choices': OFICIO_VIAGEM_STATUS_CHOICES,
+            'presence_choices': OFICIO_PRESENCE_CHOICES,
+            'order_by_choices': OFICIO_ORDER_BY_CHOICES,
+            'order_dir_choices': OFICIO_ORDER_DIR_CHOICES,
+            'date_scope_choices': OFICIO_DATE_SCOPE_CHOICES,
             'hide_page_header': True,
         },
     )

@@ -8,7 +8,7 @@
       <div class="oficio-wizard-actions">
         <button
           type="button"
-          class="btn btn-outline-secondary btn-sm oficio-wizard-summary-trigger"
+          class="btn btn-outline-secondary btn-sm oficio-wizard-summary-trigger cv-btn cv-btn--secondary"
           data-oficio-glance-toggle
           aria-expanded="false"
           aria-controls="oficio-glance-panel"
@@ -18,9 +18,9 @@
           <span data-oficio-glance-toggle-label>Resumo</span>
         </button>
         <span class="oficio-autosave-status" id="oficio-autosave-status" data-state="idle">Autosave</span>
-        <a href="{% url 'eventos:oficios-global' %}" class="btn btn-outline-secondary btn-sm" data-autosave-link="1">Lista</a>
+        <a href="{% url 'eventos:oficios-global' %}" class="btn btn-outline-secondary btn-sm cv-btn cv-btn--secondary" data-autosave-link="1">Lista</a>
         {% if oficio.pk %}
-        <a href="{% url 'eventos:oficio-excluir' oficio.pk %}" class="btn btn-outline-danger btn-sm" data-autosave-link="1">Excluir</a>
+        <a href="{% url 'eventos:oficio-excluir' oficio.pk %}" class="btn btn-outline-danger btn-sm cv-btn cv-btn--danger" data-autosave-link="1">Excluir</a>
         {% endif %}
       </div>
     </div>
