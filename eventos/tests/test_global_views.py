@@ -460,13 +460,42 @@ class GlobalViewsTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         row_html = self._extract_oficio_row_html(response, self.oficio_pt.pk)
+        card_html = self._extract_oficio_card_html(response, self.oficio_pt.pk)
         self.assertIn('SEGUNDO VIAJANTE', response.content.decode('utf-8'))
         self.assertNotIn('Justificativa', row_html)
         self.assertNotIn('Termos de autorizacao', row_html)
         self.assertNotIn('Contexto do oficio', row_html)
         self.assertNotIn('Motivo', row_html)
         self.assertNotIn('Documentos', row_html)
+        self.assertIn('Justificativa', card_html)
+        self.assertIn('Termos de autorizacao', card_html)
+        self.assertIn('Justificativa extensa de teste', card_html)
+        self.assertIn('SEGUNDO VIAJANTE', card_html)
         self.assertEqual(row_html.count(self.oficio_pt.protocolo_formatado), 1)
+
+    def test_lista_global_de_oficios_modo_simples_nao_exibe_blocos_de_justificativa_e_termos(self):
+        Justificativa.objects.create(
+            oficio=self.oficio_pt,
+            texto='Justificativa do modo completo.',
+        )
+        TermoAutorizacao.objects.create(
+            evento=self.evento_pt,
+            oficio=self.oficio_pt,
+            modo_geracao=TermoAutorizacao.MODO_AUTOMATICO_SEM_VIATURA,
+            status=TermoAutorizacao.STATUS_GERADO,
+            viajante=self.viajante,
+            destino='Londrina/PR',
+            data_evento=date(2026, 3, 10),
+        )
+
+        response = self.client.get(reverse('eventos:oficios-global'))
+        row_html = self._extract_oficio_row_html(response, self.oficio_pt.pk)
+        card_html = self._extract_oficio_card_html(response, self.oficio_pt.pk)
+
+        self.assertNotIn('Justificativa', row_html)
+        self.assertNotIn('Termos de autorizacao', row_html)
+        self.assertIn('Justificativa', card_html)
+        self.assertIn('Termos de autorizacao', card_html)
 
     def test_lista_global_de_oficios_aplica_linguagem_visual_compacta_e_contexto_sem_repeticao(self):
         hoje = timezone.localdate()

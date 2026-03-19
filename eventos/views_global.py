@@ -1043,9 +1043,12 @@ def _oficio_list_term_block(oficio):
 
 
 def _oficio_list_card(oficio):
+    justificativa_info = _build_oficio_justificativa_info(oficio)
     viagem_status = _oficio_list_trip_status(oficio)
     theme = _oficio_list_theme(oficio, viagem_status)
     oficio_downloads = _build_oficio_document_actions(oficio, DocumentoOficioTipo.OFICIO)
+    justificativa = _oficio_list_justificativa_block(oficio, justificativa_info)
+    termos = _oficio_list_term_block(oficio)
     destinos_display = _oficio_list_destinos_display(oficio)
     periodo_display = _oficio_list_period_display(oficio)
     data_evento_inicio, data_evento_fim = _oficio_list_period_bounds(oficio)
@@ -1069,6 +1072,8 @@ def _oficio_list_card(oficio):
         'corner_badges': _oficio_list_corner_badges(oficio, viagem_status),
         'viajantes_block': _oficio_list_viajantes_block(oficio),
         'transport_block': _oficio_list_transport_block(oficio),
+        'justificativa': justificativa,
+        'termos': termos,
         'evento_url': reverse('eventos:guiado-painel', kwargs={'pk': oficio.evento_id}) if oficio.evento_id else '',
         'wizard_url': reverse('eventos:oficio-editar', kwargs={'pk': oficio.pk}),
         'search_blob': ' '.join(
@@ -1091,6 +1096,8 @@ def _oficio_list_card(oficio):
             'status': oficio.status,
             'contexto': 'EVENTO' if oficio.evento_id else 'AVULSO',
             'viagem_status': viagem_status['key'],
+            'has_justificativa': justificativa_info['filled'],
+            'has_termo': bool(termos),
         },
         'sort_meta': {
             'numero': (
@@ -1179,6 +1186,8 @@ def oficio_global_lista(request):
                 ),
             ),
             'viajantes',
+            'termos_autorizacao',
+            'termos_autorizacao_relacionados',
         )
         .all()
     )
