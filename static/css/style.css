@@ -869,8 +869,7 @@
 .oficio-list-card {
     --oficio-card-accent: #5f6b7a;
     border: 1px solid rgba(15, 23, 42, 0.08);
-    border-top: 4px solid var(--oficio-card-accent);
-    border-left: 4px solid var(--oficio-card-accent);
+    border-left: 15px solid var(--oficio-card-accent);
     border-radius: 1.25rem;
     background:
         radial-gradient(circle at top right, rgba(255, 255, 255, 0.9), transparent 38%),
