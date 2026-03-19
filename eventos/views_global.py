@@ -692,6 +692,17 @@ def _oficio_list_table_actions(oficio, oficio_downloads):
         }
     ]
 
+    if oficio.evento_id:
+        actions.append(
+            {
+                'label': 'Pacote evento',
+                'url': reverse('eventos:guiado-painel', kwargs={'pk': oficio.evento_id}),
+                'css_class': 'btn-doc-action--primary',
+                'icon': 'bi-box-arrow-up-right',
+                'download': False,
+            }
+        )
+
     docx_action = _oficio_list_download_action(oficio_downloads['actions'], 'DOCX')
     if docx_action:
         actions.append(
@@ -1033,13 +1044,16 @@ def _oficio_list_term_block(oficio):
 
 def _oficio_list_card(oficio):
     viagem_status = _oficio_list_trip_status(oficio)
+    theme = _oficio_list_theme(oficio, viagem_status)
     oficio_downloads = _build_oficio_document_actions(oficio, DocumentoOficioTipo.OFICIO)
     destinos_display = _oficio_list_destinos_display(oficio)
+    periodo_display = _oficio_list_period_display(oficio)
     data_evento_inicio, data_evento_fim = _oficio_list_period_bounds(oficio)
     context_label = 'Com evento' if oficio.evento_id else 'Avulso'
     vehicle_display = _oficio_list_vehicle_display(oficio)
     driver_display = _oficio_list_driver_display(oficio)
     oficio_status = _oficio_process_status_meta(oficio)
+    table_actions = _oficio_list_table_actions(oficio, oficio_downloads)
     return {
         'pk': oficio.pk,
         'numero_display': _oficio_list_display_or_default(oficio.numero_formatado, 'A definir'),
@@ -1049,7 +1063,13 @@ def _oficio_list_card(oficio):
         'servidores_display': _oficio_list_basic_viajantes_summary(oficio),
         'veiculo_display': vehicle_display,
         'status_badge': oficio_status,
-        'table_actions': _oficio_list_table_actions(oficio, oficio_downloads),
+        'table_actions': table_actions,
+        'theme': theme,
+        'header_chips': [chip for chip in _oficio_list_header_chips(oficio, destinos_display, periodo_display) if chip],
+        'corner_badges': _oficio_list_corner_badges(oficio, viagem_status),
+        'viajantes_block': _oficio_list_viajantes_block(oficio),
+        'transport_block': _oficio_list_transport_block(oficio),
+        'evento_url': reverse('eventos:guiado-painel', kwargs={'pk': oficio.evento_id}) if oficio.evento_id else '',
         'wizard_url': reverse('eventos:oficio-editar', kwargs={'pk': oficio.pk}),
         'search_blob': ' '.join(
             value

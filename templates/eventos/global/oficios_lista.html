@@ -5,12 +5,32 @@
 {% block page_title %}Lista de oficios{% endblock %}
 
 {% block content %}
-<div class="container-fluid py-4 oficios-list-page">
+<div class="container-fluid py-4 oficios-list-page" data-oficios-view-root data-view-mode="rich">
     <div class="oficios-list-shell">
         <header class="oficios-list-header">
             <div>
                 <h1 class="mb-1">Oficios salvos</h1>
                 <p class="oficios-list-header__subtitle mb-0">Historico de documentos gerados.</p>
+            </div>
+            <div class="oficios-list-header__controls">
+                <div class="oficios-view-toggle" role="group" aria-label="Alternar visualizacao da lista de oficios">
+                    <button
+                        type="button"
+                        class="oficios-view-toggle__button is-active"
+                        data-oficios-view-toggle="rich"
+                        aria-pressed="true"
+                    >
+                        Visualizacao completa
+                    </button>
+                    <button
+                        type="button"
+                        class="oficios-view-toggle__button"
+                        data-oficios-view-toggle="basic"
+                        aria-pressed="false"
+                    >
+                        Visualizacao simples
+                    </button>
+                </div>
             </div>
         </header>
 
@@ -31,7 +51,7 @@
             <div class="oficios-quick-filter__result">{{ page_obj.paginator.count }} oficio(s) encontrado(s)</div>
         </section>
 
-        <section class="oficios-table-panel" aria-label="Tabela de oficios salvos">
+        <section class="oficios-table-panel oficios-view-pane oficios-view-pane--basic" aria-label="Tabela de oficios salvos">
             {% if object_list %}
             <div class="table-responsive">
                 <table class="table oficios-table mb-0">
@@ -85,6 +105,91 @@
             {% endif %}
         </section>
 
+        <section class="oficio-list-grid oficios-view-pane oficios-view-pane--rich" aria-label="Visualizacao completa de oficios">
+            {% for oficio in object_list %}
+            <article class="oficio-list-card {{ oficio.theme.css_class }}" id="oficio-card-{{ oficio.pk }}">
+                <div class="oficio-list-rich-layout">
+                    <div class="oficio-list-card__header">
+                        <div class="oficio-list-chip-list oficio-list-chip-list--meta">
+                            {% for chip in oficio.header_chips %}
+                            <span class="oficio-list-chip oficio-list-chip--meta {{ chip.css_class }}">
+                                <span class="oficio-list-chip__label">{{ chip.label }}</span>
+                                <span class="oficio-list-chip__value">{{ chip.value }}</span>
+                            </span>
+                            {% endfor %}
+                        </div>
+                        {% if oficio.corner_badges %}
+                        <div class="oficio-list-card__header-status">
+                            {% for badge in oficio.corner_badges %}
+                            <span class="oficio-list-badge {{ badge.css_class }}">
+                                <span>{{ badge.value }}</span>
+                            </span>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+                    </div>
+
+                    <div class="oficio-list-core-grid">
+                        <section class="oficio-list-core-card oficio-list-core-card--travelers">
+                            <div class="oficio-list-core-card__header">
+                                <h3 class="oficio-list-core-card__title">Servidores</h3>
+                                <span class="oficio-list-core-card__meta">{{ oficio.viajantes_block.count_label }}</span>
+                            </div>
+                            <div class="oficio-list-traveler-list">
+                                {% for traveler in oficio.viajantes_block.items %}
+                                <div class="oficio-list-traveler-pill {{ traveler.css_class }}">
+                                    <span class="oficio-list-traveler-pill__initials">{{ traveler.initials }}</span>
+                                    <span class="oficio-list-traveler-pill__name">{{ traveler.name }}</span>
+                                </div>
+                                {% endfor %}
+                            </div>
+                        </section>
+
+                        <section class="oficio-list-core-card oficio-list-core-card--transport">
+                            <div class="oficio-list-core-card__header">
+                                <h3 class="oficio-list-core-card__title">Veiculo e motorista</h3>
+                            </div>
+                            <div class="oficio-list-transport-panel">
+                                <div class="oficio-list-transport-panel__hero">
+                                    <span class="oficio-list-transport-panel__kicker">Veiculo</span>
+                                    <div class="oficio-list-transport-panel__headline">{{ oficio.transport_block.vehicle_primary }}</div>
+                                    {% if oficio.transport_block.vehicle_secondary %}
+                                    <p class="oficio-list-transport-panel__support">{{ oficio.transport_block.vehicle_secondary }}</p>
+                                    {% endif %}
+                                </div>
+                                <div class="oficio-list-transport-panel__divider"></div>
+                                <div class="oficio-list-transport-panel__detail">
+                                    <span class="oficio-list-transport-panel__kicker">Motorista</span>
+                                    <div class="oficio-list-transport-panel__detail-value">{{ oficio.transport_block.driver_primary }}</div>
+                                    {% if oficio.transport_block.driver_secondary %}
+                                    <p class="oficio-list-transport-panel__support">{{ oficio.transport_block.driver_secondary }}</p>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </section>
+                    </div>
+
+                    <div class="oficio-list-card__footer">
+                        <div class="oficio-list-card__footer-actions">
+                            {% for action in oficio.table_actions %}
+                            <a
+                                href="{{ action.url }}"
+                                class="btn btn-sm btn-doc-action {{ action.css_class }}"
+                                {% if action.download %}data-direct-download="true"{% endif %}
+                            >
+                                <i class="bi {{ action.icon }}"></i>
+                                <span>{{ action.label }}</span>
+                            </a>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            </article>
+            {% empty %}
+            <div class="oficios-table-panel__empty">Nenhum oficio encontrado com os filtros atuais.</div>
+            {% endfor %}
+        </section>
+
         {% include 'includes/pagination.html' %}
     </div>
 
@@ -93,4 +198,8 @@
         <span>+ Novo oficio</span>
     </a>
 </div>
+{% endblock %}
+
+{% block extra_js %}
+<script src="{% static 'js/oficios_list.js' %}"></script>
 {% endblock %}

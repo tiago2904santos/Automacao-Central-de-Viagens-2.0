@@ -158,6 +158,17 @@ class GlobalViewsTest(TestCase):
         end = next_row if next_row != -1 else len(content)
         return content[start:end]
 
+    def _extract_oficio_card_html(self, response, oficio_pk):
+        content = response.content.decode('utf-8')
+        anchor = f'id="oficio-card-{oficio_pk}"'
+        start = content.find(anchor)
+        self.assertNotEqual(start, -1)
+        article_start = content.rfind('<article class="oficio-list-card ', 0, start)
+        self.assertNotEqual(article_start, -1)
+        article_end = content.find('</article>', start)
+        self.assertNotEqual(article_end, -1)
+        return content[article_start:article_end + len('</article>')]
+
     def _extract_oficio_ids_order(self, response):
         return [int(item) for item in re.findall(r'id="oficio-row-(\d+)"', response.content.decode('utf-8'))]
 
@@ -229,16 +240,81 @@ class GlobalViewsTest(TestCase):
         self.assertContains(filtered, self.oficio_pt.numero_formatado)
         self.assertNotContains(filtered, self.oficio_os.numero_formatado)
 
-    def test_lista_global_de_oficios_renderiza_tabela_simples_sem_toggle_ou_cards(self):
+    def test_lista_global_de_oficios_renderiza_toggle_com_dois_modos_e_script_de_persistencia(self):
         response = self.client.get(reverse('eventos:oficios-global'))
         self.assertEqual(response.status_code, 200)
         content = response.content.decode('utf-8')
 
+        self.assertIn('data-oficios-view-root', content)
+        self.assertIn('data-view-mode="rich"', content)
+        self.assertIn('data-oficios-view-toggle="rich"', content)
+        self.assertIn('data-oficios-view-toggle="basic"', content)
+        self.assertIn('Visualizacao completa', content)
+        self.assertIn('Visualizacao simples', content)
+        self.assertIn('<script src="/static/js/oficios_list.js"></script>', content)
         self.assertIn('<table class="table oficios-table mb-0">', content)
-        self.assertNotIn('data-oficios-view-root', content)
-        self.assertNotIn('oficios-view-toggle', content)
-        self.assertNotIn('oficio-list-card', content)
-        self.assertNotIn('oficio-list-rich-layout', content)
+        self.assertIn('oficio-list-grid', content)
+        self.assertIn('oficio-list-card', content)
+
+    def test_lista_global_de_oficios_renderiza_modo_completo_em_cards_com_contexto_rico(self):
+        with patch('eventos.views_global.get_document_generation_status') as mocked_status:
+            mocked_status.return_value = {'status': 'available', 'errors': []}
+            response = self.client.get(reverse('eventos:oficios-global'))
+        self.assertEqual(response.status_code, 200)
+        card_html = self._extract_oficio_card_html(response, self.oficio_pt.pk)
+
+        self.assertIn('oficio-list-card', card_html)
+        self.assertIn('oficio-list-chip', card_html)
+        self.assertIn('Servidores', card_html)
+        self.assertIn('Veiculo e motorista', card_html)
+        self.assertIn('oficio-list-card__footer-actions', card_html)
+        self.assertIn('Editar', card_html)
+        self.assertIn('VIAJANTE GLOBAL', card_html)
+        self.assertIn('Excluir', card_html)
+        self.assertNotIn('Documentos', card_html)
+
+    def test_lista_global_de_oficios_expoe_hook_de_persistencia_do_modo_no_javascript(self):
+        js = (Path(settings.BASE_DIR) / 'static' / 'js' / 'oficios_list.js').read_text(encoding='utf-8')
+
+        self.assertIn('central-viagens.oficios.view-mode', js)
+        self.assertIn('window.localStorage', js)
+        self.assertIn('data-oficios-view-toggle', js)
+        self.assertIn('data-view-mode', js)
+
+    def test_lista_global_de_oficios_mostra_acao_pacote_evento_apenas_quando_existe_evento(self):
+        response = self.client.get(reverse('eventos:oficios-global'))
+        self.assertEqual(response.status_code, 200)
+
+        row_html = self._extract_oficio_row_html(response, self.oficio_pt.pk)
+        card_html = self._extract_oficio_card_html(response, self.oficio_pt.pk)
+        pacote_url = reverse('eventos:guiado-painel', kwargs={'pk': self.evento_pt.pk})
+        self.assertIn('Pacote evento', row_html)
+        self.assertIn('Pacote evento', card_html)
+        self.assertIn(pacote_url, row_html)
+        self.assertIn(pacote_url, card_html)
+
+        oficio_avulso = Oficio.objects.create(
+            protocolo='123123123',
+            data_criacao=date(2026, 4, 2),
+            tipo_destino=Oficio.TIPO_DESTINO_INTERIOR,
+            status=Oficio.STATUS_RASCUNHO,
+        )
+        oficio_avulso.viajantes.add(self.viajante)
+        OficioTrecho.objects.create(
+            oficio=oficio_avulso,
+            ordem=0,
+            origem_estado=self.estado,
+            origem_cidade=self.cidade_origem,
+            destino_estado=self.estado,
+            destino_cidade=self.cidade_destino,
+            saida_data=date(2026, 4, 2),
+            chegada_data=date(2026, 4, 2),
+        )
+        response_avulso = self.client.get(reverse('eventos:oficios-global'), {'q': '123123123'})
+        avulso_row_html = self._extract_oficio_row_html(response_avulso, oficio_avulso.pk)
+        avulso_card_html = self._extract_oficio_card_html(response_avulso, oficio_avulso.pk)
+        self.assertNotIn('Pacote evento', avulso_row_html)
+        self.assertNotIn('Pacote evento', avulso_card_html)
 
     def test_lista_global_de_oficios_modo_basico_mostra_apenas_campos_essenciais_e_acoes_do_oficio(self):
         with patch('eventos.views_global.get_document_generation_status') as mocked_status:
@@ -258,8 +334,7 @@ class GlobalViewsTest(TestCase):
         self.assertIn('STATUS', table_html)
         self.assertIn('ACOES', table_html)
         self.assertIn('Editar', row_html)
-        self.assertIn('W', row_html)
-        self.assertIn('PDF', row_html)
+        self.assertIn('VIAJANTE GLOBAL', row_html)
         self.assertIn('Excluir', row_html)
         self.assertNotIn('Documentos', row_html)
         self.assertNotIn('Justificativa', row_html)
@@ -418,12 +493,15 @@ class GlobalViewsTest(TestCase):
         response = self.client.get(reverse('eventos:oficios-global'))
         content = response.content.decode('utf-8')
         row_html = self._extract_oficio_row_html(response, oficio_avulso.pk)
+        card_html = self._extract_oficio_card_html(response, oficio_avulso.pk)
 
         self.assertIn('oficios-table-panel', content)
+        self.assertIn('oficio-list-grid', content)
         self.assertIn('oficios-table', content)
         self.assertIn('Spin', row_html)
+        self.assertIn('Spin', card_html)
         self.assertIn('Finalizado', row_html)
-        self.assertNotIn('oficio-list-card', content)
+        self.assertIn('oficio-list-card', content)
         self.assertNotIn('oficio-list-subcard', content)
         self.assertNotIn('Contexto do oficio', content)
         self.assertNotIn('Aconteceu ha 8 dia(s)', content)
@@ -519,6 +597,10 @@ class GlobalViewsTest(TestCase):
         css = (Path(settings.BASE_DIR) / 'static' / 'css' / 'style.css').read_text(encoding='utf-8')
 
         self.assertIn('.oficios-list-shell {', css)
+        self.assertIn('.oficios-view-toggle {', css)
+        self.assertIn('.oficios-view-pane--rich {', css)
+        self.assertIn('[data-view-mode="basic"] .oficios-view-pane--rich {', css)
+        self.assertIn('[data-view-mode="rich"] .oficios-view-pane--basic {', css)
         self.assertIn('.oficios-quick-filter {', css)
         self.assertIn('.oficios-quick-filter__form {', css)
         self.assertIn('.oficios-table-panel {', css)
@@ -526,6 +608,8 @@ class GlobalViewsTest(TestCase):
         self.assertIn('.oficios-table thead th {', css)
         self.assertIn('.oficios-table tbody td {', css)
         self.assertIn('.oficios-table__actions {', css)
+        self.assertIn('.oficio-list-card {', css)
+        self.assertIn('.oficio-list-rich-layout {', css)
         self.assertIn('.oficios-fab {', css)
         self.assertIn('padding-bottom: 6rem;', css)
         self.assertIn('white-space: nowrap;', css)
