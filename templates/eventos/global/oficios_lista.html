@@ -149,47 +149,65 @@
         </div>
     </div>
 
+    <div class="oficio-basic-list" aria-label="Lista basica de oficios">
+        {% if object_list %}
+        <div class="oficio-basic-list__head" role="row">
+            <span>Oficio</span>
+            <span>Protocolo</span>
+            <span>Destino</span>
+            <span>Data</span>
+            <span>Viajantes</span>
+            <span>Acoes</span>
+        </div>
+        <div class="oficio-basic-list__body">
+            {% for oficio in object_list %}
+            <div class="oficio-basic-row" id="oficio-basic-row-{{ oficio.pk }}">
+                {% for field in oficio.basic_fields %}
+                <div class="oficio-basic-row__cell {{ field.css_class }}" data-label="{{ field.label }}">
+                    <span class="oficio-basic-row__label">{{ field.label }}</span>
+                    <span class="oficio-basic-row__value">{{ field.value }}</span>
+                </div>
+                {% endfor %}
+                <div class="oficio-basic-row__actions" data-label="Acoes">
+                    <span class="oficio-basic-row__label">Acoes</span>
+                    <div class="oficio-basic-row__actions-list">
+                        <a href="{{ oficio.summary_url }}" class="btn btn-sm btn-doc-action btn-doc-action--primary">
+                            <i class="bi bi-box-arrow-up-right"></i>
+                            <span>Abrir</span>
+                        </a>
+                        <a href="{{ oficio.wizard_url }}" class="btn btn-sm btn-doc-action btn-doc-action--secondary">
+                            <i class="bi bi-pencil-square"></i>
+                            <span>Editar</span>
+                        </a>
+                        {% for action in oficio.downloads %}
+                        {% if action.available %}
+                        <a
+                            href="{{ action.url }}"
+                            class="btn btn-sm btn-doc-action {% if action.label == 'PDF' %}btn-doc-action--pdf{% else %}btn-doc-action--secondary{% endif %}"
+                            data-direct-download="true"
+                        >
+                            <i class="bi {% if action.label == 'PDF' %}bi-filetype-pdf{% else %}bi-filetype-docx{% endif %}"></i>
+                            <span>{{ action.label }}</span>
+                        </a>
+                        {% endif %}
+                        {% endfor %}
+                        <a href="{{ oficio.excluir_url }}" class="btn btn-sm btn-doc-action btn-doc-action--danger">
+                            <i class="bi bi-trash3"></i>
+                            <span>Excluir</span>
+                        </a>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <div class="oficio-basic-list__empty">Nenhum oficio encontrado com os filtros atuais.</div>
+        {% endif %}
+    </div>
+
     <div class="oficio-list-grid">
         {% for oficio in object_list %}
         <article class="oficio-list-card {{ oficio.theme.css_class }}" id="oficio-card-{{ oficio.pk }}">
-            <div class="oficio-list-basic-layout">
-                <div class="oficio-list-basic-layout__meta">
-                    {% for field in oficio.basic_fields %}
-                    <div class="oficio-list-basic-field {{ field.css_class }}">
-                        <span class="oficio-list-basic-field__label">{{ field.label }}</span>
-                        <span class="oficio-list-basic-field__value">{{ field.value }}</span>
-                    </div>
-                    {% endfor %}
-                </div>
-
-                <div class="oficio-list-basic-layout__actions">
-                    <a href="{{ oficio.summary_url }}" class="btn btn-sm btn-doc-action btn-doc-action--primary">
-                        <i class="bi bi-box-arrow-up-right"></i>
-                        <span>Abrir</span>
-                    </a>
-                    <a href="{{ oficio.wizard_url }}" class="btn btn-sm btn-doc-action btn-doc-action--secondary">
-                        <i class="bi bi-pencil-square"></i>
-                        <span>Editar</span>
-                    </a>
-                    {% for action in oficio.downloads %}
-                    {% if action.available %}
-                    <a
-                        href="{{ action.url }}"
-                        class="btn btn-sm btn-doc-action {% if action.label == 'PDF' %}btn-doc-action--pdf{% else %}btn-doc-action--secondary{% endif %}"
-                        data-direct-download="true"
-                    >
-                        <i class="bi {% if action.label == 'PDF' %}bi-filetype-pdf{% else %}bi-filetype-docx{% endif %}"></i>
-                        <span>{{ action.label }}</span>
-                    </a>
-                    {% endif %}
-                    {% endfor %}
-                    <a href="{{ oficio.excluir_url }}" class="btn btn-sm btn-doc-action btn-doc-action--danger">
-                        <i class="bi bi-trash3"></i>
-                        <span>Excluir</span>
-                    </a>
-                </div>
-            </div>
-
             <div class="oficio-list-rich-layout">
                 <div class="oficio-list-card__header">
                     <div class="oficio-list-chip-list oficio-list-chip-list--meta">

@@ -4447,14 +4447,14 @@ class OficioStep1AcceptanceTest(TestCase):
         response = self.client.get(reverse('eventos:oficio-step2', kwargs={'pk': oficio.pk}))
         self.assertEqual(response.status_code, 200)
         self.motorista_externo.refresh_from_db()
-        self.assertContains(response, f'id="preview-oficio">{oficio.numero_formatado}</dd>')
-        self.assertContains(response, 'id="preview-protocolo">98.765.432-1</dd>')
-        self.assertContains(response, 'id="preview-motivo">Motivo acumulado</dd>')
-        self.assertContains(response, 'Instituição Acumulada')
+        self.assertContains(response, 'id="summary-oficio"')
+        self.assertContains(response, oficio.numero_formatado)
+        self.assertContains(response, 'id="summary-protocolo"')
+        self.assertContains(response, '98.765.432-1')
+        self.assertContains(response, 'id="summary-veiculo"')
+        self.assertContains(response, 'ABC-1234 • VIATURA TESTE')
+        self.assertContains(response, 'id="summary-viajantes-meta"')
         self.assertContains(response, self.viajante_final.nome)
-        self.assertContains(response, 'id="preview-placa">ABC-1234</dd>')
-        self.assertContains(response, 'id="preview-modelo">VIATURA TESTE</dd>')
-        self.assertContains(response, 'id="preview-combustivel">GASOLINA</dd>')
         self.assertContains(response, 'id="preview-motorista-nome"')
         self.assertContains(response, f'{self.motorista_externo.nome} (carona)')
         self.assertContains(
@@ -4462,6 +4462,7 @@ class OficioStep1AcceptanceTest(TestCase):
             f'id="preview-motorista-oficio">12/{tz.localdate().year}</span>',
         )
         self.assertContains(response, 'id="preview-motorista-protocolo">12.345.678-9</span>')
+        self.assertNotContains(response, 'Relatório rápido')
 
     def test_step2_resumo_manual_carona_mostra_documentos_sem_dados_cadastrais(self):
         oficio = self._criar_oficio(ano=2026)
@@ -4575,14 +4576,14 @@ class OficioStep1AcceptanceTest(TestCase):
             ativo=True,
         )
         url = reverse('eventos:modelos-motivo-texto-api', kwargs={'pk': modelo.pk})
-            self.assertContains(response, f'id="summary-oficio"')
-            self.assertContains(response, oficio.numero_formatado)
-            self.assertContains(response, 'id="summary-protocolo"')
-            self.assertContains(response, '98.765.432-1')
-            self.assertContains(response, 'id="summary-veiculo"')
-            self.assertContains(response, 'ABC-1234 • VIATURA TESTE')
-            self.assertContains(response, 'id="summary-viajantes-meta"')
+        response = self.client.get(url)
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload.get('ok'))
         self.assertEqual(payload.get('texto'), 'Texto API')
+
+    def test_excluir_oficio_reutiliza_lacuna_no_mesmo_ano(self):
+        oficios = [self._criar_oficio(ano=2026) for _ in range(5)]
         oficios[4].delete()
         proximo = self._criar_oficio(ano=2026)
         self.assertEqual(proximo.numero_formatado, '05/2026')
@@ -4590,9 +4591,8 @@ class OficioStep1AcceptanceTest(TestCase):
     def test_oficio_pode_ser_excluido_com_redirecionamento_coerente(self):
         oficio = self._criar_oficio(ano=2026)
         url = reverse('eventos:oficio-excluir', kwargs={'pk': oficio.pk})
-            self.assertNotContains(response, 'Relatório rápido')
         response = self.client.post(url)
-        def test_step3_resumo_essencial_acumula_steps_1_2_e_3(self):
+        self.assertRedirects(response, reverse('eventos:oficios-global'))
         self.assertFalse(Oficio.objects.filter(pk=oficio.pk).exists())
 
     def test_step3_get_seed_do_roteiro_do_evento(self):
@@ -5848,7 +5848,7 @@ class OficioJustificativaTest(TestCase):
         self.assertContains(response, 'id="summary-data"')
         self.assertContains(response, '10/10/2026 08:00 até 11/10/2026 18:00')
         self.assertContains(response, 'id="summary-veiculo"')
-        self.assertContains(response, 'ABC1234 • VIATURA JUSTIFICATIVA')
+        self.assertContains(response, 'ABC-1234 • VIATURA JUSTIFICATIVA')
         self.assertNotContains(response, 'Motivo</dt>')
         self.assertNotContains(response, 'Custeio</dt>')
 

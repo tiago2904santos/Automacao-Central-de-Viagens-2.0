@@ -1092,10 +1092,6 @@
         throw new Error((data.errors || []).join('\n') || data.error || 'Erro ao calcular as diárias.');
       }
       applyDiarias(data);
-      if (data.justificativa_status_label) {
-        const prefix = data.justificativa_required ? 'Sim' : 'Não';
-        setPreviewValue('preview-justificativa', prefix + ' · ' + data.justificativa_status_label);
-      }
       if (data.justificativa_required && data.justificativa_url) {
         ensureJustificativaStep(data.justificativa_url);
         $('diarias-status').textContent = 'Cálculo atualizado. Justificativa habilitada no menu.';

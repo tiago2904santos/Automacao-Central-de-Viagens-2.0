@@ -171,15 +171,22 @@ class GlobalViewsTest(TestCase):
         self.assertIsNotNone(match)
         return match.group(0)
 
-    def _extract_oficio_basic_layout_html(self, response, oficio_pk):
-        article_html = self._extract_oficio_article_html(response, oficio_pk)
-        match = re.search(
-            r'<div class="oficio-list-basic-layout">(.*?)<div class="oficio-list-rich-layout">',
-            article_html,
-            re.S,
-        )
-        self.assertIsNotNone(match)
-        return match.group(1)
+    def _extract_oficio_basic_list_html(self, response):
+        content = response.content.decode('utf-8')
+        start = content.find('<div class="oficio-basic-list"')
+        self.assertNotEqual(start, -1)
+        end = content.find('<div class="oficio-list-grid">', start)
+        self.assertNotEqual(end, -1)
+        return content[start:end]
+
+    def _extract_oficio_basic_row_html(self, response, oficio_pk):
+        content = self._extract_oficio_basic_list_html(response)
+        start_marker = f'<div class="oficio-basic-row" id="oficio-basic-row-{oficio_pk}">'
+        start = content.find(start_marker)
+        self.assertNotEqual(start, -1)
+        next_row = content.find('<div class="oficio-basic-row"', start + len(start_marker))
+        end = next_row if next_row != -1 else len(content)
+        return content[start:end]
 
     def _extract_oficio_ids_order(self, response):
         return [int(item) for item in re.findall(r'id="oficio-card-(\d+)"', response.content.decode('utf-8'))]
@@ -266,23 +273,30 @@ class GlobalViewsTest(TestCase):
             response = self.client.get(reverse('eventos:oficios-global'))
         self.assertEqual(response.status_code, 200)
 
-        basic_html = self._extract_oficio_basic_layout_html(response, self.oficio_pt.pk)
+        basic_list_html = self._extract_oficio_basic_list_html(response)
+        basic_row_html = self._extract_oficio_basic_row_html(response, self.oficio_pt.pk)
 
-        self.assertIn('Oficio', basic_html)
-        self.assertIn('Protocolo', basic_html)
-        self.assertIn('Destino', basic_html)
-        self.assertIn('Data', basic_html)
-        self.assertIn('Viajantes', basic_html)
-        self.assertIn('Abrir', basic_html)
-        self.assertIn('Editar', basic_html)
-        self.assertIn('PDF', basic_html)
-        self.assertIn('DOCX', basic_html)
-        self.assertIn('Excluir', basic_html)
-        self.assertNotIn('Justificativa', basic_html)
-        self.assertNotIn('Termos de autorizacao', basic_html)
-        self.assertNotIn('Abrir wizard', basic_html)
-        self.assertNotIn('/eventos/documentos/termos/', basic_html)
-        self.assertNotIn('/justificativa/', basic_html)
+        self.assertIn('oficio-basic-list__head', basic_list_html)
+        self.assertIn('<div class="oficio-basic-row"', basic_list_html)
+        self.assertNotIn('<article class="oficio-basic-row"', basic_list_html)
+        self.assertIn('Oficio', basic_list_html)
+        self.assertIn('Protocolo', basic_list_html)
+        self.assertIn('Destino', basic_list_html)
+        self.assertIn('Data', basic_list_html)
+        self.assertIn('Viajantes', basic_list_html)
+        self.assertIn('Acoes', basic_list_html)
+        self.assertIn('Abrir', basic_row_html)
+        self.assertIn('Editar', basic_row_html)
+        self.assertIn('PDF', basic_row_html)
+        self.assertIn('DOCX', basic_row_html)
+        self.assertIn('Excluir', basic_row_html)
+        self.assertNotIn('Justificativa', basic_row_html)
+        self.assertNotIn('Termos de autorizacao', basic_row_html)
+        self.assertNotIn('Abrir wizard', basic_row_html)
+        self.assertNotIn('/eventos/documentos/termos/', basic_row_html)
+        self.assertNotIn('/justificativa/', basic_row_html)
+        self.assertNotIn('oficio-list-card', basic_row_html)
+        self.assertNotIn('oficio-list-core-card', basic_row_html)
 
     def test_lista_global_de_oficios_resume_viajantes_no_modo_basico_com_primeiro_nome_e_quantidade_restante(self):
         viajante_extra_1 = Viajante.objects.create(
@@ -306,7 +320,7 @@ class GlobalViewsTest(TestCase):
         self.oficio_pt.viajantes.add(viajante_extra_1, viajante_extra_2)
 
         response = self.client.get(reverse('eventos:oficios-global'))
-        basic_html = self._extract_oficio_basic_layout_html(response, self.oficio_pt.pk)
+        basic_html = self._extract_oficio_basic_row_html(response, self.oficio_pt.pk)
 
         self.assertIn('VIAJANTE GLOBAL +2', basic_html)
         self.assertNotIn('YARA RESUMO', basic_html)
@@ -429,7 +443,7 @@ class GlobalViewsTest(TestCase):
         self.assertNotIn('Documentos', card_html)
         self.assertEqual(termos_html.count('class="oficio-list-term-row"'), 2)
         self.assertContains(response, 'Abrir wizard')
-        basic_html = self._extract_oficio_basic_layout_html(response, self.oficio_pt.pk)
+        basic_html = self._extract_oficio_basic_row_html(response, self.oficio_pt.pk)
         self.assertEqual(basic_html.count(self.oficio_pt.protocolo_formatado), 1)
 
     def test_lista_global_de_oficios_aplica_linguagem_visual_compacta_e_contexto_sem_repeticao(self):
@@ -455,11 +469,13 @@ class GlobalViewsTest(TestCase):
         )
 
         response = self.client.get(reverse('eventos:oficios-global'))
+        basic_list_html = self._extract_oficio_basic_list_html(response)
+        basic_row_html = self._extract_oficio_basic_row_html(response, oficio_avulso.pk)
         card_html = self._extract_oficio_article_html(response, oficio_avulso.pk)
 
         self.assertIn('oficio-list-card is-tone-green', card_html)
-        self.assertIn('oficio-list-basic-layout', card_html)
-        self.assertIn('oficio-list-basic-field', card_html)
+        self.assertIn('oficio-basic-list', basic_list_html)
+        self.assertIn('oficio-basic-row', basic_row_html)
         self.assertIn('oficio-list-rich-layout', card_html)
         self.assertEqual(card_html.count('oficio-list-chip oficio-list-chip--meta'), 4)
         self.assertIn('oficio-list-card__header-status', card_html)
@@ -468,6 +484,8 @@ class GlobalViewsTest(TestCase):
         self.assertIn('oficio-list-core-card--transport', card_html)
         self.assertIn('oficio-list-transport-panel', card_html)
         self.assertIn('oficio-list-traveler-pill', card_html)
+        self.assertNotIn('oficio-list-card', basic_row_html)
+        self.assertNotIn('oficio-list-subcard', basic_row_html)
         self.assertNotIn('Contexto do oficio', card_html)
         self.assertIn('Veiculo e motorista', card_html)
         self.assertIn('Motorista Avulso', card_html)
@@ -574,9 +592,10 @@ class GlobalViewsTest(TestCase):
         self.assertIn('.oficios-filter-topbar {', css)
         self.assertIn('.oficios-sort-panel {', css)
         self.assertIn('.oficios-view-toggle {', css)
-        self.assertIn('.oficio-list-basic-layout {', css)
+        self.assertIn('.oficio-basic-list {', css)
+        self.assertIn('.oficio-basic-row {', css)
+        self.assertIn('.oficio-basic-row__actions-list {', css)
         self.assertIn('.oficio-list-rich-layout {', css)
-        self.assertIn('.oficio-list-basic-field {', css)
         self.assertIn('.oficio-list-chip {', css)
         self.assertIn('padding: 0.58rem 0.74rem;', css)
         self.assertIn('.oficio-list-chip__value {', css)
@@ -584,8 +603,8 @@ class GlobalViewsTest(TestCase):
         self.assertIn('.oficio-list-core-card {', css)
         self.assertIn('padding: 0.78rem 0.82rem;', css)
         self.assertIn('.oficio-list-transport-panel__headline {', css)
-        self.assertIn('[data-view-mode="basic"] .oficio-list-rich-layout {', css)
-        self.assertIn('[data-view-mode="basic"] .oficio-list-basic-layout {', css)
+        self.assertIn('[data-view-mode="basic"] .oficio-basic-list {', css)
+        self.assertIn('[data-view-mode="basic"] .oficio-list-grid {', css)
         self.assertIn('.oficio-list-traveler-pill {', css)
         self.assertIn('.oficio-list-traveler-list {', css)
         self.assertIn('display: grid;', css)
