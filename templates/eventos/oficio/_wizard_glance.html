@@ -1,57 +1,52 @@
-<section
-  class="oficio-glance-drawer"
+<div
+  class="oficio-glance-panel"
   id="oficio-glance-panel"
-  aria-label="InformaÃ§Ãµes essenciais do ofÃ­cio"
+  aria-label="Resumo essencial do ofício"
   data-oficio-glance
   data-oficio-glance-panel
   aria-hidden="true"
+  role="region"
 >
-  <div class="oficio-glance-drawer__header">
-    <div>
-      <span class="oficio-glance-kicker">Resumo rÃ¡pido</span>
-      <h2 class="oficio-glance-title">Dados essenciais do ofÃ­cio</h2>
-    </div>
-    <button type="button" class="oficio-glance-close" data-oficio-glance-close aria-label="Fechar resumo">
-      <i class="bi bi-x-lg"></i>
-    </button>
-  </div>
-
+  <!-- Grid compacta: Linha 1 com 4 items, Linha 2 com 3 items -->
   <div class="oficio-glance-grid">
-    <article class="oficio-glance-card">
-      <span class="oficio-glance-label">OfÃ­cio</span>
-      <strong class="oficio-glance-value" id="summary-oficio" data-empty-text="A definir">{{ wizard_glance.oficio|default:"A definir" }}</strong>
-    </article>
+    <!-- LINHA 1: Ofício, Protocolo, Destino, Data evento -->
+    <div class="oficio-glance-item">
+      <span class="oficio-glance-item-label">Ofício</span>
+      <strong class="oficio-glance-item-value" id="summary-oficio" data-empty-text="—">{{ wizard_glance.oficio|default:"—" }}</strong>
+    </div>
 
-    <article class="oficio-glance-card">
-      <span class="oficio-glance-label">Protocolo</span>
-      <strong class="oficio-glance-value" id="summary-protocolo" data-empty-text="Aguardando protocolo">{{ wizard_glance.protocolo|default:"Aguardando protocolo" }}</strong>
-    </article>
+    <div class="oficio-glance-item">
+      <span class="oficio-glance-item-label">Protocolo</span>
+      <strong class="oficio-glance-item-value" id="summary-protocolo" data-empty-text="—">{{ wizard_glance.protocolo|default:"—" }}</strong>
+    </div>
 
-    <article class="oficio-glance-card oficio-glance-card--travelers">
-      <span class="oficio-glance-label">Viajantes</span>
-      <strong class="oficio-glance-value" id="summary-viajantes-meta" data-empty-text="Nenhum viajante">{% if wizard_glance.viajantes_count %}{{ wizard_glance.viajantes_count }} viajante{{ wizard_glance.viajantes_count|pluralize }}{% else %}Nenhum viajante{% endif %}</strong>
-      <div class="oficio-glance-travelers" id="summary-viajantes-list">
-        {% for viajante in wizard_glance.viajantes %}
-        <span class="oficio-glance-chip">{{ viajante }}</span>
-        {% empty %}
-        <span class="oficio-glance-empty">Selecione ao menos um viajante.</span>
-        {% endfor %}
+    <div class="oficio-glance-item">
+      <span class="oficio-glance-item-label">Destino</span>
+      <strong class="oficio-glance-item-value" id="summary-destino" data-empty-text="—">{{ wizard_glance.destino|default:"—" }}</strong>
+    </div>
+
+    <div class="oficio-glance-item">
+      <span class="oficio-glance-item-label">Data</span>
+      <strong class="oficio-glance-item-value" id="summary-data" data-empty-text="—">{{ wizard_glance.data|default:"—" }}</strong>
+    </div>
+
+    <!-- LINHA 2: Viajantes, Veículo, Motorista -->
+    <div class="oficio-glance-item oficio-glance-item--wide">
+      <span class="oficio-glance-item-label">Viajantes</span>
+      <div class="oficio-glance-travelers-compact">
+        <strong class="oficio-glance-item-value" id="summary-viajantes-meta" data-empty-text="—">{% if wizard_glance.viajantes_count %}{{ wizard_glance.viajantes_count }}{% else %}—{% endif %}</strong>
+        <div class="oficio-glance-travelers-list" id="summary-viajantes-list"></div>
       </div>
-    </article>
+    </div>
 
-    <article class="oficio-glance-card">
-      <span class="oficio-glance-label">Destino</span>
-      <strong class="oficio-glance-value" id="summary-destino" data-empty-text="Defina no roteiro">{{ wizard_glance.destino|default:"Defina no roteiro" }}</strong>
-    </article>
+    <div class="oficio-glance-item">
+      <span class="oficio-glance-item-label">Veículo</span>
+      <strong class="oficio-glance-item-value" id="summary-veiculo" data-empty-text="—">{{ wizard_glance.veiculo|default:"—" }}</strong>
+    </div>
 
-    <article class="oficio-glance-card">
-      <span class="oficio-glance-label">Data</span>
-      <strong class="oficio-glance-value" id="summary-data" data-empty-text="Defina as datas">{{ wizard_glance.data|default:"Defina as datas" }}</strong>
-    </article>
-
-    <article class="oficio-glance-card">
-      <span class="oficio-glance-label">VeÃ­culo</span>
-      <strong class="oficio-glance-value" id="summary-veiculo" data-empty-text="Defina em transporte">{{ wizard_glance.veiculo|default:"Defina em transporte" }}</strong>
-    </article>
+    <div class="oficio-glance-item">
+      <span class="oficio-glance-item-label">Motorista</span>
+      <strong class="oficio-glance-item-value" id="summary-motorista" data-empty-text="—">{{ wizard_glance.motorista|default:"—" }}</strong>
+    </div>
   </div>
-</section>
+</div>

@@ -81,7 +81,6 @@
     var page = getWizardPage();
     var panel = qs('[data-oficio-glance-panel]');
     var toggles = Array.prototype.slice.call(document.querySelectorAll('[data-oficio-glance-toggle]'));
-    var closeButtons = Array.prototype.slice.call(document.querySelectorAll('[data-oficio-glance-close]'));
 
     if (!page || !panel || !toggles.length) {
       return;
@@ -105,12 +104,6 @@
     toggles.forEach(function(button) {
       button.addEventListener('click', function() {
         applyState(page.getAttribute('data-glance-state') !== 'open');
-      });
-    });
-
-    closeButtons.forEach(function(button) {
-      button.addEventListener('click', function() {
-        applyState(false);
       });
     });
 

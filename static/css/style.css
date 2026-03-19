@@ -2263,7 +2263,7 @@
 }
 
 .oficio-wizard-page[data-glance-state="open"] {
-    padding-bottom: 12.5rem;
+    padding-bottom: 9rem;
 }
 
 .oficio-wizard-header {
@@ -2271,20 +2271,22 @@
     top: var(--oficio-wizard-sticky-top);
     z-index: 140;
     margin-top: 0 !important;
+    transition: all 0.16s ease;
 }
 
 .oficio-wizard-header-card {
     display: grid;
-    gap: 0.72rem;
-    padding: 0.8rem 0.9rem;
-    border: 1px solid rgba(255, 255, 255, 0.62);
-    border-radius: 1.28rem;
+    gap: 0.58rem;
+    padding: 0.68rem 0.82rem;
+    border: 1px solid rgba(255, 255, 255, 0.64);
+    border-radius: 1.18rem;
     background:
-        radial-gradient(circle at top left, rgba(15, 118, 110, 0.12), transparent 32%),
-        radial-gradient(circle at right, rgba(14, 165, 233, 0.1), transparent 24%),
-        rgba(255, 255, 255, 0.94);
-    box-shadow: 0 14px 32px rgba(15, 23, 42, 0.08);
-    backdrop-filter: blur(12px);
+        radial-gradient(circle at top left, rgba(15, 118, 110, 0.1), transparent 34%),
+        radial-gradient(circle at right, rgba(14, 165, 233, 0.08), transparent 26%),
+        rgba(255, 255, 255, 0.96);
+    box-shadow: 0 12px 28px rgba(15, 23, 42, 0.07);
+    backdrop-filter: blur(10px);
+    transition: all 0.18s ease;
 }
 
 .oficio-wizard-header-main {
@@ -2309,12 +2311,13 @@
 }
 
 .oficio-wizard-header-copy h1 {
-    margin-bottom: 0;
+    margin: 0.04rem 0 0;
+    padding: 0;
     color: var(--oficio-wizard-ink);
-    font-size: clamp(1.08rem, 1rem + 0.45vw, 1.38rem);
+    font-size: clamp(1.04rem, 0.98rem + 0.38vw, 1.32rem);
     font-weight: 800;
-    letter-spacing: -0.02em;
-    line-height: 1.08;
+    letter-spacing: -0.015em;
+    line-height: 1.12;
 }
 
 .oficio-wizard-subtitle {
@@ -2324,19 +2327,32 @@
 .oficio-wizard-actions {
     display: flex;
     flex-wrap: wrap;
-    gap: 0.38rem;
+    gap: 0.34rem;
     align-items: center;
     justify-content: flex-end;
 }
 
 .oficio-wizard-summary-trigger {
-    border-color: rgba(15, 118, 110, 0.16);
+    border-color: rgba(15, 118, 110, 0.14);
+    transition: all 0.18s ease;
+    position: relative;
+}
+
+.oficio-wizard-summary-trigger i {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: transform 0.24s ease;
 }
 
 .oficio-wizard-summary-trigger.is-active {
-    background: rgba(15, 118, 110, 0.08);
+    background: rgba(15, 118, 110, 0.1);
     color: var(--oficio-wizard-accent-strong);
-    border-color: rgba(15, 118, 110, 0.22);
+    border-color: rgba(15, 118, 110, 0.24);
+}
+
+.oficio-wizard-summary-trigger.is-active i {
+    transform: rotate(180deg);
 }
 
 .oficio-autosave-status {
@@ -2373,11 +2389,12 @@
 }
 
 .oficio-wizard-actions .btn {
-    min-height: 1.9rem;
-    padding: 0.3rem 0.68rem;
+    min-height: 1.82rem;
+    padding: 0.28rem 0.64rem;
     border-radius: 999px;
     font-weight: 600;
-    font-size: 0.76rem;
+    font-size: 0.74rem;
+    transition: all 0.18s ease;
 }
 
 .oficio-wizard-layout {
@@ -2386,51 +2403,58 @@
 
 .oficio-stepper {
     display: flex;
-    gap: 0.45rem;
+    gap: 0.38rem;
     overflow-x: auto;
-    padding-bottom: 0.1rem;
+    padding: 0.02rem 0;
     scrollbar-width: thin;
+    scroll-behavior: smooth;
 }
 
 .oficio-stepper-link {
     display: flex;
     align-items: center;
-    gap: 0.52rem;
+    justify-content: center;
+    gap: 0.42rem;
     flex: 0 0 auto;
-    min-height: 2.7rem;
-    padding: 0.46rem 0.66rem;
-    border-radius: 0.98rem;
+    min-height: 2.48rem;
+    padding: 0.38rem 0.58rem;
+    border-radius: 0.88rem;
     border: 1px solid var(--oficio-wizard-line);
-    background: rgba(255, 255, 255, 0.84);
+    background: rgba(255, 255, 255, 0.86);
     color: var(--oficio-wizard-ink);
     text-decoration: none;
-    transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease, background 0.15s ease;
+    font-size: 0.78rem;
+    font-weight: 600;
+    transition: all 0.18s ease;
 }
 
 .oficio-stepper-link:hover {
     color: var(--oficio-wizard-ink);
-    border-color: rgba(15, 118, 110, 0.28);
-    box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
-    transform: translateY(-1px);
+    border-color: rgba(15, 118, 110, 0.26);
+    background: rgba(15, 118, 110, 0.04);
+    box-shadow: 0 6px 16px rgba(15, 23, 42, 0.06);
+    transform: translateY(-2px);
 }
 
 .oficio-stepper-link.is-active {
     background: linear-gradient(135deg, #0f766e 0%, #0f766e 45%, #0ea5e9 100%);
     border-color: transparent;
     color: #fff;
-    box-shadow: 0 10px 22px rgba(15, 118, 110, 0.18);
+    box-shadow: 0 8px 20px rgba(15, 118, 110, 0.16);
 }
 
 .oficio-stepper-link.is-completed {
-    border-color: rgba(15, 118, 110, 0.18);
+    background: rgba(15, 118, 110, 0.08);
+    border-color: rgba(15, 118, 110, 0.16);
+    color: var(--oficio-wizard-accent-strong);
 }
 
 .oficio-stepper-badge {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    width: 1.52rem;
-    height: 1.52rem;
+    width: 1.42rem;
+    height: 1.42rem;
     flex: 0 0 1.52rem;
     border-radius: 999px;
     background: rgba(15, 118, 110, 0.12);
@@ -2467,135 +2491,82 @@
     display: none;
 }
 
-.oficio-glance-drawer {
-    position: fixed;
-    left: 50%;
-    bottom: 0.95rem;
-    z-index: 1045;
-    width: min(960px, calc(100vw - 1.5rem));
+/* Accordion compacto integrado ao header do wizard */
+.oficio-glance-panel {
     display: grid;
-    gap: 0.6rem;
-    padding: 0.72rem 0.78rem;
-    border-radius: 1.12rem;
-    background:
-        radial-gradient(circle at top left, rgba(15, 118, 110, 0.1), transparent 34%),
-        rgba(255, 255, 255, 0.97);
-    border: 1px solid rgba(15, 23, 42, 0.08);
-    box-shadow: 0 18px 44px rgba(15, 23, 42, 0.16);
-    backdrop-filter: blur(14px);
-    transform: translate(-50%, calc(100% + 1rem));
+    gap: 0;
+    padding: 0;
+    max-height: 0;
+    overflow: hidden;
     opacity: 0;
-    pointer-events: none;
-    transition: transform 0.18s ease, opacity 0.18s ease;
+    transition: max-height 0.24s ease, opacity 0.24s ease, padding 0.24s ease;
 }
 
-.oficio-wizard-page[data-glance-state="open"] .oficio-glance-drawer {
-    transform: translate(-50%, 0);
+.oficio-wizard-page[data-glance-state="open"] .oficio-glance-panel {
+    max-height: 12rem;
     opacity: 1;
-    pointer-events: auto;
+    padding: 0.72rem 0.78rem;
 }
 
-.oficio-glance-drawer__header {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 0.5rem;
-}
-
-.oficio-glance-close {
-    width: 1.9rem;
-    height: 1.9rem;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    border-radius: 999px;
-    border: 1px solid rgba(15, 23, 42, 0.08);
-    background: rgba(255, 255, 255, 0.92);
-    color: var(--oficio-wizard-muted);
-    transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease;
-}
-
-.oficio-glance-close:hover,
-.oficio-glance-close:focus {
-    background: rgba(15, 118, 110, 0.08);
-    color: var(--oficio-wizard-accent-strong);
-    border-color: rgba(15, 118, 110, 0.18);
-}
-
-.oficio-glance-kicker {
-    color: var(--oficio-wizard-accent-strong);
-    font-size: 0.64rem;
-    font-weight: 800;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-}
-
-.oficio-glance-title {
-    margin: 0.08rem 0 0;
-    color: var(--oficio-wizard-ink);
-    font-size: 0.9rem;
-    font-weight: 800;
-}
-
+/* Grid layout: 4 items primeira linha, 3 segunda linha */
 .oficio-glance-grid {
     display: grid;
-    gap: 0.44rem;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.48rem;
+    grid-template-columns: repeat(4, 1fr);
 }
 
-.oficio-glance-card {
-    display: grid;
-    gap: 0.16rem;
-    min-height: 0;
-    padding: 0.48rem 0.58rem;
-    border-radius: 0.88rem;
-    border: 1px solid rgba(15, 23, 42, 0.07);
-    background: linear-gradient(180deg, rgba(255, 255, 255, 0.96) 0%, rgba(248, 250, 252, 0.92) 100%);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.7);
+/* Item individual (Ofício, Protocolo, Destino, Data, Veículo, Motorista) */
+.oficio-glance-item {
+    display: flex;
+    flex-direction: column;
+    gap: 0.18rem;
+    padding: 0.42rem 0.48rem;
+    border-radius: 0.78rem;
+    border: 1px solid rgba(15, 23, 42, 0.06);
+    background: linear-gradient(180deg, rgba(255, 255, 255, 0.94) 0%, rgba(248, 250, 252, 0.90) 100%);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8), 0 1px 2px rgba(15, 23, 42, 0.04);
 }
 
-.oficio-glance-card--travelers {
+/* Viajantes ocupa 2 colunas na segunda linha */
+.oficio-glance-item--wide {
     grid-column: span 2;
 }
 
-.oficio-glance-label {
+/* Label do item (fino, uppercase) */
+.oficio-glance-item-label {
+    display: block;
     color: #64748b;
-    font-size: 0.62rem;
+    font-size: 0.58rem;
     font-weight: 800;
-    letter-spacing: 0.07em;
+    letter-spacing: 0.08em;
     text-transform: uppercase;
+    line-height: 1;
 }
 
-.oficio-glance-value {
+/* Valor do item (destaque) */
+.oficio-glance-item-value {
+    display: block;
     color: var(--oficio-wizard-ink);
-    font-size: 0.84rem;
+    font-size: 0.82rem;
     font-weight: 700;
-    line-height: 1.22;
+    line-height: 1.2;
+    word-break: break-word;
 }
 
-.oficio-glance-travelers {
+/* Container dos viajantes */
+.oficio-glance-travelers-compact {
     display: flex;
-    flex-wrap: nowrap;
-    gap: 0.28rem;
-    min-width: 0;
-    overflow: hidden;
-}
-
-.oficio-glance-chip {
-    display: inline-flex;
     align-items: center;
-    padding: 0.18rem 0.44rem;
-    border-radius: 999px;
-    background: rgba(15, 118, 110, 0.08);
-    color: var(--oficio-wizard-accent-strong);
-    font-size: 0.66rem;
-    font-weight: 700;
-    white-space: nowrap;
+    gap: 0.32rem;
+    min-width: 0;
 }
 
-.oficio-glance-empty {
-    color: #64748b;
-    font-size: 0.68rem;
+/* Lista de viajantes (chips) */
+.oficio-glance-travelers-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.24rem;
+    min-width: 0;
 }
 
 .rota-bloco {
@@ -2848,16 +2819,13 @@
 }
 
 @media (max-width: 1199.98px) {
-    .oficio-wizard-page[data-glance-state="open"] {
-        padding-bottom: 14rem;
+    .oficio-glance-grid {
+        gap: 0.42rem;
     }
 
-    .oficio-glance-drawer {
-        width: calc(100vw - 1.2rem);
-    }
-
-    .oficio-glance-card--travelers {
-        grid-column: span 1;
+    .oficio-glance-item {
+        padding: 0.38rem 0.42rem;
+        font-size: 0.76rem;
     }
 }
 
@@ -2867,7 +2835,7 @@
     }
 
     .oficio-wizard-page[data-glance-state="open"] {
-        padding-bottom: 17rem;
+        padding-bottom: 10rem;
     }
 
     .oficio-wizard-header-main {
@@ -2888,14 +2856,23 @@
         min-height: 2.55rem;
     }
 
-    .oficio-glance-drawer {
-        bottom: 0.65rem;
-        width: calc(100vw - 0.8rem);
-        padding: 0.68rem 0.7rem;
+    /* Grid responsivo: passa de 4 colunas para 2 no mobile */
+    .oficio-glance-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 0.36rem;
     }
 
-    .oficio-glance-grid {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+    /* Viajantes passa de 2 colunas para 1 no mobile */
+    .oficio-glance-item--wide {
+        grid-column: span 1;
+    }
+
+    .oficio-glance-panel {
+        padding: 0.58rem 0.62rem;
+    }
+
+    .oficio-glance-wizard-page[data-glance-state="open"] .oficio-glance-panel {
+        max-height: 16rem;
     }
 
     .oficio-wizard-header-card,
