@@ -137,6 +137,7 @@ document.addEventListener('DOMContentLoaded', function() {
         var timerId = null;
         var inflightController = null;
         var lastQuery = window.location.search;
+<<<<<<< HEAD
         var defaultSearchDelay = parseInt(form.getAttribute('data-list-autosubmit-delay') || '500', 10);
         if (!defaultSearchDelay || defaultSearchDelay < 0) {
             defaultSearchDelay = 500;
@@ -148,6 +149,13 @@ document.addEventListener('DOMContentLoaded', function() {
         function rehydrateUi() {
             hydrateStoredViewModes();
             applyMode(root.getAttribute('data-view-mode') || getStoredMode(), false);
+=======
+        var fields = Array.prototype.slice.call(
+            form.querySelectorAll('[data-list-autosubmit], [data-oficios-autosubmit]')
+        );
+
+        function rehydrateUi() {
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
             if (window.OficioSelectPicker && typeof window.OficioSelectPicker.refresh === 'function') {
                 window.OficioSelectPicker.refresh(root);
             }
@@ -173,7 +181,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 inflightController.abort();
             }
             inflightController = new AbortController();
+<<<<<<< HEAD
             form.setAttribute('data-list-loading', 'true');
+=======
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
             fetch(nextUrl, {
                 headers: { 'X-Requested-With': 'XMLHttpRequest' },
                 signal: inflightController.signal
@@ -204,9 +215,12 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (error && error.name === 'AbortError') {
                         return;
                     }
+<<<<<<< HEAD
                 })
                 .finally(function() {
                     form.removeAttribute('data-list-loading');
+=======
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
                 });
         }
 
@@ -246,10 +260,14 @@ document.addEventListener('DOMContentLoaded', function() {
                     scheduleSubmit(defaultSearchDelay);
                 });
                 field.addEventListener('input', function() {
+<<<<<<< HEAD
                     if (isComposing) {
                         return;
                     }
                     scheduleSubmit(defaultSearchDelay);
+=======
+                    scheduleSubmit(420);
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
                 });
                 field.addEventListener('keydown', function(event) {
                     if (event.key === 'Enter') {

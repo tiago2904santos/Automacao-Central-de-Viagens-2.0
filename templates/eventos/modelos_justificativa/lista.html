@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 {% extends 'includes/list/document_list_base.html' %}
+=======
+{% extends 'base.html' %}
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
 {% load static %}
 
 {% block list_page_class %}system-list-page--simple{% endblock %}
@@ -7,6 +11,7 @@
 {% block list_title %}Modelos de justificativa{% endblock %}
 {% block list_header_controls %}{% include 'includes/list/mode_badge.html' with mode='simple' %}{% endblock %}
 
+<<<<<<< HEAD
 {% block list_header_actions %}
 {% if volta_justificativa %}
 <a href="{% url 'eventos:oficio-justificativa' volta_justificativa %}{% if next_url %}?next={{ next_url|urlencode }}{% endif %}" class="btn btn-outline-secondary system-list-action-btn">Voltar para justificativa</a>
@@ -91,10 +96,101 @@
                 {% endfor %}
             </tbody>
         </table>
+=======
+{% block content %}
+<div class="container-fluid py-4 system-list-page system-list-page--simple" data-list-view-root>
+    <div class="system-list-shell">
+    <div class="page-header-cadastro system-list-header system-list-header--standard">
+        <div class="system-list-header__content">
+            <div class="system-list-header__copy">
+                <div class="system-list-header__intro">
+                    <h1 class="system-list-header__title">Modelos de justificativa</h1>
+                </div>
+            </div>
+            <div class="system-list-header__controls">
+                {% include 'includes/list/mode_badge.html' with mode='simple' %}
+                <div class="system-list-header__actions-group">
+                    {% if volta_justificativa %}
+                    <a href="{% url 'eventos:oficio-justificativa' volta_justificativa %}{% if next_url %}?next={{ next_url|urlencode }}{% endif %}" class="btn btn-outline-secondary system-list-action-btn">Voltar para justificativa</a>
+                    {% else %}
+                    <a href="{% if next_url %}{{ next_url }}{% else %}{% url 'eventos:documentos-justificativas' %}{% endif %}" class="btn btn-outline-secondary system-list-action-btn">Voltar</a>
+                    {% endif %}
+                    <a href="{% url 'eventos:modelos-justificativa-cadastrar' %}{% if volta_justificativa or next_url %}?{% if volta_justificativa %}volta_justificativa={{ volta_justificativa|urlencode }}{% endif %}{% if volta_justificativa and next_url %}&{% endif %}{% if next_url %}next={{ next_url|urlencode }}{% endif %}{% endif %}" class="btn btn-primary system-list-action-btn">Cadastrar modelo</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card filter-card system-filter-card">
+        <div class="card-body py-3">
+            <form method="get" class="row g-2 align-items-end document-filter-grid" data-list-autosubmit-form>
+                {% if volta_justificativa %}<input type="hidden" name="volta_justificativa" value="{{ volta_justificativa }}">{% endif %}
+                {% if next_url %}<input type="hidden" name="next" value="{{ next_url }}">{% endif %}
+                <div class="col-12 col-md-6">
+                    <label class="form-label small text-muted">Busca</label>
+                    <input type="text" name="q" class="form-control form-control-sm" value="{{ filters.q }}" placeholder="Nome ou texto do modelo" data-list-autosubmit>
+                </div>
+                <div class="col-6 col-md-3">
+                    <label class="form-label small text-muted">Data inicial</label>
+                    <input type="date" name="date_from" class="form-control form-control-sm" value="{{ filters.date_from }}" data-list-autosubmit>
+                </div>
+                <div class="col-6 col-md-3">
+                    <label class="form-label small text-muted">Data final</label>
+                    <input type="date" name="date_to" class="form-control form-control-sm" value="{{ filters.date_to }}" data-list-autosubmit>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="system-list-table-wrap">
+        <div class="table-responsive">
+            <table class="table table-hover table-cadastro mb-0 system-list-table">
+                <thead class="table-light">
+                    <tr>
+                        <th>Nome</th>
+                        <th>Padrão</th>
+                        <th width="320" class="text-end">Ações</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for obj in object_list %}
+                    <tr>
+                        <td>{{ obj.nome }}</td>
+                        <td>{% if obj.padrao %}<span class="badge bg-primary">Padrão</span>{% else %}—{% endif %}</td>
+                        <td class="text-end">
+                            {% if not obj.padrao %}
+                            <form method="post" action="{% url 'eventos:modelos-justificativa-definir-padrao' obj.pk %}{% if volta_justificativa or next_url %}?{% if volta_justificativa %}volta_justificativa={{ volta_justificativa|urlencode }}{% endif %}{% if volta_justificativa and next_url %}&{% endif %}{% if next_url %}next={{ next_url|urlencode }}{% endif %}{% endif %}" class="d-inline">
+                                {% csrf_token %}
+                                <button type="submit" class="btn btn-sm btn-outline-secondary">Definir como padrão</button>
+                            </form>
+                            {% endif %}
+                            <a href="{% url 'eventos:modelos-justificativa-editar' obj.pk %}{% if volta_justificativa or next_url %}?{% if volta_justificativa %}volta_justificativa={{ volta_justificativa|urlencode }}{% endif %}{% if volta_justificativa and next_url %}&{% endif %}{% if next_url %}next={{ next_url|urlencode }}{% endif %}{% endif %}" class="btn btn-sm btn-outline-primary">Editar</a>
+                            <a href="{% url 'eventos:modelos-justificativa-excluir' obj.pk %}{% if volta_justificativa or next_url %}?{% if volta_justificativa %}volta_justificativa={{ volta_justificativa|urlencode }}{% endif %}{% if volta_justificativa and next_url %}&{% endif %}{% if next_url %}next={{ next_url|urlencode }}{% endif %}{% endif %}" class="btn btn-sm btn-outline-danger">Excluir</a>
+                        </td>
+                    </tr>
+                    {% empty %}
+                    <tr><td colspan="3" class="text-center text-muted py-4">Nenhum modelo de justificativa cadastrado.</td></tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    <div class="system-list-fab-group">
+        <a href="#" class="system-list-fab system-list-fab--scroll-up" data-scroll-top aria-label="Subir lista">
+            <i class="bi bi-arrow-up"></i>
+            <span class="visually-hidden">Subir lista</span>
+        </a>
+        <a href="{% url 'eventos:modelos-justificativa-cadastrar' %}{% if volta_justificativa or next_url %}?{% if volta_justificativa %}volta_justificativa={{ volta_justificativa|urlencode }}{% endif %}{% if volta_justificativa and next_url %}&{% endif %}{% if next_url %}next={{ next_url|urlencode }}{% endif %}{% endif %}" class="system-list-fab">
+            <i class="bi bi-plus-lg"></i>
+            <span>Cadastrar modelo</span>
+        </a>
+    </div>
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
     </div>
 </div>
 {% endblock %}
 
+<<<<<<< HEAD
 {% block list_floating_actions %}
 <div class="system-list-fab-group">
     <a href="#" class="system-list-fab system-list-fab--scroll-up" data-scroll-top aria-label="Subir lista">
@@ -106,4 +202,8 @@
         <span>Cadastrar modelo</span>
     </a>
 </div>
+=======
+{% block extra_js %}
+<script src="{% static 'js/list_standard.js' %}"></script>
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
 {% endblock %}

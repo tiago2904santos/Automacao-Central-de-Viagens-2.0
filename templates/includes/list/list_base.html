@@ -47,6 +47,7 @@
 
             {% block list_mode_badge %}{% endblock %}
 
+<<<<<<< HEAD
             <section class="system-document-filter" aria-label="{% block list_filter_aria_label %}Filtros da lista{% endblock %}">
                 <div class="system-document-filter__body">
                     {% block list_toolbar %}{% endblock %}
@@ -61,6 +62,20 @@
                     Configure o bloco <code>page_result_content</code> no template
                 </div>
                 {% endblock %}
+=======
+        <div class="card filter-card system-filter-card">
+            <div class="card-body py-3">
+                {% block list_toolbar %}{% endblock %}
+            </div>
+        </div>
+        
+        {# Conteúdo principal (tabela, cards, ou customizado) #}
+        <div data-list-live-region>
+        <div class="system-list-content">
+            {% block page_result_content %}
+            <div class="alert alert-info">
+                Configure o bloco <code>page_result_content</code> no template
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
             </div>
 
             {% block page_pagination %}
@@ -69,6 +84,18 @@
             {% endif %}
             {% endblock %}
         </div>
+<<<<<<< HEAD
+=======
+        
+        {# Paginação #}
+        {% block page_pagination %}
+        {% if page_obj %}
+        {% include 'includes/pagination.html' %}
+        {% endif %}
+        {% endblock %}
+        </div>
+        
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
     </div>
 </div>
 {% endblock %}

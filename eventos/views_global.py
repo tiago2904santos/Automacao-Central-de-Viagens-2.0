@@ -5861,6 +5861,7 @@ def termos_global(request):
     if filters['modo_geracao']:
         queryset = queryset.filter(modo_geracao=filters['modo_geracao'])
     queryset = _apply_date_range_filter(queryset, field_name='updated_at', filters=filters)
+<<<<<<< HEAD
     evento_context = None
     return_to_url = ''
     termo_novo_url = reverse('eventos:documentos-termos-novo')
@@ -5872,6 +5873,8 @@ def termos_global(request):
                 f"{reverse('eventos:documentos-termos-novo')}?"
                 f"{urlencode({'context_source': 'evento', 'preselected_event_id': evento_context.pk, 'return_to': return_to_url})}"
             )
+=======
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
 
     termo_order_map = {
         'numero': 'pk',

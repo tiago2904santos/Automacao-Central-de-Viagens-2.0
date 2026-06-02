@@ -5,10 +5,21 @@
 {% block list_page_attributes %}data-list-view-root data-view-mode="rich" data-view-storage-key="central-viagens.roteiros.view-mode"{% endblock %}
 {% block page_title_block %}Roteiros{% endblock %}
 {% block page_header_title %}Roteiros{% endblock %}
+<<<<<<< HEAD
 {% block list_title %}Roteiros{% endblock %}
 {% block list_header_controls %}{% include 'includes/list/mode_badge.html' with mode='complete' %}{% endblock %}
 {% block list_header_aux_controls %}
 {% include 'includes/list/view_toggle.html' with aria_label='Alternar visualizacao da lista de roteiros' %}
+=======
+{% block list_title %}Lista global de roteiros{% endblock %}
+
+{% block list_subtitle %}{% endblock %}
+
+{% block list_meta %}{% endblock %}
+
+{% block list_header_controls %}
+{% include 'includes/list/mode_badge.html' with mode='simple' %}
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
 {% endblock %}
 
 {% block list_header_actions %}
@@ -48,6 +59,7 @@
 
 {% endblock %}
 
+<<<<<<< HEAD
 {% block list_filter_secondary_fields %}
 <div class="system-document-filter__field system-document-filter__field--compact">
     <label class="form-label">Data inicial</label>
@@ -76,6 +88,69 @@
         {% endfor %}
     </select>
 </div>
+=======
+{% block list_toolbar %}
+<form method="get" class="row g-2 align-items-end document-filter-grid" data-list-autosubmit-form>
+    <div class="col-12 col-lg-4">
+        <label class="form-label small text-muted">Busca</label>
+        <input type="text" name="q" class="form-control form-control-sm" value="{{ filters.q }}" placeholder="Evento, sede ou destino" data-list-autosubmit>
+    </div>
+    <div class="col-12 col-md-4 col-lg-4">
+        <label class="form-label small text-muted">Evento</label>
+        <select name="evento_id" data-list-autosubmit>
+            <option value="">Todos</option>
+            {% for evento in eventos_choices %}
+            <option value="{{ evento.pk }}" {% if filters.evento_id == evento.pk|stringformat:"s" %}selected{% endif %}>{{ evento.titulo|default:"(sem titulo)" }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="col-6 col-md-3 col-lg-2">
+        <label class="form-label small text-muted">Status</label>
+        <select name="status" data-list-autosubmit>
+            <option value="">Todos</option>
+            {% for value, label in status_choices %}
+            <option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="col-6 col-md-3 col-lg-2">
+        <label class="form-label small text-muted">Tipo</label>
+        <select name="tipo" data-list-autosubmit>
+            {% for value, label in tipo_choices %}
+            <option value="{{ value }}" {% if filters.tipo|upper == value|upper %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="col-6 col-md-3 col-lg-2">
+        <label class="form-label small text-muted">Ordenar por</label>
+        <select name="order_by" data-list-autosubmit>
+            {% for value, label in order_by_choices %}
+            <option value="{{ value }}" {% if filters.order_by == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="col-6 col-md-3 col-lg-2">
+        <label class="form-label small text-muted">Direcao</label>
+        <select name="order_dir" data-list-autosubmit>
+            {% for value, label in order_dir_choices %}
+            <option value="{{ value }}" {% if filters.order_dir == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+        </select>
+    </div>
+    <div class="col-6 col-md-3 col-lg-2">
+        <label class="form-label small text-muted">Data inicial</label>
+        <input type="date" name="date_from" value="{{ filters.date_from }}" class="form-control form-control-sm" data-list-autosubmit>
+    </div>
+    <div class="col-6 col-md-3 col-lg-2">
+        <label class="form-label small text-muted">Data final</label>
+        <input type="date" name="date_to" value="{{ filters.date_to }}" class="form-control form-control-sm" data-list-autosubmit>
+    </div>
+    <div class="col-6 col-md-auto">
+        <button type="submit" class="btn btn-outline-primary btn-sm">Filtrar</button>
+        <a href="{% url 'eventos:roteiros-global' %}" class="btn btn-outline-secondary btn-sm">Limpar</a>
+    </div>
+</form>
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
 {% endblock %}
 
 {% block page_result_content %}

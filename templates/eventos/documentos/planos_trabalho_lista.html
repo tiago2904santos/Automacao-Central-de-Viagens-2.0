@@ -9,6 +9,7 @@
 {% block list_header_controls %}{% include 'includes/list/mode_badge.html' with mode='complete' %}{% endblock %}
 {% block list_header_aux_controls %}{% include 'includes/list/view_toggle.html' with aria_label='Alternar visualizacao da lista de planos de trabalho' %}{% endblock %}
 
+<<<<<<< HEAD
 {% block list_header_actions %}
 <a href="{{ plano_novo_url }}" class="btn btn-primary system-list-action-btn">Novo plano de trabalho</a>
 {% endblock %}
@@ -26,10 +27,222 @@
         <option value="">Todos</option>
         {% for evento in eventos_choices %}
         <option value="{{ evento.pk }}" {% if filters.evento_id == evento.pk|stringformat:'s' %}selected{% endif %}>{{ evento.titulo|default:'(sem titulo)' }}</option>
+=======
+{% block content %}
+<div class="container-fluid py-4 system-list-page system-list-page--complete" data-list-view-root>
+    <div class="oficios-list-shell system-list-shell">
+    <div class="page-header-cadastro system-list-header system-list-header--standard">
+        <div class="system-list-header__content">
+            <div class="system-list-header__copy">
+                <div class="system-list-header__intro">
+                    <h1 class="system-list-header__title">Planos de trabalho</h1>
+                </div>
+            </div>
+            <div class="system-list-header__controls">
+                {% include 'includes/list/mode_badge.html' with mode='complete' %}
+                <div class="system-list-header__actions-group">
+                    <a href="{{ plano_novo_url }}" class="btn btn-primary system-list-action-btn">Novo plano de trabalho</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card filter-card system-filter-card">
+        <div class="card-body py-3">
+            <form method="get" class="row g-2 align-items-end document-filter-grid" data-list-autosubmit-form>
+                <div class="col-12 col-xl-4">
+                    <label class="form-label small text-muted">Busca ampla</label>
+                    <input class="form-control form-control-sm" type="text" name="q" placeholder="Objetivo, observacoes, evento ou Oficio" value="{{ filters.q }}" data-list-autosubmit>
+                </div>
+                <div class="col-6 col-md-3 col-xl-2">
+                    <label class="form-label small text-muted">Evento</label>
+                    <select name="evento_id" data-list-autosubmit>
+                        <option value="">Todos</option>
+                        {% for evento in eventos_choices %}
+                        <option value="{{ evento.pk }}" {% if filters.evento_id == evento.pk|stringformat:'s' %}selected{% endif %}>{{ evento.titulo|default:'(sem título)' }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-6 col-md-3 col-xl-2">
+                    <label class="form-label small text-muted">Ofício</label>
+                    <select name="oficio_id" data-list-autosubmit>
+                        <option value="">Todos</option>
+                        {% for oficio in oficios_choices %}
+                        <option value="{{ oficio.pk }}" {% if filters.oficio_id == oficio.pk|stringformat:'s' %}selected{% endif %}>{{ oficio.numero_formatado }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-6 col-md-3 col-xl-2">
+                    <label class="form-label small text-muted">Status</label>
+                    <select name="status" data-list-autosubmit>
+                        <option value="">Todos</option>
+                        {% for value, label in status_choices %}
+                        <option value="{{ value }}" {% if filters.status == value %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                </div>
+                <div class="col-6 col-md-3 col-xl-2">
+                    <label class="form-label small text-muted">Data inicial</label>
+                    <input type="date" class="form-control form-control-sm" name="date_from" value="{{ filters.date_from }}" data-list-autosubmit>
+                </div>
+                <div class="col-6 col-md-3 col-xl-2">
+                    <label class="form-label small text-muted">Data final</label>
+                    <input type="date" class="form-control form-control-sm" name="date_to" value="{{ filters.date_to }}" data-list-autosubmit>
+                </div>
+                <div class="col-12 col-xl-3">
+                    <div class="system-sort-row">
+                        <div>
+                            <label class="form-label small text-muted">Ordenar por</label>
+                            <select name="order_by" data-list-autosubmit>
+                                {% for key, label in order_by_choices %}
+                                <option value="{{ key }}" {% if filters.order_by == key %}selected{% endif %}>{{ label }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                        <div>
+                            <label class="form-label small text-muted">Direção</label>
+                            <select name="order_dir" data-list-autosubmit>
+                                {% for key, label in order_dir_choices %}
+                                <option value="{{ key }}" {% if filters.order_dir == key %}selected{% endif %}>{{ label }}</option>
+                                {% endfor %}
+                            </select>
+                        </div>
+                    </div>
+                </div>
+                <div class="col-12 col-md-auto">
+                    <button type="submit" class="btn btn-outline-primary btn-sm">Filtrar</button>
+                    <a href="{% url 'eventos:documentos-planos-trabalho' %}" class="btn btn-outline-secondary btn-sm">Limpar</a>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div data-list-live-region>
+    <section class="documento-cascade-grid" aria-label="Lista de planos de trabalho">
+        {% for object in object_list %}
+        <article class="oficio-list-card plano-trabalho-list-card {{ object.card_theme_class }}" id="plano-card-{{ object.pk }}">
+            <div class="oficio-list-rich-layout">
+                <div class="oficio-list-card__header">
+                    <div class="oficio-list-chip-list oficio-list-chip-list--meta oficio-list-chip-list--pt">
+                        {% for chip in object.header_chips %}
+                            <span class="oficio-list-chip oficio-list-chip--meta oficio-list-surface oficio-list-surface--feature {{ chip.css_class }}">
+                                <span class="oficio-list-chip__label">{{ chip.label }}</span>
+                                <span class="oficio-list-chip__value">{{ chip.value }}</span>
+                            </span>
+                        {% endfor %}
+                    </div>
+                    <div class="oficio-list-card__header-status">
+                        <span class="oficio-list-badge {{ object.status_meta.badge_css_class }}">
+                            <span>{{ object.status_meta.label }}</span>
+                        </span>
+                    </div>
+                </div>
+
+                <div class="oficio-list-core-grid">
+                    <section class="oficio-list-core-card oficio-list-core-card--travelers oficio-list-surface oficio-list-surface--panel">
+                        <div class="oficio-list-subcard__header">
+                            <div>
+                                <h3 class="oficio-list-subcard__title">Ofícios vinculados</h3>
+                                <p class="oficio-list-subcard__subtitle">{{ object.oficios_block.count_label }}</p>
+                            </div>
+                        </div>
+                        <div class="oficio-list-traveler-list">
+                            {% for item in object.oficios_block.items %}
+                            {% if item.url %}
+                            <a href="{{ item.url }}" class="text-decoration-none">
+                                <div class="oficio-list-traveler-pill oficio-list-surface oficio-list-surface--soft {{ item.css_class }}">
+                                    <span class="oficio-list-traveler-pill__initials">{{ item.initials }}</span>
+                                    <span class="oficio-list-traveler-pill__name">{{ item.name }}</span>
+                                </div>
+                            </a>
+                            {% else %}
+                            <div class="oficio-list-traveler-pill oficio-list-surface oficio-list-surface--soft {{ item.css_class }}">
+                                <span class="oficio-list-traveler-pill__initials">{{ item.initials }}</span>
+                                <span class="oficio-list-traveler-pill__name">{{ item.name }}</span>
+                            </div>
+                            {% endif %}
+                            {% endfor %}
+                        </div>
+                    </section>
+
+                    <section class="oficio-list-core-card oficio-list-core-card--transport oficio-list-surface oficio-list-surface--panel">
+                        <div class="oficio-list-core-card__header">
+                            <h3 class="oficio-list-core-card__title">Diárias</h3>
+                            <span class="oficio-list-core-card__meta">{{ object.calculadora_block.equipe }}</span>
+                        </div>
+                        <div class="diarias-blocklist">
+                            <div class="diaria-block diaria-block--total oficio-list-surface oficio-list-surface--feature">
+                                <div class="diaria-block__title">{{ object.calculadora_block.bloco_valor_total.titulo }}</div>
+                                <div class="diaria-block__value">{{ object.calculadora_block.bloco_valor_total.valor }}</div>
+                                <div class="diaria-block__meta">{{ object.calculadora_block.bloco_valor_total.subtitulo }}</div>
+                            </div>
+                            <div class="diaria-block oficio-list-surface oficio-list-surface--soft">
+                                <div class="diaria-block__title">{{ object.calculadora_block.bloco_valor_unitario.titulo }}</div>
+                                <div class="diaria-block__value">{{ object.calculadora_block.bloco_valor_unitario.valor }}</div>
+                                <div class="diaria-block__meta">{{ object.calculadora_block.bloco_valor_unitario.subtitulo }}</div>
+                            </div>
+                        </div>
+                    </section>
+                </div>
+
+                <div class="oficio-list-card__secondary">
+                    <section class="oficio-list-subcard plano-coordenadores-subcard oficio-list-surface oficio-list-surface--panel">
+                        <div class="oficio-list-subcard__header">
+                            <div>
+                                <h3 class="oficio-list-subcard__title">Contexto do plano</h3>
+                                <p class="oficio-list-subcard__subtitle">{{ object.contexto_display }} - atualizado em {{ object.updated_display }}</p>
+                            </div>
+                        </div>
+                        <div class="oficio-list-subcard__body">
+                            <div class="oficio-list-term-list">
+                                {% for row in object.info_rows %}
+                                <div class="oficio-list-term-row plano-coordenadores-row oficio-list-surface oficio-list-surface--soft">
+                                    <span class="oficio-list-term-row__name">{{ row.label }}</span>
+                                    <div class="oficio-list-term-row__actions">
+                                        <span class="oficio-list-badge plano-coordenadores-badge is-muted">Operacional: {{ row.operacional }}</span>
+                                        <span class="oficio-list-badge plano-coordenadores-badge is-muted">Administrativo: {{ row.administrativo }}</span>
+                                    </div>
+                                </div>
+                                {% endfor %}
+                            </div>
+                        </div>
+                    </section>
+                </div>
+
+                <div class="oficio-list-card__footer oficio-list-surface oficio-list-surface--footer">
+                    <div class="oficio-list-card__footer-actions">
+                        <a href="{{ object.open_url }}" class="btn btn-sm btn-doc-action btn-doc-action--primary" aria-label="Abrir plano de trabalho">
+                            <i class="bi bi-box-arrow-up-right"></i>
+                            <span>Abrir</span>
+                        </a>
+                        <a href="{{ object.edit_url }}" class="btn btn-sm btn-doc-action btn-doc-action--secondary" aria-label="Editar plano de trabalho">
+                            <i class="bi bi-pencil-square"></i>
+                            <span>Editar</span>
+                        </a>
+                        <a href="{{ object.download_docx_url }}" class="btn btn-sm btn-doc-action btn-doc-action--secondary is-icon-only" aria-label="Baixar DOCX do plano de trabalho" data-direct-download="true">
+                            <i class="bi bi-filetype-docx"></i>
+                            <span class="visually-hidden">DOCX</span>
+                        </a>
+                        <a href="{{ object.download_pdf_url }}" class="btn btn-sm btn-doc-action btn-doc-action--pdf is-icon-only" aria-label="Baixar PDF do plano de trabalho" data-direct-download="true">
+                            <i class="bi bi-filetype-pdf"></i>
+                            <span class="visually-hidden">PDF</span>
+                        </a>
+                        <a href="{{ object.delete_url }}" class="btn btn-sm btn-doc-action btn-doc-action--danger is-icon-only" aria-label="Excluir plano de trabalho">
+                            <i class="bi bi-trash"></i>
+                            <span class="visually-hidden">Excluir</span>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </article>
+        {% empty %}
+        <div class="oficios-table-panel__empty">Nenhum plano de trabalho encontrado com os filtros atuais.</div>
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
         {% endfor %}
     </select>
 </div>
 
+<<<<<<< HEAD
 <div class="system-document-filter__field system-document-filter__field--span-2">
     <label class="form-label">Oficio</label>
     <select name="oficio_id" data-list-autosubmit>
@@ -39,6 +252,10 @@
         {% endfor %}
     </select>
 </div>
+=======
+    {% include 'includes/pagination.html' %}
+    </div>
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
 
 <div class="system-document-filter__field system-document-filter__field--span-2">
     <label class="form-label">Status</label>

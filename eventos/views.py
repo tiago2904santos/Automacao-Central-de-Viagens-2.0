@@ -991,6 +991,7 @@ def evento_lista(request):
             ),
         ),
     ).all()
+<<<<<<< HEAD
     filters = {
         'q': (request.GET.get('q') or '').strip(),
         'status': (request.GET.get('status') or '').strip(),
@@ -1000,6 +1001,13 @@ def evento_lista(request):
         'order_by': (request.GET.get('order_by') or 'data_inicio').strip().lower(),
         'order_dir': (request.GET.get('order_dir') or 'desc').strip().lower(),
     }
+=======
+    q = request.GET.get('q', '').strip()
+    date_from = (request.GET.get('date_from') or '').strip()
+    date_to = (request.GET.get('date_to') or '').strip()
+    order_by = (request.GET.get('order_by') or 'data_inicio').strip().lower()
+    order_dir = (request.GET.get('order_dir') or 'desc').strip().lower()
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
     order_by_map = {
         'data_inicio': 'data_inicio',
         'updated_at': 'updated_at',
@@ -1011,6 +1019,7 @@ def evento_lista(request):
     if filters['order_dir'] == 'desc':
         order_field = f'-{order_field}'
 
+<<<<<<< HEAD
     if filters['q']:
         qs = qs.filter(titulo__icontains=filters['q'])
     if filters['status']:
@@ -1025,13 +1034,43 @@ def evento_lista(request):
     if filters['date_to']:
         try:
             qs = qs.filter(updated_at__date__lte=datetime.strptime(filters['date_to'], '%Y-%m-%d').date())
+=======
+    if q:
+        qs = qs.filter(titulo__icontains=q)
+    status = request.GET.get('status', '')
+    if status:
+        qs = qs.filter(status=status)
+    tipo_id = request.GET.get('tipo_id', '')
+    if tipo_id:
+        qs = qs.filter(tipos_demanda__id=tipo_id)
+    if date_from:
+        try:
+            qs = qs.filter(updated_at__date__gte=datetime.strptime(date_from, '%Y-%m-%d').date())
+        except ValueError:
+            pass
+    if date_to:
+        try:
+            qs = qs.filter(updated_at__date__lte=datetime.strptime(date_to, '%Y-%m-%d').date())
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
         except ValueError:
             pass
     object_list = list(qs.distinct().order_by(order_field, '-created_at'))
     _decorate_evento_list_items(object_list)
     context = {
         'object_list': object_list,
+<<<<<<< HEAD
         'filters': filters,
+=======
+        'form_filter': {
+            'q': q,
+            'status': status,
+            'tipo_id': tipo_id,
+            'date_from': date_from,
+            'date_to': date_to,
+            'order_by': order_by,
+            'order_dir': order_dir,
+        },
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
         'status_choices': Evento.STATUS_CHOICES,
         'tipos_demanda_list': TipoDemandaEvento.objects.filter(ativo=True).order_by('ordem', 'nome'),
         'order_by_choices': [
@@ -2025,12 +2064,18 @@ def _get_safe_next_url(request, default_url=''):
 def modelos_motivo_lista(request):
     """Lista de modelos de motivo para uso no Step 1 do OfÃ­cio."""
     volta_step1 = request.GET.get('volta_step1', '')
+<<<<<<< HEAD
     return_to = _safe_return_to(request, '')
     q = (request.GET.get('q') or '').strip()
     date_from = (request.GET.get('date_from') or '').strip()
     date_to = (request.GET.get('date_to') or '').strip()
     order_by = (request.GET.get('order_by') or 'nome').strip().lower()
     order_dir = (request.GET.get('order_dir') or 'asc').strip().lower()
+=======
+    q = (request.GET.get('q') or '').strip()
+    date_from = (request.GET.get('date_from') or '').strip()
+    date_to = (request.GET.get('date_to') or '').strip()
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
     lista = ModeloMotivoViagem.objects.all()
     if q:
         lista = lista.filter(Q(nome__icontains=q) | Q(texto__icontains=q))
@@ -2044,6 +2089,7 @@ def modelos_motivo_lista(request):
             lista = lista.filter(updated_at__date__lte=datetime.strptime(date_to, '%Y-%m-%d').date())
         except ValueError:
             pass
+<<<<<<< HEAD
     order_by, order_dir, ordering = _resolve_document_list_ordering(
         order_by,
         order_dir,
@@ -2080,6 +2126,13 @@ def modelos_motivo_lista(request):
         'order_dir_choices': DOCUMENT_LIST_ORDER_DIR_CHOICES,
         'return_to': return_to,
         'clear_filters_url': _modelos_motivo_lista_url(volta_step1, return_to=return_to),
+=======
+    lista = lista.order_by('nome')
+    context = {
+        'object_list': lista,
+        'volta_step1': volta_step1,
+        'filters': {'q': q, 'date_from': date_from, 'date_to': date_to},
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
         'hide_page_header': True,
     }
     return render(request, 'eventos/modelos_motivo/lista.html', context)
@@ -2191,8 +2244,11 @@ def modelos_justificativa_lista(request):
     q = (request.GET.get('q') or '').strip()
     date_from = (request.GET.get('date_from') or '').strip()
     date_to = (request.GET.get('date_to') or '').strip()
+<<<<<<< HEAD
     order_by = (request.GET.get('order_by') or 'nome').strip().lower()
     order_dir = (request.GET.get('order_dir') or 'asc').strip().lower()
+=======
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
     lista = ModeloJustificativa.objects.filter(ativo=True)
     if q:
         lista = lista.filter(Q(nome__icontains=q) | Q(texto__icontains=q))
@@ -2206,6 +2262,7 @@ def modelos_justificativa_lista(request):
             lista = lista.filter(updated_at__date__lte=datetime.strptime(date_to, '%Y-%m-%d').date())
         except ValueError:
             pass
+<<<<<<< HEAD
     order_by, order_dir, ordering = _resolve_document_list_ordering(
         order_by,
         order_dir,
@@ -2218,10 +2275,14 @@ def modelos_justificativa_lista(request):
         'nome',
     )
     lista = lista.order_by(ordering, 'nome')
+=======
+    lista = lista.order_by('nome')
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
     context = {
         'object_list': lista,
         'volta_justificativa': volta_justificativa,
         'next_url': next_url,
+<<<<<<< HEAD
         'filters': {
             'q': q,
             'date_from': date_from,
@@ -2237,6 +2298,9 @@ def modelos_justificativa_lista(request):
         ],
         'order_dir_choices': DOCUMENT_LIST_ORDER_DIR_CHOICES,
         'clear_filters_url': _modelos_justificativa_lista_url(volta_justificativa, next_url),
+=======
+        'filters': {'q': q, 'date_from': date_from, 'date_to': date_to},
+>>>>>>> a137c4ec8279717e2158cd5a394a58f6623972bd
     }
     return render(request, 'eventos/modelos_justificativa/lista.html', context)
 
@@ -8711,4 +8775,3 @@ def estimar_km_por_cidades(request):
         'serra_presente': out.get('serra_presente', False),
         'erro': out['erro'],
     })
-
