@@ -33,6 +33,20 @@ def _comprovante_upload_to(instance, filename):
     return f"prestacao_contas/comprovantes/{instance.pk or 'nova'}/{stem}-{uuid.uuid4().hex[:10]}{ext}"
 
 
+def _prestacao_assinado_upload_to(instance, filename):
+    base = Path(filename or "").name.strip() or "documento-assinado.pdf"
+    ext = Path(base).suffix.lower() or ".pdf"
+    stem = slugify(Path(base).stem) or "documento-assinado"
+    return f"prestacao_contas/assinados/{instance.pk or 'nova'}/{stem}-{uuid.uuid4().hex[:10]}{ext}"
+
+
+def _prestacao_pdf_final_upload_to(instance, filename):
+    base = Path(filename or "").name.strip() or "prestacao-final.pdf"
+    ext = Path(base).suffix.lower() or ".pdf"
+    stem = slugify(Path(base).stem) or "prestacao-final"
+    return f"prestacao_contas/pdf_final/{instance.pk or 'nova'}/{stem}-{uuid.uuid4().hex[:10]}{ext}"
+
+
 class PrestacaoConta(models.Model):
     STATUS_RASCUNHO = "rascunho"
     STATUS_EM_ANDAMENTO = "em_andamento"
@@ -76,6 +90,43 @@ class PrestacaoConta(models.Model):
         blank=True,
         null=True,
     )
+    oficio_assinado = models.FileField(
+        "Oficio assinado",
+        upload_to=_prestacao_assinado_upload_to,
+        validators=[FileExtensionValidator(["pdf"])],
+        blank=True,
+        null=True,
+    )
+    rt_assinado = models.FileField(
+        "RT assinado",
+        upload_to=_prestacao_assinado_upload_to,
+        validators=[FileExtensionValidator(["pdf"])],
+        blank=True,
+        null=True,
+    )
+    despacho_assinado = models.FileField(
+        "Despacho assinado",
+        upload_to=_prestacao_assinado_upload_to,
+        validators=[FileExtensionValidator(["pdf"])],
+        blank=True,
+        null=True,
+    )
+    diario_bordo_assinado = models.FileField(
+        "Diario de bordo assinado",
+        upload_to=_prestacao_assinado_upload_to,
+        validators=[FileExtensionValidator(["pdf"])],
+        blank=True,
+        null=True,
+    )
+    pdf_final = models.FileField(
+        "PDF final",
+        upload_to=_prestacao_pdf_final_upload_to,
+        validators=[FileExtensionValidator(["pdf"])],
+        blank=True,
+        null=True,
+    )
+    pdf_final_atualizado_em = models.DateTimeField("PDF final atualizado em", null=True, blank=True)
+    pdf_final_desatualizado = models.BooleanField("PDF final desatualizado", default=False)
     servidor = models.ForeignKey(
         "cadastros.Viajante",
         on_delete=models.SET_NULL,

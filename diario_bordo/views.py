@@ -168,11 +168,8 @@ def diario_novo(request):
 @login_required
 def diario_novo_oficio(request, oficio_id):
     oficio = get_object_or_404(Oficio, pk=oficio_id)
-    diario = DiarioBordo()
-    preencher_diario_por_oficio(diario, oficio)
-    diario.save()
-    inicializar_trechos_diario_bordo(diario, force=False)
-    return redirect("diario_bordo:step", pk=diario.pk, step=1)
+    messages.info(request, "Diário de Bordo desativado na criação do ofício.")
+    return redirect("eventos:oficio-step4", pk=oficio.pk)
 
 
 @login_required

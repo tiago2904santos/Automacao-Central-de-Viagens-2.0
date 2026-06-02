@@ -133,6 +133,27 @@ def _osrm_timeout():
 
 OSRM_TIMEOUT_SECONDS = _osrm_timeout()
 
+
+def _parse_oficio_numero_inicial_por_ano():
+    raw = os.getenv('OFICIO_NUMERO_INICIAL_POR_ANO', '2026:59')
+    parsed = {}
+    for item in raw.split(','):
+        item = item.strip()
+        if not item or ':' not in item:
+            continue
+        ano_raw, numero_raw = item.split(':', 1)
+        try:
+            ano = int(ano_raw.strip())
+            numero = int(numero_raw.strip())
+        except (TypeError, ValueError):
+            continue
+        if ano > 0 and numero > 0:
+            parsed[ano] = numero
+    return parsed
+
+
+OFICIO_NUMERO_INICIAL_POR_ANO = _parse_oficio_numero_inicial_por_ano()
+
 GOOGLE_OAUTH_CLIENT_ID = os.getenv("GOOGLE_OAUTH_CLIENT_ID", "").strip()
 GOOGLE_OAUTH_CLIENT_SECRET = os.getenv("GOOGLE_OAUTH_CLIENT_SECRET", "").strip()
 GOOGLE_OAUTH_REDIRECT_URI = os.getenv("GOOGLE_OAUTH_REDIRECT_URI", "").strip()

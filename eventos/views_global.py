@@ -60,6 +60,7 @@ from .services.documentos import (
     get_document_generation_status,
     get_document_type_meta,
 )
+from .services.documentos.filenames import build_termo_autorizacao_filename
 from .services.documentos.renderer import (
     convert_docx_bytes_to_pdf_bytes,
     get_termo_autorizacao_template_path,
@@ -4573,7 +4574,9 @@ def plano_trabalho_download(request, pk, formato):
     ext = 'docx' if formato == DocumentoFormato.DOCX.value else 'pdf'
     preview_mode = formato == DocumentoFormato.PDF.value and request.GET.get('preview') in {'1', 'true', 'yes'}
     disposition = 'inline' if preview_mode else 'attachment'
-    response['Content-Disposition'] = f'{disposition}; filename="plano_trabalho_{obj.pk}.{ext}"'
+    destino_slug = slugify(obj.destinos_formatados_display or 'destino') or 'destino'
+    numero_slug = slugify(obj.numero_formatado or 'rascunho') or 'rascunho'
+    response['Content-Disposition'] = f'{disposition}; filename="plano_trabalho_{numero_slug}_{destino_slug}.{ext}"'
     return response
 
 
@@ -5613,8 +5616,11 @@ def _termo_context_display(termo):
 
 def _build_saved_termo_filename(termo, formato):
     ext = 'docx' if formato == DocumentoFormato.DOCX.value else 'pdf'
-    base = slugify(getattr(termo, 'titulo_display', '') or termo.servidor_display or termo.destino or termo.numero_formatado) or f'termo-{termo.pk}'
-    return f'termo_autorizacao_{termo.pk}_{base}.{ext}'
+    return build_termo_autorizacao_filename(
+        getattr(termo, 'servidor_display', '') or getattr(termo, 'servidor_nome', ''),
+        getattr(termo, 'destino', ''),
+        ext,
+    )
 
 
 def _build_termo_initial(preselected_event, preselected_oficio):

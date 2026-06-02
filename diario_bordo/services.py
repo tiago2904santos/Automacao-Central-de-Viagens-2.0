@@ -427,6 +427,8 @@ def _converter_xlsx_com_libreoffice(xlsx_path: Path, pdf_path: Path):
     if not executable:
         return False
     pdf_path.parent.mkdir(parents=True, exist_ok=True)
+    import sys
+    _no_window = {'creationflags': subprocess.CREATE_NO_WINDOW} if sys.platform == 'win32' else {}
     subprocess.run(
         [
             executable,
@@ -441,6 +443,7 @@ def _converter_xlsx_com_libreoffice(xlsx_path: Path, pdf_path: Path):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=120,
+        **_no_window,
     )
     generated = pdf_path.parent / f"{xlsx_path.stem}.pdf"
     if generated.exists() and generated != pdf_path:

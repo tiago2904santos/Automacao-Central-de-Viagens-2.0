@@ -15,6 +15,7 @@ from eventos.services.documentos import (
     build_document_filename,
     render_document_bytes,
 )
+from eventos.services.documentos.filenames import build_termo_autorizacao_filename
 from eventos.services.documentos.plano_trabalho import render_plano_trabalho_model_docx
 from eventos.services.documentos.renderer import convert_docx_bytes_to_pdf_bytes
 from eventos.services.documentos.termo_autorizacao import render_saved_termo_autorizacao_docx
@@ -73,18 +74,20 @@ class ExportacaoEventoGoogleDriveService:
     @staticmethod
     def _build_termo_filename(termo: TermoAutorizacao, formato: str) -> str:
         return sanitize_drive_name(
-            f"termo_{termo.pk:02d}.{formato}",
-            f"termo_{termo.pk}.{formato}",
+            build_termo_autorizacao_filename(termo.servidor_display, termo.destino, formato),
+            f"termo_autorizacao_{sanitize_drive_name(termo.servidor_display, 'servidor')}_{sanitize_drive_name(termo.destino, 'destino')}.{formato}",
         )
 
     @staticmethod
     def _build_plano_filename(plano: PlanoTrabalho, formato: str, idx: int) -> str:
         base = "plano_trabalho"
-        if plano.numero and plano.ano:
-            base = f"plano_trabalho_{int(plano.numero):02d}_{int(plano.ano)}"
+        if plano.numero_formatado:
+            base = f"plano_trabalho_{plano.numero_formatado}"
+        destinos = sanitize_drive_name(plano.destinos_formatados_display or "destino", "destino")
+        base = f"{base}_{destinos}"
         if idx > 1:
             base = f"{base}_{idx:02d}"
-        return sanitize_drive_name(f"{base}.{formato}", f"plano_trabalho_{plano.pk}.{formato}")
+        return sanitize_drive_name(f"{base}.{formato}", f"plano_trabalho_{idx:02d}.{formato}")
 
     @staticmethod
     def _render_plano_documento(plano: PlanoTrabalho, formato: str) -> bytes:

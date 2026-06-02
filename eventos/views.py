@@ -115,6 +115,7 @@ from .services.documentos import (
     iter_document_type_metas,
     render_document_bytes,
 )
+from .services.documentos.filenames import build_termo_autorizacao_filename
 from .services.documentos.renderer import (
     convert_docx_bytes_to_pdf_bytes,
     get_termo_autorizacao_templates_availability,
@@ -1508,18 +1509,40 @@ def _get_termo_participante_evento(evento, viajante_id):
 def _build_termo_participante_filename(evento, viajante, formato):
     formato = (formato or 'docx').lower()
     sufixo = 'docx' if formato == 'docx' else 'pdf'
-    nome_slug = slugify((viajante.nome or '').strip()) or f'viajante-{viajante.pk}'
-    return f'termo_autorizacao_evento_{evento.pk}_{nome_slug}.{sufixo}'
+    destino_slug = _build_evento_destino_filename_label(evento)
+    return build_termo_autorizacao_filename(viajante.nome or 'servidor', destino_slug, sufixo)
 
 
 def _build_termo_padrao_filename(evento, formato):
     formato = (formato or 'docx').lower()
     sufixo = 'docx' if formato == 'docx' else 'pdf'
-    return f'termo_autorizacao_evento_{evento.pk}_padrao_branco.{sufixo}'
+    destino_slug = _build_evento_destino_filename_label(evento)
+    return f'termo_autorizacao_{destino_slug}.{sufixo}'
 
 
 def _build_termo_viatura_lote_filename(evento, formato):
-    return f'termos_evento_{evento.pk}_viatura.zip'
+    destino_slug = _build_evento_destino_filename_label(evento)
+    return f'termos_autorizacao_{destino_slug}_viatura.zip'
+
+
+def _build_evento_destino_filename_label(evento):
+    labels = []
+    seen = set()
+    queryset = evento.destinos.select_related('cidade', 'estado').order_by('ordem', 'pk')
+    for destino in queryset:
+        if destino.cidade_id and destino.estado_id:
+            label = f'{destino.cidade.nome}/{destino.estado.sigla}'
+        elif destino.cidade_id:
+            label = destino.cidade.nome
+        elif destino.estado_id:
+            label = destino.estado.sigla
+        else:
+            label = ''
+        label = (label or '').strip()
+        if label and label not in seen:
+            seen.add(label)
+            labels.append(label)
+    return slugify(', '.join(labels)) or 'destino'
 
 
 def _get_veiculos_termo_queryset():

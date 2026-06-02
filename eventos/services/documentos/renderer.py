@@ -349,14 +349,17 @@ def _convert_via_libreoffice(docx_path, pdf_path):
     """Converte DOCX para PDF usando LibreOffice headless via subprocess."""
     from .backends import _find_libreoffice_soffice
     import subprocess
+    import sys
     soffice = _find_libreoffice_soffice()
     if not soffice:
         raise DocumentRendererUnavailable('LibreOffice nao encontrado para conversao PDF.')
+    _no_window = {'creationflags': subprocess.CREATE_NO_WINDOW} if sys.platform == 'win32' else {}
     result = subprocess.run(
         [soffice, '--headless', '--convert-to', 'pdf', '--outdir', str(pdf_path.parent), str(docx_path)],
         capture_output=True,
         text=True,
         timeout=120,
+        **_no_window,
     )
     if result.returncode != 0:
         raise DocumentRendererUnavailable(

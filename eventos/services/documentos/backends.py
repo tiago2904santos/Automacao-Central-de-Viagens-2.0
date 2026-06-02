@@ -70,10 +70,13 @@ def _check_libreoffice_availability():
             'soffice_path': None,
         }
     import subprocess
+    import sys
+    _no_window = {'creationflags': subprocess.CREATE_NO_WINDOW} if sys.platform == 'win32' else {}
     try:
         result = subprocess.run(
             [soffice, '--version'],
             capture_output=True, text=True, timeout=15,
+            **_no_window,
         )
         if result.returncode == 0:
             return {'available': True, 'reason': '', 'soffice_path': soffice}

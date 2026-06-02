@@ -205,8 +205,7 @@
                 <a href="{% url 'diario_bordo:step' diario.id 5 %}" class="btn btn-sm btn-doc-action btn-doc-action--secondary"><i class="bi bi-upload"></i><span>Anexar assinado</span></a>
               </div>
               {% else %}
-              <p class="text-muted">Nenhum Diário de Bordo vinculado a este ofício.</p>
-              <a href="{% url 'diario_bordo:novo-oficio' oficio.id %}" class="btn btn-primary">Gerar Diário de Bordo</a>
+              <p class="text-muted">Diário de Bordo desativado na criação do ofício.</p>
               {% endif %}
               {% endwith %}
             </section>

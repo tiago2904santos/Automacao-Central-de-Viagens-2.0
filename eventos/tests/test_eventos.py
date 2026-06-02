@@ -56,6 +56,7 @@ from eventos.services.documentos import (
     reset_document_backend_capabilities_cache,
     validate_oficio_for_document_generation,
 )
+from eventos.services.documentos.filenames import build_termo_autorizacao_filename
 from eventos.services.documentos.context import format_document_display
 from eventos.services.documentos.oficio import build_oficio_template_context
 
@@ -3323,7 +3324,8 @@ class EventoEtapa5TermosTest(TestCase):
             response['Content-Type'],
             'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
         )
-        self.assertIn('padrao_branco.docx', response['Content-Disposition'])
+        self.assertIn('termo_autorizacao_', response['Content-Disposition'])
+        self.assertIn('.docx', response['Content-Disposition'])
 
     def test_etapa_5_download_termo_padrao_branco_pdf_quando_backend_disponivel(self):
         url = reverse(
@@ -3337,7 +3339,8 @@ class EventoEtapa5TermosTest(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response['Content-Type'], 'application/pdf')
         self.assertTrue(response.content.startswith(b'%PDF-1.4'))
-        self.assertIn('padrao_branco.pdf', response['Content-Disposition'])
+        self.assertIn('termo_autorizacao_', response['Content-Disposition'])
+        self.assertIn('.pdf', response['Content-Disposition'])
 
     def test_etapa_5_modo_viatura_lote_gera_zip_individual_por_servidor(self):
         veiculo = self._criar_veiculo_finalizado()
@@ -4153,16 +4156,16 @@ class OficioStep1AcceptanceTest(TestCase):
 
     def test_1_novo_oficio_gera_numero_automatico_formato_xx_ano(self):
         oficio = self._criar_oficio(ano=2026)
-        self.assertEqual(oficio.numero, 1)
+        self.assertEqual(oficio.numero, 59)
         self.assertEqual(oficio.ano, 2026)
-        self.assertEqual(oficio.numero_formatado, '01/2026')
+        self.assertEqual(oficio.numero_formatado, '59/2026')
 
     def test_2_sequencia_anual_funciona_e_reinicia_no_novo_ano(self):
         oficio_1 = self._criar_oficio(ano=2026)
         oficio_2 = self._criar_oficio(ano=2026)
         oficio_3 = self._criar_oficio(ano=2027)
-        self.assertEqual(oficio_1.numero_formatado, '01/2026')
-        self.assertEqual(oficio_2.numero_formatado, '02/2026')
+        self.assertEqual(oficio_1.numero_formatado, '59/2026')
+        self.assertEqual(oficio_2.numero_formatado, '60/2026')
         self.assertEqual(oficio_3.numero_formatado, '01/2027')
 
     def test_2b_criacao_usa_menor_numero_livre_do_ano(self):
@@ -4171,9 +4174,9 @@ class OficioStep1AcceptanceTest(TestCase):
         oficio_3 = self._criar_oficio(ano=2026)
         oficio_2.delete()
         oficio_novo = self._criar_oficio(ano=2026)
-        self.assertEqual(oficio_1.numero_formatado, '01/2026')
-        self.assertEqual(oficio_3.numero_formatado, '03/2026')
-        self.assertEqual(oficio_novo.numero_formatado, '02/2026')
+        self.assertEqual(oficio_1.numero_formatado, '59/2026')
+        self.assertEqual(oficio_3.numero_formatado, '61/2026')
+        self.assertEqual(oficio_novo.numero_formatado, '60/2026')
 
     def test_3_ao_editar_numero_nao_muda(self):
         oficio = self._criar_oficio(ano=2026)
@@ -4881,7 +4884,7 @@ class OficioStep1AcceptanceTest(TestCase):
         oficios = [self._criar_oficio(ano=2026) for _ in range(5)]
         oficios[4].delete()
         proximo = self._criar_oficio(ano=2026)
-        self.assertEqual(proximo.numero_formatado, '05/2026')
+        self.assertEqual(proximo.numero_formatado, '63/2026')
 
     def test_oficio_pode_ser_excluido_com_redirecionamento_coerente(self):
         oficio = self._criar_oficio(ano=2026)
@@ -7106,7 +7109,10 @@ class OficioDocumentosTest(TestCase):
         response = self.client.get(download_url)
 
         self.assertEqual(response.status_code, 200)
-        self.assertIn(f'termo_autorizacao_{termo.pk}_', response['Content-Disposition'])
+        self.assertIn(
+            build_termo_autorizacao_filename(termo.servidor_display, termo.destino, 'docx'),
+            response['Content-Disposition'],
+        )
         text = self._extract_docx_text(response.content)
         self.assertIn('TERMO DE AUTORIZA', text)
         self.assertIn(self.viajante.nome, text)
@@ -7235,7 +7241,10 @@ class OficioDocumentosTest(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response['Content-Type'], 'application/pdf')
-        self.assertIn(f'termo_autorizacao_{termo.pk}_', response['Content-Disposition'])
+        self.assertIn(
+            build_termo_autorizacao_filename(termo.servidor_display, termo.destino, 'pdf'),
+            response['Content-Disposition'],
+        )
         self.assertTrue(response.content.startswith(b'%PDF-1.4'))
 
     def test_download_pdf_do_plano_trabalho_quando_apto(self):

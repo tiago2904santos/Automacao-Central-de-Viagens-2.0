@@ -1752,14 +1752,17 @@ class Oficio(models.Model):
 
     @classmethod
     def get_next_available_numero(cls, ano):
+        ano = int(ano)
+        numeros_iniciais = getattr(settings, 'OFICIO_NUMERO_INICIAL_POR_ANO', {}) or {}
+        numero_inicial = max(1, int(numeros_iniciais.get(ano, 1) or 1))
         numeros_usados = list(
             cls.objects.select_for_update()
-            .filter(ano=int(ano))
+            .filter(ano=ano, numero__gte=numero_inicial)
             .exclude(numero__isnull=True)
             .order_by('numero')
             .values_list('numero', flat=True)
         )
-        proximo = 1
+        proximo = numero_inicial
         for numero in numeros_usados:
             if numero != proximo:
                 break
